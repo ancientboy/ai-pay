@@ -21,7 +21,7 @@ Open [http://localhost:3000](http://localhost:3000).
 ```bash
 cd frontend
 npx playwright install chromium
-npm run test:e2e
+npm run e2e
 ```
 
 The E2E test expects:
