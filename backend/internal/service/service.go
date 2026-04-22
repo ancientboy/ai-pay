@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -84,6 +85,20 @@ type OverviewMetrics struct {
 	AlertCount         int     `json:"alertCount"`
 }
 
+type DeveloperAPIKey struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Key       string    `json:"key"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+type DeveloperWebhook struct {
+	ID        string    `json:"id"`
+	URL       string    `json:"url"`
+	Event     string    `json:"event"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
 type Service struct {
 	mu             sync.Mutex
 	agents         map[string]Agent
@@ -98,6 +113,8 @@ type Service struct {
 	dailySpent     map[string]float64
 	holds          map[string]holdRecord
 	actionIdem     map[string]struct{}
+	apiKeys        []DeveloperAPIKey
+	webhooks       []DeveloperWebhook
 }
 
 type holdRecord struct {
@@ -124,6 +141,12 @@ type PaymentService interface {
 	ListAgents() []AgentSummary
 	ListRecharges(va string, limit int) []RechargeOrder
 	OverviewMetrics() (OverviewMetrics, error)
+	ListAPIKeys() []DeveloperAPIKey
+	CreateAPIKey(name string) (DeveloperAPIKey, error)
+	DeleteAPIKey(id string) error
+	ListWebhooks() []DeveloperWebhook
+	CreateWebhook(url string, event string) (DeveloperWebhook, error)
+	DeleteWebhook(id string) error
 }
 
 func New() *Service {
@@ -140,6 +163,8 @@ func New() *Service {
 		dailySpent:     map[string]float64{},
 		holds:          map[string]holdRecord{},
 		actionIdem:     map[string]struct{}{},
+		apiKeys:        []DeveloperAPIKey{},
+		webhooks:       []DeveloperWebhook{},
 	}
 }
 
@@ -584,4 +609,116 @@ func (s *Service) releaseHold(holdID string) error {
 func generateVACardNo(seq int) string {
 	// 16-digit virtual card number for account funding references.
 	return fmt.Sprintf("68880000%08d", seq)
+}
+
+func (s *Service) ListAPIKeys() []DeveloperAPIKey {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	limit := 50
+	out := make([]DeveloperAPIKey, 0, limit)
+	for _, item := range s.apiKeys {
+		out = append(out, item)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func (s *Service) CreateAPIKey(name string) (DeveloperAPIKey, error) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return DeveloperAPIKey{}, &APIError{Code: "PAY-010", Message: "invalid api key name"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item := DeveloperAPIKey{
+		ID:        fmt.Sprintf("key_%d", time.Now().UnixNano()),
+		Name:      trimmed,
+		Key:       fmt.Sprintf("ak_live_%d", time.Now().UnixNano()),
+		CreatedAt: time.Now().UTC(),
+	}
+	s.apiKeys = append([]DeveloperAPIKey{item}, s.apiKeys...)
+	return item, nil
+}
+
+func (s *Service) DeleteAPIKey(id string) error {
+	trimmed := strings.TrimSpace(id)
+	if trimmed == "" {
+		return &APIError{Code: "PAY-010", Message: "invalid id"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := make([]DeveloperAPIKey, 0, len(s.apiKeys))
+	found := false
+	for _, item := range s.apiKeys {
+		if item.ID == trimmed {
+			found = true
+			continue
+		}
+		next = append(next, item)
+	}
+	if !found {
+		return &APIError{Code: "PAY-010", Message: "api key not found"}
+	}
+	s.apiKeys = next
+	return nil
+}
+
+func (s *Service) ListWebhooks() []DeveloperWebhook {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	limit := 50
+	out := make([]DeveloperWebhook, 0, limit)
+	for _, item := range s.webhooks {
+		out = append(out, item)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func (s *Service) CreateWebhook(url string, event string) (DeveloperWebhook, error) {
+	trimmedURL := strings.TrimSpace(url)
+	trimmedEvent := strings.TrimSpace(event)
+	if trimmedURL == "" || (!strings.HasPrefix(trimmedURL, "http://") && !strings.HasPrefix(trimmedURL, "https://")) {
+		return DeveloperWebhook{}, &APIError{Code: "PAY-010", Message: "invalid webhook url"}
+	}
+	if trimmedEvent == "" {
+		trimmedEvent = "payment.settled"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item := DeveloperWebhook{
+		ID:        fmt.Sprintf("wh_%d", time.Now().UnixNano()),
+		URL:       trimmedURL,
+		Event:     trimmedEvent,
+		CreatedAt: time.Now().UTC(),
+	}
+	s.webhooks = append([]DeveloperWebhook{item}, s.webhooks...)
+	return item, nil
+}
+
+func (s *Service) DeleteWebhook(id string) error {
+	trimmed := strings.TrimSpace(id)
+	if trimmed == "" {
+		return &APIError{Code: "PAY-010", Message: "invalid id"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := make([]DeveloperWebhook, 0, len(s.webhooks))
+	found := false
+	for _, item := range s.webhooks {
+		if item.ID == trimmed {
+			found = true
+			continue
+		}
+		next = append(next, item)
+	}
+	if !found {
+		return &APIError{Code: "PAY-010", Message: "webhook not found"}
+	}
+	s.webhooks = next
+	return nil
 }

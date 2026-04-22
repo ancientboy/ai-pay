@@ -1,34 +1,70 @@
 "use client";
 
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useLocale } from "@/components/locale-provider";
 import { useToast } from "@/components/toast-provider";
+import {
+  createDeveloperApiKey,
+  createDeveloperWebhook,
+  listDeveloperApiKeys,
+  listDeveloperWebhooks,
+} from "@/lib/console-api";
+import { toReadableError } from "@/lib/error-map";
 
 type ApiKeyItem = { id: string; name: string; key: string; createdAt: string };
 type WebhookItem = { id: string; url: string; event: string; createdAt: string };
 
-const API_KEYS_STORAGE = "ai-pay.apiKeys";
-const WEBHOOKS_STORAGE = "ai-pay.webhooks";
-
 export default function DeveloperPage() {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const { showToast } = useToast();
+  const queryClient = useQueryClient();
   const [apiKeyName, setApiKeyName] = useState("default");
   const [webhookURL, setWebhookURL] = useState("");
   const [webhookEvent, setWebhookEvent] = useState("payment.settled");
-  const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>(() => {
-    if (typeof window === "undefined") {
-      return [];
-    }
-    const keys = window.localStorage.getItem(API_KEYS_STORAGE);
-    return keys ? (JSON.parse(keys) as ApiKeyItem[]) : [];
+
+  const apiKeysQuery = useQuery({
+    queryKey: ["developer", "apiKeys"],
+    queryFn: listDeveloperApiKeys,
   });
-  const [webhooks, setWebhooks] = useState<WebhookItem[]>(() => {
-    if (typeof window === "undefined") {
-      return [];
-    }
-    const hooks = window.localStorage.getItem(WEBHOOKS_STORAGE);
-    return hooks ? (JSON.parse(hooks) as WebhookItem[]) : [];
+
+  const webhooksQuery = useQuery({
+    queryKey: ["developer", "webhooks"],
+    queryFn: listDeveloperWebhooks,
+  });
+
+  const createApiKeyMutation = useMutation({
+    mutationFn: (name: string) => createDeveloperApiKey(name),
+    onSuccess: (item) => {
+      setApiKeyName("default");
+      showToast("success", t("developer.keyCreated"));
+      queryClient.setQueryData<ApiKeyItem[]>(["developer", "apiKeys"], (prev) => [
+        item,
+        ...(prev ?? []),
+      ]);
+      queryClient.invalidateQueries({ queryKey: ["developer", "apiKeys"] });
+    },
+    onError: (err) => {
+      showToast("error", toReadableError(err, locale));
+    },
+  });
+
+  const createWebhookMutation = useMutation({
+    mutationFn: (input: { url: string; event: string }) =>
+      createDeveloperWebhook({ url: input.url, event: input.event }),
+    onSuccess: (item) => {
+      setWebhookURL("");
+      setWebhookEvent("payment.settled");
+      showToast("success", t("developer.webhookCreated"));
+      queryClient.setQueryData<WebhookItem[]>(["developer", "webhooks"], (prev) => [
+        item,
+        ...(prev ?? []),
+      ]);
+      queryClient.invalidateQueries({ queryKey: ["developer", "webhooks"] });
+    },
+    onError: (err) => {
+      showToast("error", toReadableError(err, locale));
+    },
   });
 
   return (
@@ -54,30 +90,24 @@ export default function DeveloperPage() {
                   showToast("error", t("developer.keyNameRequired"));
                   return;
                 }
-                const item: ApiKeyItem = {
-                  id: `key_${Date.now()}`,
-                  name: apiKeyName.trim(),
-                  key: `ak_live_${Math.random().toString(36).slice(2, 14)}`,
-                  createdAt: new Date().toISOString(),
-                };
-                const next = [item, ...apiKeys];
-                setApiKeys(next);
-                window.localStorage.setItem(API_KEYS_STORAGE, JSON.stringify(next));
-                showToast("success", t("developer.keyCreated"));
+                createApiKeyMutation.mutate(apiKeyName.trim());
               }}
+              disabled={createApiKeyMutation.isPending}
               className="rounded-md bg-blue-600 px-3 py-2 text-sm text-white"
             >
               {t("common.create")}
             </button>
           </div>
           <ul className="mt-3 space-y-2 text-xs text-slate-300">
-            {apiKeys.map((item) => (
+            {(apiKeysQuery.data ?? []).map((item) => (
               <li key={item.id} className="rounded border border-slate-800 p-2">
                 <p>{item.name}</p>
                 <p className="font-mono text-slate-400">{item.key}</p>
               </li>
             ))}
-            {apiKeys.length === 0 ? <li className="text-slate-500">{t("developer.noKeys")}</li> : null}
+            {(apiKeysQuery.data ?? []).length === 0 ? (
+              <li className="text-slate-500">{t("developer.noKeys")}</li>
+            ) : null}
           </ul>
         </div>
 
@@ -102,30 +132,27 @@ export default function DeveloperPage() {
                   showToast("error", t("developer.webhookUrlRequired"));
                   return;
                 }
-                const item: WebhookItem = {
-                  id: `wh_${Date.now()}`,
+                createWebhookMutation.mutate({
                   url: webhookURL.trim(),
                   event: webhookEvent.trim() || "payment.settled",
-                  createdAt: new Date().toISOString(),
-                };
-                const next = [item, ...webhooks];
-                setWebhooks(next);
-                window.localStorage.setItem(WEBHOOKS_STORAGE, JSON.stringify(next));
-                showToast("success", t("developer.webhookCreated"));
+                });
               }}
+              disabled={createWebhookMutation.isPending}
               className="rounded-md bg-blue-600 px-3 py-2 text-sm text-white"
             >
               {t("developer.addWebhook")}
             </button>
           </div>
           <ul className="mt-3 space-y-2 text-xs text-slate-300">
-            {webhooks.map((item) => (
+            {(webhooksQuery.data ?? []).map((item) => (
               <li key={item.id} className="rounded border border-slate-800 p-2">
                 <p className="font-mono text-slate-400">{item.url}</p>
                 <p>{item.event}</p>
               </li>
             ))}
-            {webhooks.length === 0 ? <li className="text-slate-500">{t("developer.noWebhooks")}</li> : null}
+            {(webhooksQuery.data ?? []).length === 0 ? (
+              <li className="text-slate-500">{t("developer.noWebhooks")}</li>
+            ) : null}
           </ul>
         </div>
       </div>

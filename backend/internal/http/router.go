@@ -62,6 +62,12 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /account/balance/query", s.handleBalance)
 	mux.HandleFunc("GET /account/ledger/query", s.handleLedger)
 	mux.HandleFunc("GET /metrics/overview", s.handleOverviewMetrics)
+	mux.HandleFunc("GET /developer/api-keys", s.handleAPIKeyList)
+	mux.HandleFunc("POST /developer/api-keys", s.handleAPIKeyCreate)
+	mux.HandleFunc("DELETE /developer/api-keys", s.handleAPIKeyDelete)
+	mux.HandleFunc("GET /developer/webhooks", s.handleWebhookList)
+	mux.HandleFunc("POST /developer/webhooks", s.handleWebhookCreate)
+	mux.HandleFunc("DELETE /developer/webhooks", s.handleWebhookDelete)
 	return s.withRequestID(mux)
 }
 
@@ -354,6 +360,95 @@ func (s *Server) handleOverviewMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": metrics})
+}
+
+func (s *Server) handleAPIKeyList(w http.ResponseWriter, r *http.Request) {
+	keys := s.svc.ListAPIKeys()
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": keys})
+}
+
+type createAPIKeyReq struct {
+	Name string `json:"name"`
+}
+
+func (s *Server) handleAPIKeyCreate(w http.ResponseWriter, r *http.Request) {
+	var req createAPIKeyReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Name) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	item, err := s.svc.CreateAPIKey(strings.TrimSpace(req.Name))
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handleAPIKeyDelete(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if err := s.svc.DeleteAPIKey(id); err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
+}
+
+func (s *Server) handleWebhookList(w http.ResponseWriter, r *http.Request) {
+	items := s.svc.ListWebhooks()
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": items})
+}
+
+type createWebhookReq struct {
+	URL   string `json:"url"`
+	Event string `json:"event"`
+}
+
+func (s *Server) handleWebhookCreate(w http.ResponseWriter, r *http.Request) {
+	var req createWebhookReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.URL) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	item, err := s.svc.CreateWebhook(strings.TrimSpace(req.URL), strings.TrimSpace(req.Event))
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handleWebhookDelete(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if err := s.svc.DeleteWebhook(id); err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
