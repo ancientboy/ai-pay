@@ -219,6 +219,99 @@ ORDER BY p.created_at DESC LIMIT 100`, va)
 	return out
 }
 
+func (s *PersistentService) OverviewMetrics() (OverviewMetrics, error) {
+	var totalBalance float64
+	if err := s.store.DB.QueryRow(`SELECT COALESCE(SUM(balance),0) FROM asset_va_account`).Scan(&totalBalance); err != nil {
+		return OverviewMetrics{}, err
+	}
+
+	var todaySpend float64
+	if err := s.store.DB.QueryRow(`
+SELECT COALESCE(SUM(amount),0) FROM pay_order
+WHERE status='SETTLED'
+  AND created_at >= UTC_DATE()
+  AND created_at < UTC_DATE() + INTERVAL 1 DAY`).Scan(&todaySpend); err != nil {
+		return OverviewMetrics{}, err
+	}
+
+	var totalOrders int
+	if err := s.store.DB.QueryRow(`SELECT COUNT(*) FROM pay_order`).Scan(&totalOrders); err != nil {
+		return OverviewMetrics{}, err
+	}
+
+	var successOrders int
+	if err := s.store.DB.QueryRow(`SELECT COUNT(*) FROM pay_order WHERE status='SETTLED'`).Scan(&successOrders); err != nil {
+		return OverviewMetrics{}, err
+	}
+
+	successRate := 100.0
+	if totalOrders > 0 {
+		successRate = float64(successOrders) / float64(totalOrders) * 100
+	}
+
+	return OverviewMetrics{
+		TotalBalance:       totalBalance,
+		TodaySpend:         todaySpend,
+		PaymentSuccessRate: successRate,
+		AlertCount:         0,
+	}, nil
+}
+
+func (s *PersistentService) ListAgents() []AgentSummary {
+	rows, err := s.store.DB.Query(`
+SELECT agent_did, va_account_id, wallet_address, balance, status
+FROM asset_va_account
+ORDER BY created_at DESC
+LIMIT 200`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	out := make([]AgentSummary, 0)
+	for rows.Next() {
+		var item AgentSummary
+		if err := rows.Scan(&item.AgentDID, &item.VAAccountID, &item.WalletAddress, &item.Balance, &item.Status); err != nil {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func (s *PersistentService) ListRecharges(va string, limit int) []RechargeOrder {
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+
+	query := `
+SELECT recharge_id, va_account_id, amount, status, created_at
+FROM fund_recharge_order`
+	args := make([]any, 0, 2)
+	if va != "" {
+		query += " WHERE va_account_id = ?"
+		args = append(args, va)
+	}
+	query += " ORDER BY created_at DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.store.DB.Query(query, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	out := make([]RechargeOrder, 0)
+	for rows.Next() {
+		var item RechargeOrder
+		if err := rows.Scan(&item.RechargeID, &item.VAAccountID, &item.Amount, &item.Status, &item.CreatedAt); err != nil {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
 func merchantInWhitelist(raw string, merchant string) bool {
 	if raw == "" {
 		return false

@@ -1,0 +1,175 @@
+import { ApiClientError } from "@/lib/error-map";
+
+type ApiResponse<T> = {
+  code: string;
+  message?: string;
+  data: T;
+};
+
+const STORAGE_API_BASE_URL_KEY = "ai-pay.apiBaseUrl";
+
+function getRuntimeBaseURL() {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  const value = window.localStorage.getItem(STORAGE_API_BASE_URL_KEY);
+  return value?.trim() ?? "";
+}
+
+async function request<T>(
+  path: string,
+  init?: RequestInit & { idempotencyKey?: string; signTimestamp?: string },
+) {
+  const headers = new Headers(init?.headers);
+  if (init?.idempotencyKey) {
+    headers.set("Idempotency-Key", init.idempotencyKey);
+  }
+  if (init?.signTimestamp) {
+    headers.set("X-Sign-Timestamp", init.signTimestamp);
+  }
+  if (init?.body && !headers.get("content-type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  const runtimeBaseURL = getRuntimeBaseURL();
+  if (runtimeBaseURL) {
+    headers.set("X-Api-Base-Url", runtimeBaseURL);
+  }
+
+  const response = await fetch(`/api/backend${path}`, {
+    ...init,
+    headers,
+  });
+  const payload = (await response.json()) as ApiResponse<T>;
+  if (!response.ok || payload.code !== "0") {
+    throw new ApiClientError(
+      payload.code || "PAY-010",
+      payload.message || "request failed",
+    );
+  }
+  return payload.data;
+}
+
+export function getSavedApiBaseURL() {
+  return getRuntimeBaseURL();
+}
+
+export function saveApiBaseURL(url: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  if (!url.trim()) {
+    window.localStorage.removeItem(STORAGE_API_BASE_URL_KEY);
+    return;
+  }
+  window.localStorage.setItem(STORAGE_API_BASE_URL_KEY, url.trim());
+}
+
+export function registerAgent(agentDid: string) {
+  return request<{ DID: string }>("/agent/did/register", {
+    method: "POST",
+    body: JSON.stringify({ agentDid }),
+  });
+}
+
+export function createAccount(agentDid: string) {
+  return request<{ WalletAddress: string; VAAccountID: string; AgentDID: string }>(
+    "/account/create",
+    {
+      method: "POST",
+      body: JSON.stringify({ agentDid }),
+    },
+  );
+}
+
+export function setAuthorizeRule(input: {
+  agentDid: string;
+  singleLimit: string;
+  dailyLimit: string;
+  whitelist: string[];
+}) {
+  return request("/authorize/payment/set", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function recharge(input: { vaAccountId: string; amount: string }) {
+  return request("/fund/recharge", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function pay(input: {
+  payerDid: string;
+  merchantId: string;
+  amount: string;
+  signature: string;
+}) {
+  return request<{ transactionId: string; status: string }>("/payment/x402/pay", {
+    method: "POST",
+    body: JSON.stringify(input),
+    idempotencyKey: `idem-ui-${Date.now()}`,
+    signTimestamp: new Date().toISOString(),
+  });
+}
+
+export function queryTransaction(transactionId: string) {
+  return request<{
+    ID: string;
+    PayerDID: string;
+    Merchant: string;
+    Amount: number;
+    Fee?: number;
+    Status: string;
+    CreatedAt: string;
+  }>(`/payment/status/query?transactionId=${encodeURIComponent(transactionId)}`);
+}
+
+export function queryBalance(accountId: string) {
+  return request<{ balance: number }>(
+    `/account/balance/query?accountId=${encodeURIComponent(accountId)}`,
+  );
+}
+
+export function queryLedger(accountId: string) {
+  return request<
+    Array<{
+      ID: string;
+      Merchant: string;
+      Amount: number;
+      Fee?: number;
+      Status: string;
+      CreatedAt: string;
+    }>
+  >(`/account/ledger/query?accountId=${encodeURIComponent(accountId)}`);
+}
+
+export function listAgents() {
+  return request<
+    Array<{
+      agentDid: string;
+      vaAccountId: string;
+      walletAddress: string;
+      balance: number;
+      status: string;
+    }>
+  >("/agent/list");
+}
+
+export function listRecharges(accountId?: string, limit = 20) {
+  const query = new URLSearchParams();
+  if (accountId) {
+    query.set("accountId", accountId);
+  }
+  query.set("limit", String(limit));
+  return request<
+    Array<{
+      rechargeId: string;
+      vaAccountId: string;
+      amount: number;
+      status: string;
+      createdAt: string;
+    }>
+  >(`/fund/recharge/list?${query.toString()}`);
+}

@@ -100,6 +100,52 @@ func TestHealthAndReady(t *testing.T) {
 	}
 }
 
+func TestOverviewMetrics(t *testing.T) {
+	svc := service.New()
+	_ = svc.RegisterAgent("did:gusd:agent:m1")
+	acc := svc.CreateAccount("did:gusd:agent:m1")
+	_ = svc.Recharge(acc.VAAccountID, "100")
+	_ = svc.SetAuthorizeRule("did:gusd:agent:m1", "20", "100", []string{"m1"})
+	_, _ = svc.Pay(service.PayRequest{
+		PayerDID:       "did:gusd:agent:m1",
+		MerchantID:     "m1",
+		Amount:         "10",
+		IdempotencyKey: "idem-metrics-1",
+		Signature:      "sig",
+	})
+
+	server := NewServerForTest(svc, time.Now, 100, 100)
+	req := httptest.NewRequest(http.MethodGet, "/metrics/overview", nil)
+	rr := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("overview expected 200 got %d", rr.Code)
+	}
+}
+
+func TestAgentAndRechargeList(t *testing.T) {
+	svc := service.New()
+	_ = svc.RegisterAgent("did:gusd:agent:list1")
+	acc := svc.CreateAccount("did:gusd:agent:list1")
+	_ = svc.Recharge(acc.VAAccountID, "12")
+
+	server := NewServerForTest(svc, time.Now, 100, 100)
+
+	agentReq := httptest.NewRequest(http.MethodGet, "/agent/list", nil)
+	agentResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(agentResp, agentReq)
+	if agentResp.Code != http.StatusOK {
+		t.Fatalf("agent list expected 200 got %d", agentResp.Code)
+	}
+
+	rechargeReq := httptest.NewRequest(http.MethodGet, "/fund/recharge/list?accountId="+acc.VAAccountID, nil)
+	rechargeResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rechargeResp, rechargeReq)
+	if rechargeResp.Code != http.StatusOK {
+		t.Fatalf("recharge list expected 200 got %d", rechargeResp.Code)
+	}
+}
+
 func seedServiceForPay() *service.Service {
 	svc := service.New()
 	_ = svc.RegisterAgent("did:gusd:agent:test_http")

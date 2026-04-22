@@ -56,6 +56,29 @@ type PayResponse struct {
 	Status        string `json:"status"`
 }
 
+type AgentSummary struct {
+	AgentDID      string  `json:"agentDid"`
+	VAAccountID   string  `json:"vaAccountId"`
+	WalletAddress string  `json:"walletAddress"`
+	Balance       float64 `json:"balance"`
+	Status        string  `json:"status"`
+}
+
+type RechargeOrder struct {
+	RechargeID  string    `json:"rechargeId"`
+	VAAccountID string    `json:"vaAccountId"`
+	Amount      float64   `json:"amount"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
+type OverviewMetrics struct {
+	TotalBalance       float64 `json:"totalBalance"`
+	TodaySpend         float64 `json:"todaySpend"`
+	PaymentSuccessRate float64 `json:"paymentSuccessRate"`
+	AlertCount         int     `json:"alertCount"`
+}
+
 type Service struct {
 	mu           sync.Mutex
 	agents       map[string]Agent
@@ -63,6 +86,7 @@ type Service struct {
 	accountsByVA map[string]*Account
 	rules        map[string]AuthorizeRule
 	orders       map[string]Transaction
+	recharges    []RechargeOrder
 	idemMap      map[string]string
 	dailySpent   map[string]float64
 }
@@ -76,6 +100,9 @@ type PaymentService interface {
 	QueryStatus(txID string) (Transaction, error)
 	BalanceByVA(va string) (float64, error)
 	LedgerByVA(va string) []Transaction
+	ListAgents() []AgentSummary
+	ListRecharges(va string, limit int) []RechargeOrder
+	OverviewMetrics() (OverviewMetrics, error)
 }
 
 func New() *Service {
@@ -85,6 +112,7 @@ func New() *Service {
 		accountsByVA: map[string]*Account{},
 		rules:        map[string]AuthorizeRule{},
 		orders:       map[string]Transaction{},
+		recharges:    []RechargeOrder{},
 		idemMap:      map[string]string{},
 		dailySpent:   map[string]float64{},
 	}
@@ -124,6 +152,15 @@ func (s *Service) Recharge(va string, amount string) error {
 		return &APIError{Code: "PAY-010", Message: "account not found"}
 	}
 	acc.Balance += v
+	s.recharges = append([]RechargeOrder{
+		{
+			RechargeID:  fmt.Sprintf("rch_%d", len(s.recharges)+1),
+			VAAccountID: va,
+			Amount:      v,
+			Status:      "SETTLED",
+			CreatedAt:   time.Now().UTC(),
+		},
+	}, s.recharges...)
 	return nil
 }
 
@@ -242,6 +279,77 @@ func (s *Service) LedgerByVA(va string) []Transaction {
 		}
 	}
 	return result
+}
+
+func (s *Service) OverviewMetrics() (OverviewMetrics, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	totalBalance := 0.0
+	for _, acc := range s.accountsByVA {
+		totalBalance += acc.Balance
+	}
+
+	today := time.Now().UTC().Format("2006-01-02")
+	todaySpend := 0.0
+	totalOrders := 0
+	successOrders := 0
+	for _, tx := range s.orders {
+		totalOrders++
+		if tx.Status == "SETTLED" {
+			successOrders++
+		}
+		if tx.CreatedAt.UTC().Format("2006-01-02") == today && tx.Status == "SETTLED" {
+			todaySpend += tx.Amount
+		}
+	}
+	successRate := 100.0
+	if totalOrders > 0 {
+		successRate = float64(successOrders) / float64(totalOrders) * 100
+	}
+
+	return OverviewMetrics{
+		TotalBalance:       totalBalance,
+		TodaySpend:         todaySpend,
+		PaymentSuccessRate: successRate,
+		AlertCount:         0,
+	}, nil
+}
+
+func (s *Service) ListAgents() []AgentSummary {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := make([]AgentSummary, 0, len(s.accounts))
+	for _, acc := range s.accounts {
+		out = append(out, AgentSummary{
+			AgentDID:      acc.AgentDID,
+			VAAccountID:   acc.VAAccountID,
+			WalletAddress: acc.WalletAddress,
+			Balance:       acc.Balance,
+			Status:        "ACTIVE",
+		})
+	}
+	return out
+}
+
+func (s *Service) ListRecharges(va string, limit int) []RechargeOrder {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 {
+		limit = 20
+	}
+	out := make([]RechargeOrder, 0, limit)
+	for _, r := range s.recharges {
+		if va != "" && r.VAAccountID != va {
+			continue
+		}
+		out = append(out, r)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
 }
 
 func parseAmount(v string) (float64, error) {

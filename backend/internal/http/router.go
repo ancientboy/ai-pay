@@ -48,12 +48,15 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /ready", s.handleReady)
 	mux.HandleFunc("POST /agent/did/register", s.handleRegisterAgent)
 	mux.HandleFunc("POST /account/create", s.handleCreateAccount)
+	mux.HandleFunc("GET /agent/list", s.handleAgentList)
 	mux.HandleFunc("POST /fund/recharge", s.handleRecharge)
+	mux.HandleFunc("GET /fund/recharge/list", s.handleRechargeList)
 	mux.HandleFunc("POST /authorize/payment/set", s.handleAuthorizeSet)
 	mux.HandleFunc("POST /payment/x402/pay", s.handlePay)
 	mux.HandleFunc("GET /payment/status/query", s.handleStatus)
 	mux.HandleFunc("GET /account/balance/query", s.handleBalance)
 	mux.HandleFunc("GET /account/ledger/query", s.handleLedger)
+	mux.HandleFunc("GET /metrics/overview", s.handleOverviewMetrics)
 	return s.withRequestID(mux)
 }
 
@@ -98,6 +101,11 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": acc})
 }
 
+func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
+	list := s.svc.ListAgents()
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": list})
+}
+
 type rechargeReq struct {
 	VAAccountID string `json:"vaAccountId"`
 	Amount      string `json:"amount"`
@@ -118,6 +126,18 @@ func (s *Server) handleRecharge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
+}
+
+func (s *Server) handleRechargeList(w http.ResponseWriter, r *http.Request) {
+	va := strings.TrimSpace(r.URL.Query().Get("accountId"))
+	limit := 20
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	list := s.svc.ListRecharges(va, limit)
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": list})
 }
 
 type authorizeReq struct {
@@ -216,6 +236,15 @@ func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request) {
 	}
 	ledger := s.svc.LedgerByVA(va)
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": ledger})
+}
+
+func (s *Server) handleOverviewMetrics(w http.ResponseWriter, r *http.Request) {
+	metrics, err := s.svc.OverviewMetrics()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": "PAY-010", "message": "query metrics failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": metrics})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

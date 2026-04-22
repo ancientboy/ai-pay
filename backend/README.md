@@ -4,12 +4,15 @@ Go 实现的 MVP 后端，覆盖文档中第一阶段核心接口：
 
 - `POST /agent/did/register`
 - `POST /account/create`
+- `GET /agent/list`
 - `POST /fund/recharge`
+- `GET /fund/recharge/list`
 - `POST /authorize/payment/set`
 - `POST /payment/x402/pay`
 - `GET /payment/status/query`
 - `GET /account/balance/query`
 - `GET /account/ledger/query`
+- `GET /metrics/overview`
 
 ## 安全基线（M2）
 
@@ -52,6 +55,7 @@ docker compose up -d
 
 初始化表结构会自动执行 `migrations/001_init.sql`。
 新增字段与充值流水由 `migrations/002_add_fee_and_recharge_log.sql` 提供。
+默认 docker 映射端口为 `3307 -> 3306`，避免与本机已有 MySQL 冲突。
 
 如果你在本地已经初始化过数据库，请手动执行：
 
@@ -84,6 +88,14 @@ make test
 ```bash
 cd backend
 go test ./...
+```
+
+端到端冒烟（需前端已启动在 `:3000`）：
+
+```bash
+cd backend
+chmod +x scripts/smoke_test.sh
+./scripts/smoke_test.sh
 ```
 
 ## 说明
