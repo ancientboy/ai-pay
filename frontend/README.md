@@ -13,6 +13,21 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+## Contract & E2E
+
+- OpenAPI contract (backend): `../openapi.yaml`
+- Frontend smoke E2E (Playwright):
+
+```bash
+cd frontend
+npx playwright install chromium
+npm run test:e2e
+```
+
+The E2E test expects:
+- frontend at `http://127.0.0.1:3000`
+- backend at `http://127.0.0.1:8080`
+
 ## Environment
 
 - `NEXT_PUBLIC_API_BASE_URL`: backend API endpoint, default `http://127.0.0.1:8080`
