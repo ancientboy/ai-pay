@@ -5,6 +5,18 @@ FRONTEND_BASE_URL="${FRONTEND_BASE_URL:-http://127.0.0.1:3000}"
 
 echo "[smoke] base=${FRONTEND_BASE_URL}"
 run_id="$(date +%s)"
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "${tmp_dir}"' EXIT
+openssl genpkey -algorithm Ed25519 -out "${tmp_dir}/agent_priv.pem" >/dev/null 2>&1
+openssl pkey -in "${tmp_dir}/agent_priv.pem" -pubout -outform DER -out "${tmp_dir}/agent_pub.der" >/dev/null 2>&1
+agent_pub_b64="$(tail -c 32 "${tmp_dir}/agent_pub.der" | base64 | tr -d '\n')"
+
+sign_payload() {
+  local payload="$1"
+  local payload_file="${tmp_dir}/payload_$(date +%s%N).txt"
+  printf '%s' "$payload" > "${payload_file}"
+  openssl pkeyutl -sign -inkey "${tmp_dir}/agent_priv.pem" -rawin -in "${payload_file}" | base64 | tr -d '\n'
+}
 
 json_get() {
   local json="$1"
@@ -67,7 +79,7 @@ assert_contains "$login_resp" "ai_pay_session=1" "登录返回 session cookie"
 agent="did:gusd:agent:smoke_$(date +%s)"
 register_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/agent/did/register" \
   -H 'content-type: application/json' \
-  -d "{\"agentDid\":\"${agent}\"}")"
+  -d "{\"agentDid\":\"${agent}\",\"didPubKey\":\"${agent_pub_b64}\"}")"
 assert_eq "$(json_get "$register_resp" "code")" "0" "注册 Agent 成功"
 
 create_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/account/create" \
@@ -78,6 +90,7 @@ va_account_id="$(json_get "$create_resp" "data.VAAccountID")"
 
 recharge_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/fund/recharge" \
   -H 'content-type: application/json' \
+  -H "Idempotency-Key: rch-smoke-${run_id}" \
   -d "{\"vaAccountId\":\"${va_account_id}\",\"amount\":\"100\"}")"
 assert_eq "$(json_get "$recharge_resp" "code")" "0" "充值成功"
 
@@ -94,11 +107,13 @@ expired_pay_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/payment/x
 assert_eq "$(json_get "$expired_pay_resp" "code")" "PAY-001" "过期签名时间戳被拦截"
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+sig_payload="${agent}|m1|10|idem-smoke-ok-1-${run_id}|${ts}"
+sig_value="$(sign_payload "${sig_payload}")"
 pay_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/payment/x402/pay" \
   -H 'content-type: application/json' \
   -H "Idempotency-Key: idem-smoke-ok-1-${run_id}" \
   -H "X-Sign-Timestamp: ${ts}" \
-  -d "{\"payerDid\":\"${agent}\",\"merchantId\":\"m1\",\"amount\":\"10\",\"signature\":\"sig\"}")"
+  -d "{\"payerDid\":\"${agent}\",\"merchantId\":\"m1\",\"amount\":\"10\",\"signature\":\"${sig_value}\"}")"
 assert_eq "$(json_get "$pay_resp" "code")" "0" "支付成功"
 tx_id="$(json_get "$pay_resp" "data.transactionId")"
 
@@ -116,21 +131,21 @@ daily_1="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/payment/x402/pay" 
   -H 'content-type: application/json' \
   -H "Idempotency-Key: idem-smoke-daily-1-${run_id}" \
   -H "X-Sign-Timestamp: ${ts}" \
-  -d "{\"payerDid\":\"${agent}\",\"merchantId\":\"m1\",\"amount\":\"45\",\"signature\":\"sig\"}")"
+  -d "{\"payerDid\":\"${agent}\",\"merchantId\":\"m1\",\"amount\":\"45\",\"signature\":\"$(sign_payload "${agent}|m1|45|idem-smoke-daily-1-${run_id}|${ts}")\"}")"
 assert_eq "$(json_get "$daily_1" "code")" "0" "日限额测试第1笔成功"
 
 daily_2="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/payment/x402/pay" \
   -H 'content-type: application/json' \
   -H "Idempotency-Key: idem-smoke-daily-2-${run_id}" \
   -H "X-Sign-Timestamp: ${ts}" \
-  -d "{\"payerDid\":\"${agent}\",\"merchantId\":\"m1\",\"amount\":\"45\",\"signature\":\"sig\"}")"
+  -d "{\"payerDid\":\"${agent}\",\"merchantId\":\"m1\",\"amount\":\"45\",\"signature\":\"$(sign_payload "${agent}|m1|45|idem-smoke-daily-2-${run_id}|${ts}")\"}")"
 assert_eq "$(json_get "$daily_2" "code")" "0" "日限额测试第2笔成功（打满日限额）"
 
 daily_3="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/payment/x402/pay" \
   -H 'content-type: application/json' \
   -H "Idempotency-Key: idem-smoke-daily-3-${run_id}" \
   -H "X-Sign-Timestamp: ${ts}" \
-  -d "{\"payerDid\":\"${agent}\",\"merchantId\":\"m1\",\"amount\":\"1\",\"signature\":\"sig\"}")"
+  -d "{\"payerDid\":\"${agent}\",\"merchantId\":\"m1\",\"amount\":\"1\",\"signature\":\"$(sign_payload "${agent}|m1|1|idem-smoke-daily-3-${run_id}|${ts}")\"}")"
 assert_eq "$(json_get "$daily_3" "code")" "PAY-002" "日限额超限被拦截"
 
 overview_resp="$(curl -sS "${FRONTEND_BASE_URL}/api/backend/metrics/overview")"

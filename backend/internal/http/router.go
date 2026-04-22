@@ -2,6 +2,8 @@ package http
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -53,6 +55,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /fund/recharge/list", s.handleRechargeList)
 	mux.HandleFunc("POST /authorize/payment/set", s.handleAuthorizeSet)
 	mux.HandleFunc("POST /payment/x402/pay", s.handlePay)
+	mux.HandleFunc("POST /payment/status/callback", s.handleStatusCallback)
+	mux.HandleFunc("POST /payment/unfreeze", s.handleUnfreeze)
+	mux.HandleFunc("POST /payment/refund", s.handleRefund)
 	mux.HandleFunc("GET /payment/status/query", s.handleStatus)
 	mux.HandleFunc("GET /account/balance/query", s.handleBalance)
 	mux.HandleFunc("GET /account/ledger/query", s.handleLedger)
@@ -74,16 +79,26 @@ func writeAPIError(w http.ResponseWriter, err *service.APIError) {
 }
 
 type registerAgentReq struct {
-	AgentDID string `json:"agentDid"`
+	AgentDID  string `json:"agentDid"`
+	DIDPubKey string `json:"didPubKey"`
 }
 
 func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
 	var req registerAgentReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AgentDID == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AgentDID == "" || strings.TrimSpace(req.DIDPubKey) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	if !isBase64Ed25519PubKey(req.DIDPubKey) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid did pub key"})
+		return
+	}
 	agent := s.svc.RegisterAgent(req.AgentDID)
+	if err := s.svc.SetAgentPublicKey(req.AgentDID, req.DIDPubKey); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "save did pub key failed"})
+		return
+	}
+	agent.DIDPubKey = req.DIDPubKey
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": agent})
 }
 
@@ -108,16 +123,30 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 
 type rechargeReq struct {
 	VAAccountID string `json:"vaAccountId"`
+	VACardNo    string `json:"vaCardNo"`
 	Amount      string `json:"amount"`
 }
 
 func (s *Server) handleRecharge(w http.ResponseWriter, r *http.Request) {
 	var req rechargeReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.VAAccountID == "" || !isPositiveDecimal(req.Amount) {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !isPositiveDecimal(req.Amount) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
-	if err := s.svc.Recharge(req.VAAccountID, req.Amount); err != nil {
+	accountRef := strings.TrimSpace(req.VAAccountID)
+	if accountRef == "" {
+		accountRef = strings.TrimSpace(req.VACardNo)
+	}
+	if accountRef == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idem == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
+		return
+	}
+	if err := s.svc.Recharge(accountRef, req.Amount, idem); err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
 			writeAPIError(w, apiErr)
 			return
@@ -167,6 +196,15 @@ type payReq struct {
 	Signature  string `json:"signature"`
 }
 
+type statusCallbackReq struct {
+	TransactionID string `json:"transactionId"`
+	Status        string `json:"status"`
+}
+
+type txActionReq struct {
+	TransactionID string `json:"transactionId"`
+}
+
 func (s *Server) handlePay(w http.ResponseWriter, r *http.Request) {
 	var req payReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -193,6 +231,16 @@ func (s *Server) handlePay(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
+	pubKey, err := s.svc.AgentPublicKey(req.PayerDID)
+	if err != nil || strings.TrimSpace(pubKey) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "missing did public key"})
+		return
+	}
+	signPayload := buildPaySignaturePayload(req.PayerDID, req.MerchantID, req.Amount, idem, r.Header.Get("X-Sign-Timestamp"))
+	if !verifyDIDSignature(pubKey, req.Signature, signPayload) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid did signature"})
+		return
+	}
 	log.Printf("requestId=%s pay request did=%s merchant=%s amount=%s ip=%s", getRequestID(r.Context()), maskDID(req.PayerDID), req.MerchantID, req.Amount, ipKey)
 	resp, apiErr := s.svc.Pay(service.PayRequest{
 		PayerDID:       req.PayerDID,
@@ -216,6 +264,67 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": tx})
+}
+
+func (s *Server) handleStatusCallback(w http.ResponseWriter, r *http.Request) {
+	var req statusCallbackReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.TransactionID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	status := strings.ToUpper(strings.TrimSpace(req.Status))
+	switch status {
+	case "SETTLED":
+		if err := s.svc.ResolveSettling(req.TransactionID, true); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": err.Error()})
+			return
+		}
+	case "FAILED":
+		if err := s.svc.ResolveSettling(req.TransactionID, false); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": err.Error()})
+			return
+		}
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid status"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
+}
+
+func (s *Server) handleUnfreeze(w http.ResponseWriter, r *http.Request) {
+	var req txActionReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.TransactionID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idem == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
+		return
+	}
+	if err := s.svc.Unfreeze(req.TransactionID, idem); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
+}
+
+func (s *Server) handleRefund(w http.ResponseWriter, r *http.Request) {
+	var req txActionReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.TransactionID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idem == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
+		return
+	}
+	if err := s.svc.Refund(req.TransactionID, idem); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
 }
 
 func (s *Server) handleBalance(w http.ResponseWriter, r *http.Request) {
@@ -325,4 +434,25 @@ func getRequestID(ctx context.Context) string {
 		return s
 	}
 	return ""
+}
+
+func isBase64Ed25519PubKey(raw string) bool {
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(raw))
+	return err == nil && len(decoded) == ed25519.PublicKeySize
+}
+
+func buildPaySignaturePayload(payerDID, merchantID, amount, idemKey, ts string) []byte {
+	return []byte(payerDID + "|" + merchantID + "|" + amount + "|" + idemKey + "|" + ts)
+}
+
+func verifyDIDSignature(pubKeyBase64, signatureBase64 string, payload []byte) bool {
+	pubKeyBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(pubKeyBase64))
+	if err != nil || len(pubKeyBytes) != ed25519.PublicKeySize {
+		return false
+	}
+	sigBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(signatureBase64))
+	if err != nil || len(sigBytes) != ed25519.SignatureSize {
+		return false
+	}
+	return ed25519.Verify(ed25519.PublicKey(pubKeyBytes), payload, sigBytes)
 }

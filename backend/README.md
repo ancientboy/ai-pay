@@ -5,10 +5,13 @@ Go 实现的 MVP 后端，覆盖文档中第一阶段核心接口：
 - `POST /agent/did/register`
 - `POST /account/create`
 - `GET /agent/list`
-- `POST /fund/recharge`
+- `POST /fund/recharge`（支持 `vaAccountId` 或 `vaCardNo`）
 - `GET /fund/recharge/list`
 - `POST /authorize/payment/set`
 - `POST /payment/x402/pay`
+- `POST /payment/status/callback`
+- `POST /payment/unfreeze`
+- `POST /payment/refund`
 - `GET /payment/status/query`
 - `GET /account/balance/query`
 - `GET /account/ledger/query`
@@ -20,6 +23,10 @@ Go 实现的 MVP 后端，覆盖文档中第一阶段核心接口：
 - `POST /payment/x402/pay` 强制要求：
   - `Idempotency-Key` 请求头
   - `X-Sign-Timestamp` 请求头（RFC3339，默认 5 分钟有效期）
+  - DID Ed25519 签名（签名串：`payerDid|merchantId|amount|idempotencyKey|signTimestamp`）
+- `POST /fund/recharge` 强制要求：
+  - `Idempotency-Key` 请求头
+  - 请求体携带 `vaAccountId` 或 `vaCardNo` 任一标识
 - 基础限流：
   - 按 IP 每分钟限制
   - 按 Agent DID 每分钟限制
@@ -54,13 +61,21 @@ docker compose up -d
 ```
 
 初始化表结构会自动执行 `migrations/001_init.sql`。
-新增字段与充值流水由 `migrations/002_add_fee_and_recharge_log.sql` 提供。
+新增字段与充值流水由 `migrations/002_add_fee_and_recharge_log.sql` 提供。  
+VA 卡号字段由 `migrations/003_add_va_card_no.sql` 提供。  
+冻结账务能力（`frozen_balance` + `account_hold`）由 `migrations/004_add_account_hold.sql` 提供。
+DID 公钥字段由 `migrations/005_add_agent_did_pub_key.sql` 提供。
+订单冻结关联字段（`pay_order.hold_id`）由 `migrations/006_add_pay_order_hold_id.sql` 提供。
 默认 docker 映射端口为 `3307 -> 3306`，避免与本机已有 MySQL 冲突。
 
 如果你在本地已经初始化过数据库，请手动执行：
 
 ```bash
 mysql -uroot -proot ai_pay < migrations/002_add_fee_and_recharge_log.sql
+mysql -uroot -proot ai_pay < migrations/003_add_va_card_no.sql
+mysql -uroot -proot ai_pay < migrations/004_add_account_hold.sql
+mysql -uroot -proot ai_pay < migrations/005_add_agent_did_pub_key.sql
+mysql -uroot -proot ai_pay < migrations/006_add_pay_order_hold_id.sql
 ```
 
 ## 运行

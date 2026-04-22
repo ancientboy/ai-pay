@@ -1,31 +1,51 @@
 import { z } from "zod";
+import { Locale, t } from "@/lib/i18n";
 
-export const agentDidSchema = z
-  .string()
-  .trim()
-  .min(6, "Agent DID 不能为空")
-  .startsWith("did:", "Agent DID 必须以 did: 开头");
+export function getValidationSchemas(locale: Locale) {
+  const agentDidSchema = z
+    .string()
+    .trim()
+    .min(6, t(locale, "validation.agentDidEmpty"))
+    .startsWith("did:", t(locale, "validation.agentDidFormat"));
 
-export const amountSchema = z
-  .string()
-  .trim()
-  .regex(/^\d+(\.\d+)?$/, "金额格式错误")
-  .refine((v) => Number(v) > 0, "金额必须大于 0");
+  const amountSchema = z
+    .string()
+    .trim()
+    .regex(/^\d+(\.\d+)?$/, t(locale, "validation.amountFormat"))
+    .refine((v) => Number(v) > 0, t(locale, "validation.amountPositive"));
 
-export const authorizeSchema = z.object({
-  agentDid: agentDidSchema,
-  singleLimit: amountSchema,
-  dailyLimit: amountSchema,
-  whitelist: z.array(z.string().trim().min(1)).min(1, "至少一个白名单商户"),
-});
+  const authorizeSchema = z.object({
+    agentDid: agentDidSchema,
+    singleLimit: amountSchema,
+    dailyLimit: amountSchema,
+    whitelist: z
+      .array(z.string().trim().min(1))
+      .min(1, t(locale, "validation.whitelistMin")),
+  });
 
-export const paySchema = z.object({
-  payerDid: agentDidSchema,
-  merchantId: z.string().trim().min(1, "商户 ID 必填"),
-  amount: amountSchema,
-});
+  const paySchema = z.object({
+    payerDid: agentDidSchema,
+    merchantId: z.string().trim().min(1, t(locale, "validation.merchantRequired")),
+    amount: amountSchema,
+  });
 
-export const rechargeSchema = z.object({
-  vaAccountId: z.string().trim().min(1, "VA 账户必填"),
-  amount: amountSchema,
-});
+  const rechargeSchema = z.object({
+    vaAccountId: z.string().trim().optional(),
+    vaCardNo: z.string().trim().optional(),
+    amount: amountSchema,
+  }).refine(
+    (input) => Boolean(input.vaAccountId?.trim() || input.vaCardNo?.trim()),
+    {
+      message: t(locale, "validation.rechargeTargetRequired"),
+      path: ["vaAccountId"],
+    },
+  );
+
+  return {
+    agentDidSchema,
+    amountSchema,
+    authorizeSchema,
+    paySchema,
+    rechargeSchema,
+  };
+}

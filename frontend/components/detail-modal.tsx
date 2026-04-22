@@ -1,5 +1,7 @@
 "use client";
 
+import { useLocale } from "@/components/locale-provider";
+
 export function DetailModal({
   open,
   title,
@@ -11,6 +13,7 @@ export function DetailModal({
   onClose: () => void;
   children: React.ReactNode;
 }) {
+  const { t } = useLocale();
   if (!open) {
     return null;
   }
@@ -30,7 +33,7 @@ export function DetailModal({
             className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300"
             onClick={onClose}
           >
-            Close
+            {t("common.close")}
           </button>
         </div>
         <div className="text-sm text-slate-200">{children}</div>

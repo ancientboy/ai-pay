@@ -11,6 +11,19 @@ const ERROR_MAP: Record<string, string> = {
   "PAY-010": "系统繁忙或请求参数无效",
 };
 
+const ERROR_MAP_EN: Record<string, string> = {
+  "PAY-001": "Signature validation failed or timestamp is invalid",
+  "PAY-002": "Authorization rule rejected (limit/whitelist)",
+  "PAY-003": "Insufficient balance",
+  "PAY-004": "Auto top-up failed",
+  "PAY-005": "Virtual card is unavailable",
+  "PAY-006": "Blocked by risk control",
+  "PAY-007": "Channel timeout, please retry",
+  "PAY-008": "Idempotency key conflict or missing",
+  "PAY-009": "Settlement failed and rolled back",
+  "PAY-010": "System busy or invalid request",
+};
+
 export class ApiClientError extends Error {
   code: string;
 
@@ -21,9 +34,10 @@ export class ApiClientError extends Error {
   }
 }
 
-export function toReadableError(err: unknown): string {
+export function toReadableError(err: unknown, locale: "zh-CN" | "en-US" = "zh-CN"): string {
+  const map = locale === "en-US" ? ERROR_MAP_EN : ERROR_MAP;
   if (err instanceof ApiClientError) {
-    const friendly = ERROR_MAP[err.code];
+    const friendly = map[err.code];
     if (friendly) {
       return `${friendly}（${err.code}）`;
     }

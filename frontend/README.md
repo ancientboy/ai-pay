@@ -34,6 +34,7 @@ Open [http://localhost:3000](http://localhost:3000).
 - This avoids CORS issues for local development
 - Main interactive flows now connected:
   - Create Agent + Create Account
+  - Browser-side DID key generation + pay request signing (Ed25519)
   - Set Authorize Rule
   - Recharge
   - Pay / Query Status / Query Balance / Query Ledger

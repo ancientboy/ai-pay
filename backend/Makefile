@@ -27,6 +27,10 @@ tidy:
 migrate:
 	mysql -uroot -proot ai_pay < migrations/001_init.sql
 	mysql -uroot -proot ai_pay < migrations/002_add_fee_and_recharge_log.sql
+	mysql -uroot -proot ai_pay < migrations/003_add_va_card_no.sql
+	mysql -uroot -proot ai_pay < migrations/004_add_account_hold.sql
+	mysql -uroot -proot ai_pay < migrations/005_add_agent_did_pub_key.sql
+	mysql -uroot -proot ai_pay < migrations/006_add_pay_order_hold_id.sql
 
 health:
 	curl -s http://127.0.0.1:8080/health

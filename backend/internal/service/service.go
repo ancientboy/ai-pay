@@ -16,14 +16,17 @@ type APIError struct {
 func (e *APIError) Error() string { return e.Message }
 
 type Agent struct {
-	DID string
+	DID       string `json:"did"`
+	DIDPubKey string `json:"didPubKey,omitempty"`
 }
 
 type Account struct {
 	WalletAddress string
 	VAAccountID   string
+	VACardNo      string
 	AgentDID      string
 	Balance       float64
+	FrozenBalance float64
 }
 
 type AuthorizeRule struct {
@@ -39,6 +42,7 @@ type Transaction struct {
 	Amount    float64
 	Fee       float64
 	NetAmount float64
+	HoldID    string
 	Status    string
 	CreatedAt time.Time
 }
@@ -59,6 +63,7 @@ type PayResponse struct {
 type AgentSummary struct {
 	AgentDID      string  `json:"agentDid"`
 	VAAccountID   string  `json:"vaAccountId"`
+	VACardNo      string  `json:"vaCardNo"`
 	WalletAddress string  `json:"walletAddress"`
 	Balance       float64 `json:"balance"`
 	Status        string  `json:"status"`
@@ -80,23 +85,39 @@ type OverviewMetrics struct {
 }
 
 type Service struct {
-	mu           sync.Mutex
-	agents       map[string]Agent
-	accounts     map[string]*Account
-	accountsByVA map[string]*Account
-	rules        map[string]AuthorizeRule
-	orders       map[string]Transaction
-	recharges    []RechargeOrder
-	idemMap      map[string]string
-	dailySpent   map[string]float64
+	mu             sync.Mutex
+	agents         map[string]Agent
+	accounts       map[string]*Account
+	accountsByVA   map[string]*Account
+	accountsByCard map[string]*Account
+	rules          map[string]AuthorizeRule
+	orders         map[string]Transaction
+	recharges      []RechargeOrder
+	rechargeIdem   map[string]string
+	idemMap        map[string]string
+	dailySpent     map[string]float64
+	holds          map[string]holdRecord
+	actionIdem     map[string]struct{}
+}
+
+type holdRecord struct {
+	ID       string
+	AgentDID string
+	Amount   float64
+	Status   string
 }
 
 type PaymentService interface {
 	RegisterAgent(did string) Agent
+	SetAgentPublicKey(did string, pubKey string) error
+	AgentPublicKey(did string) (string, error)
 	CreateAccount(agentDID string) Account
-	Recharge(va string, amount string) error
+	Recharge(va string, amount string, idemKey string) error
 	SetAuthorizeRule(agentDID string, single string, daily string, merchants []string) error
 	Pay(req PayRequest) (PayResponse, *APIError)
+	ResolveSettling(transactionID string, success bool) error
+	Unfreeze(transactionID string, idemKey string) error
+	Refund(transactionID string, idemKey string) error
 	QueryStatus(txID string) (Transaction, error)
 	BalanceByVA(va string) (float64, error)
 	LedgerByVA(va string) []Transaction
@@ -107,14 +128,18 @@ type PaymentService interface {
 
 func New() *Service {
 	return &Service{
-		agents:       map[string]Agent{},
-		accounts:     map[string]*Account{},
-		accountsByVA: map[string]*Account{},
-		rules:        map[string]AuthorizeRule{},
-		orders:       map[string]Transaction{},
-		recharges:    []RechargeOrder{},
-		idemMap:      map[string]string{},
-		dailySpent:   map[string]float64{},
+		agents:         map[string]Agent{},
+		accounts:       map[string]*Account{},
+		accountsByVA:   map[string]*Account{},
+		accountsByCard: map[string]*Account{},
+		rules:          map[string]AuthorizeRule{},
+		orders:         map[string]Transaction{},
+		recharges:      []RechargeOrder{},
+		rechargeIdem:   map[string]string{},
+		idemMap:        map[string]string{},
+		dailySpent:     map[string]float64{},
+		holds:          map[string]holdRecord{},
+		actionIdem:     map[string]struct{}{},
 	}
 }
 
@@ -126,28 +151,62 @@ func (s *Service) RegisterAgent(did string) Agent {
 	return a
 }
 
+func (s *Service) SetAgentPublicKey(did string, pubKey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	agent, ok := s.agents[did]
+	if !ok {
+		return errors.New("agent not found")
+	}
+	agent.DIDPubKey = pubKey
+	s.agents[did] = agent
+	return nil
+}
+
+func (s *Service) AgentPublicKey(did string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	agent, ok := s.agents[did]
+	if !ok {
+		return "", errors.New("agent not found")
+	}
+	return agent.DIDPubKey, nil
+}
+
 func (s *Service) CreateAccount(agentDID string) Account {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a := &Account{
 		WalletAddress: fmt.Sprintf("0xwallet_%d", len(s.accounts)+1),
 		VAAccountID:   fmt.Sprintf("va_%d", len(s.accounts)+1),
+		VACardNo:      generateVACardNo(len(s.accounts) + 1),
 		AgentDID:      agentDID,
 		Balance:       0,
+		FrozenBalance: 0,
 	}
 	s.accounts[agentDID] = a
 	s.accountsByVA[a.VAAccountID] = a
+	s.accountsByCard[a.VACardNo] = a
 	return *a
 }
 
-func (s *Service) Recharge(va string, amount string) error {
+func (s *Service) Recharge(va string, amount string, idemKey string) error {
 	v, err := parseAmount(amount)
 	if err != nil || v <= 0 {
 		return &APIError{Code: "PAY-010", Message: "invalid amount"}
 	}
+	if idemKey == "" {
+		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.rechargeIdem[idemKey]; ok {
+		return nil
+	}
 	acc, ok := s.accountsByVA[va]
+	if !ok {
+		acc, ok = s.accountsByCard[va]
+	}
 	if !ok {
 		return &APIError{Code: "PAY-010", Message: "account not found"}
 	}
@@ -161,6 +220,7 @@ func (s *Service) Recharge(va string, amount string) error {
 			CreatedAt:   time.Now().UTC(),
 		},
 	}, s.recharges...)
+	s.rechargeIdem[idemKey] = va
 	return nil
 }
 
@@ -222,11 +282,36 @@ func (s *Service) Pay(req PayRequest) (PayResponse, *APIError) {
 	if !ok {
 		return PayResponse{}, &APIError{Code: "PAY-010", Message: "account not found"}
 	}
-	if acc.Balance < amount {
-		return PayResponse{}, &APIError{Code: "PAY-003", Message: "agent va insufficient balance"}
+	holdID, apiErr := s.freezeAmount(acc, req.PayerDID, amount)
+	if apiErr != nil {
+		return PayResponse{}, apiErr
 	}
-
-	acc.Balance -= amount
+	// Simulate downstream timeout for compensation path verification.
+	if req.MerchantID == "m_fail" {
+		_ = s.releaseHold(holdID)
+		return PayResponse{}, &APIError{Code: "PAY-007", Message: "channel timeout"}
+	}
+	if req.MerchantID == "m_async" {
+		txID := fmt.Sprintf("txn_%d", len(s.orders)+1)
+		tx := Transaction{
+			ID:        txID,
+			PayerDID:  req.PayerDID,
+			Merchant:  req.MerchantID,
+			Amount:    amount,
+			Fee:       0,
+			NetAmount: 0,
+			HoldID:    holdID,
+			Status:    "SETTLING",
+			CreatedAt: time.Now().UTC(),
+		}
+		s.orders[txID] = tx
+		s.idemMap[req.IdempotencyKey] = txID
+		return PayResponse{TransactionID: txID, Status: tx.Status}, nil
+	}
+	if err := s.debitHold(holdID); err != nil {
+		_ = s.releaseHold(holdID)
+		return PayResponse{}, &APIError{Code: "PAY-010", Message: "debit failed"}
+	}
 	fee := calcFee(amount)
 	txID := fmt.Sprintf("txn_%d", len(s.orders)+1)
 	tx := Transaction{
@@ -236,6 +321,7 @@ func (s *Service) Pay(req PayRequest) (PayResponse, *APIError) {
 		Amount:    amount,
 		Fee:       fee,
 		NetAmount: amount - fee,
+		HoldID:    holdID,
 		Status:    "SETTLED",
 		CreatedAt: time.Now().UTC(),
 	}
@@ -253,6 +339,88 @@ func (s *Service) QueryStatus(txID string) (Transaction, error) {
 		return Transaction{}, errors.New("not found")
 	}
 	return tx, nil
+}
+
+func (s *Service) ResolveSettling(transactionID string, success bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, ok := s.orders[transactionID]
+	if !ok {
+		return errors.New("transaction not found")
+	}
+	if tx.Status != "SETTLING" {
+		return errors.New("transaction not settling")
+	}
+	if tx.HoldID == "" {
+		return errors.New("missing hold id")
+	}
+	if success {
+		if err := s.debitHold(tx.HoldID); err != nil {
+			return err
+		}
+		tx.Fee = calcFee(tx.Amount)
+		tx.NetAmount = tx.Amount - tx.Fee
+		tx.Status = "SETTLED"
+	} else {
+		if err := s.releaseHold(tx.HoldID); err != nil {
+			return err
+		}
+		tx.Status = "FAILED"
+	}
+	s.orders[transactionID] = tx
+	return nil
+}
+
+func (s *Service) Unfreeze(transactionID string, idemKey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if idemKey == "" {
+		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
+	if _, ok := s.actionIdem["unfreeze:"+idemKey]; ok {
+		return nil
+	}
+	tx, ok := s.orders[transactionID]
+	if !ok {
+		return errors.New("transaction not found")
+	}
+	if tx.Status != "SETTLING" {
+		return errors.New("transaction not settling")
+	}
+	if err := s.releaseHold(tx.HoldID); err != nil {
+		return err
+	}
+	tx.Status = "FAILED"
+	s.orders[transactionID] = tx
+	s.actionIdem["unfreeze:"+idemKey] = struct{}{}
+	return nil
+}
+
+func (s *Service) Refund(transactionID string, idemKey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if idemKey == "" {
+		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
+	if _, ok := s.actionIdem["refund:"+idemKey]; ok {
+		return nil
+	}
+	tx, ok := s.orders[transactionID]
+	if !ok {
+		return errors.New("transaction not found")
+	}
+	if tx.Status != "SETTLED" {
+		return errors.New("transaction not settled")
+	}
+	acc, ok := s.accounts[tx.PayerDID]
+	if !ok {
+		return errors.New("account not found")
+	}
+	acc.Balance += tx.Amount
+	tx.Status = "REFUNDED"
+	s.orders[transactionID] = tx
+	s.actionIdem["refund:"+idemKey] = struct{}{}
+	return nil
 }
 
 func (s *Service) BalanceByVA(va string) (float64, error) {
@@ -325,6 +493,7 @@ func (s *Service) ListAgents() []AgentSummary {
 		out = append(out, AgentSummary{
 			AgentDID:      acc.AgentDID,
 			VAAccountID:   acc.VAAccountID,
+			VACardNo:      acc.VACardNo,
 			WalletAddress: acc.WalletAddress,
 			Balance:       acc.Balance,
 			Status:        "ACTIVE",
@@ -363,4 +532,56 @@ func parseAmount(v string) (float64, error) {
 func calcFee(amount float64) float64 {
 	const feeRate = 0.003
 	return amount * feeRate
+}
+
+func (s *Service) freezeAmount(acc *Account, agentDID string, amount float64) (string, *APIError) {
+	if acc.Balance < amount {
+		return "", &APIError{Code: "PAY-003", Message: "agent va insufficient balance"}
+	}
+	acc.Balance -= amount
+	acc.FrozenBalance += amount
+	holdID := fmt.Sprintf("hold_%d", len(s.holds)+1)
+	s.holds[holdID] = holdRecord{
+		ID:       holdID,
+		AgentDID: agentDID,
+		Amount:   amount,
+		Status:   "FROZEN",
+	}
+	return holdID, nil
+}
+
+func (s *Service) debitHold(holdID string) error {
+	hold, ok := s.holds[holdID]
+	if !ok || hold.Status != "FROZEN" {
+		return errors.New("hold not found")
+	}
+	acc, ok := s.accounts[hold.AgentDID]
+	if !ok || acc.FrozenBalance < hold.Amount {
+		return errors.New("account frozen insufficient")
+	}
+	acc.FrozenBalance -= hold.Amount
+	hold.Status = "DEBITED"
+	s.holds[holdID] = hold
+	return nil
+}
+
+func (s *Service) releaseHold(holdID string) error {
+	hold, ok := s.holds[holdID]
+	if !ok || hold.Status != "FROZEN" {
+		return errors.New("hold not found")
+	}
+	acc, ok := s.accounts[hold.AgentDID]
+	if !ok || acc.FrozenBalance < hold.Amount {
+		return errors.New("account frozen insufficient")
+	}
+	acc.FrozenBalance -= hold.Amount
+	acc.Balance += hold.Amount
+	hold.Status = "RELEASED"
+	s.holds[holdID] = hold
+	return nil
+}
+
+func generateVACardNo(seq int) string {
+	// 16-digit virtual card number for account funding references.
+	return fmt.Sprintf("68880000%08d", seq)
 }

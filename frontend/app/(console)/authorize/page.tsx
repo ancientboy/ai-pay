@@ -1,13 +1,16 @@
 "use client";
 
 import { useMutation } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { useLocale } from "@/components/locale-provider";
 import { useToast } from "@/components/toast-provider";
 import { setAuthorizeRule } from "@/lib/console-api";
 import { toReadableError } from "@/lib/error-map";
-import { authorizeSchema } from "@/lib/validation";
+import { getValidationSchemas } from "@/lib/validation";
 
 export default function AuthorizePage() {
+  const { t, locale } = useLocale();
+  const { authorizeSchema } = useMemo(() => getValidationSchemas(locale), [locale]);
   const { showToast } = useToast();
   const [agentDid, setAgentDid] = useState("");
   const [singleLimit, setSingleLimit] = useState("50");
@@ -27,11 +30,11 @@ export default function AuthorizePage() {
           .filter(Boolean),
       }),
     onSuccess: () => {
-      setResult("Rule saved successfully");
-      showToast("success", "Authorize rule saved");
+      setResult(t("authorize.saveSuccess"));
+      showToast("success", t("authorize.saveSuccess"));
     },
     onError: (err) => {
-      const message = `Failed: ${toReadableError(err)}`;
+      const message = `${t("common.failed")}: ${toReadableError(err, locale)}`;
       setResult(message);
       showToast("error", message);
     },
@@ -40,9 +43,9 @@ export default function AuthorizePage() {
   return (
     <section className="space-y-6">
       <div>
-        <h2 className="text-xl font-semibold">Authorize Rules</h2>
+        <h2 className="text-xl font-semibold">{t("authorize.title")}</h2>
         <p className="mt-1 text-sm text-slate-400">
-          Configure payment amount limits and merchant whitelist.
+          {t("authorize.subtitle")}
         </p>
       </div>
 
@@ -61,7 +64,7 @@ export default function AuthorizePage() {
               .filter(Boolean),
           });
           if (!parsed.success) {
-            const message = parsed.error.issues[0]?.message ?? "参数不合法";
+            const message = parsed.error.issues[0]?.message ?? `${t("common.failed")}`;
             setResult(message);
             showToast("error", message);
             return;
@@ -70,7 +73,7 @@ export default function AuthorizePage() {
         }}
       >
         <label className="text-sm text-slate-300">
-          Agent DID
+          {t("authorize.agentDid")}
           <input
             value={agentDid}
             onChange={(e) => setAgentDid(e.target.value)}
@@ -78,7 +81,7 @@ export default function AuthorizePage() {
           />
         </label>
         <label className="text-sm text-slate-300">
-          Single Limit (GUSD)
+          {t("authorize.singleLimit")}
           <input
             value={singleLimit}
             onChange={(e) => setSingleLimit(e.target.value)}
@@ -86,7 +89,7 @@ export default function AuthorizePage() {
           />
         </label>
         <label className="text-sm text-slate-300">
-          Daily Limit (GUSD)
+          {t("authorize.dailyLimit")}
           <input
             value={dailyLimit}
             onChange={(e) => setDailyLimit(e.target.value)}
@@ -94,7 +97,7 @@ export default function AuthorizePage() {
           />
         </label>
         <label className="text-sm text-slate-300">
-          Merchant Whitelist (comma separated)
+          {t("authorize.whitelist")}
           <input
             value={whitelist}
             onChange={(e) => setWhitelist(e.target.value)}
@@ -106,7 +109,7 @@ export default function AuthorizePage() {
             disabled={mutation.isPending}
             className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-60"
           >
-            Save Rule
+            {t("authorize.save")}
           </button>
           {result ? <p className="mt-3 text-sm text-slate-300">{result}</p> : null}
         </div>

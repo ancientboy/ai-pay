@@ -5,9 +5,15 @@ import ReactECharts from "echarts-for-react";
 export function MetricsTrendChart({
   todaySpend,
   successRate,
+  title = "Trend",
+  spendLabel = "Today Spend",
+  successLabel = "Success Rate",
 }: {
   todaySpend: number;
   successRate: number;
+  title?: string;
+  spendLabel?: string;
+  successLabel?: string;
 }) {
   const option = {
     backgroundColor: "transparent",
@@ -43,7 +49,7 @@ export function MetricsTrendChart({
     ],
     series: [
       {
-        name: "Today Spend",
+        name: spendLabel,
         type: "line",
         smooth: true,
         data: [0, todaySpend * 0.1, todaySpend * 0.35, todaySpend * 0.5, todaySpend * 0.7, todaySpend * 0.9, todaySpend],
@@ -51,7 +57,7 @@ export function MetricsTrendChart({
         areaStyle: { color: "rgba(47,107,255,0.18)" },
       },
       {
-        name: "Success Rate",
+        name: successLabel,
         type: "line",
         yAxisIndex: 1,
         smooth: true,
@@ -71,7 +77,7 @@ export function MetricsTrendChart({
 
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
-      <h3 className="mb-2 text-sm font-medium text-slate-200">Trend</h3>
+      <h3 className="mb-2 text-sm font-medium text-slate-200">{title}</h3>
       <ReactECharts option={option} style={{ height: 260 }} notMerge />
     </div>
   );

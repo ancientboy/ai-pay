@@ -1,4 +1,5 @@
 import { ApiClientError } from "@/lib/error-map";
+import { buildPaySignPayload, signAgentPayload } from "@/lib/agent-signature";
 
 type ApiResponse<T> = {
   code: string;
@@ -64,15 +65,15 @@ export function saveApiBaseURL(url: string) {
   window.localStorage.setItem(STORAGE_API_BASE_URL_KEY, url.trim());
 }
 
-export function registerAgent(agentDid: string) {
+export function registerAgent(agentDid: string, didPubKey?: string) {
   return request<{ DID: string }>("/agent/did/register", {
     method: "POST",
-    body: JSON.stringify({ agentDid }),
+    body: JSON.stringify({ agentDid, didPubKey }),
   });
 }
 
 export function createAccount(agentDid: string) {
-  return request<{ WalletAddress: string; VAAccountID: string; AgentDID: string }>(
+  return request<{ WalletAddress: string; VAAccountID: string; VACardNo: string; AgentDID: string }>(
     "/account/create",
     {
       method: "POST",
@@ -93,10 +94,11 @@ export function setAuthorizeRule(input: {
   });
 }
 
-export function recharge(input: { vaAccountId: string; amount: string }) {
+export function recharge(input: { vaAccountId?: string; vaCardNo?: string; amount: string }) {
   return request("/fund/recharge", {
     method: "POST",
     body: JSON.stringify(input),
+    idempotencyKey: `rch-ui-${Date.now()}`,
   });
 }
 
@@ -104,14 +106,32 @@ export function pay(input: {
   payerDid: string;
   merchantId: string;
   amount: string;
-  signature: string;
 }) {
+  const idempotencyKey = `idem-ui-${Date.now()}`;
+  const signTimestamp = new Date().toISOString();
+  return (async () => {
+    let signature = "sig";
+    try {
+      signature = await signAgentPayload(
+        input.payerDid,
+        buildPaySignPayload(
+          input.payerDid,
+          input.merchantId,
+          input.amount,
+          idempotencyKey,
+          signTimestamp,
+        ),
+      );
+    } catch {
+      // Compatibility fallback for legacy agents without DID key pair.
+    }
   return request<{ transactionId: string; status: string }>("/payment/x402/pay", {
     method: "POST",
-    body: JSON.stringify(input),
-    idempotencyKey: `idem-ui-${Date.now()}`,
-    signTimestamp: new Date().toISOString(),
+    body: JSON.stringify({ ...input, signature }),
+    idempotencyKey,
+    signTimestamp,
   });
+  })();
 }
 
 export function queryTransaction(transactionId: string) {
@@ -150,6 +170,7 @@ export function listAgents() {
     Array<{
       agentDid: string;
       vaAccountId: string;
+      vaCardNo: string;
       walletAddress: string;
       balance: number;
       status: string;

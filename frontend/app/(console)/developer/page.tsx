@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useLocale } from "@/components/locale-provider";
 import { useToast } from "@/components/toast-provider";
 
 type ApiKeyItem = { id: string; name: string; key: string; createdAt: string };
@@ -10,6 +11,7 @@ const API_KEYS_STORAGE = "ai-pay.apiKeys";
 const WEBHOOKS_STORAGE = "ai-pay.webhooks";
 
 export default function DeveloperPage() {
+  const { t } = useLocale();
   const { showToast } = useToast();
   const [apiKeyName, setApiKeyName] = useState("default");
   const [webhookURL, setWebhookURL] = useState("");
@@ -32,26 +34,24 @@ export default function DeveloperPage() {
   return (
     <section className="space-y-6">
       <div>
-        <h2 className="text-xl font-semibold">Developer Center</h2>
-        <p className="mt-1 text-sm text-slate-400">
-          Manage API keys and webhooks for agent integrations.
-        </p>
+        <h2 className="text-xl font-semibold">{t("developer.title")}</h2>
+        <p className="mt-1 text-sm text-slate-400">{t("developer.subtitle")}</p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
-          <h3 className="text-sm font-medium text-slate-200">API Keys</h3>
+          <h3 className="text-sm font-medium text-slate-200">{t("developer.apiKeys")}</h3>
           <div className="mt-3 flex gap-2">
             <input
               value={apiKeyName}
               onChange={(e) => setApiKeyName(e.target.value)}
               className="flex-1 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-              placeholder="Key name"
+              placeholder={t("developer.keyName")}
             />
             <button
               onClick={() => {
                 if (!apiKeyName.trim()) {
-                  showToast("error", "API key name required");
+                  showToast("error", t("developer.keyNameRequired"));
                   return;
                 }
                 const item: ApiKeyItem = {
@@ -63,11 +63,11 @@ export default function DeveloperPage() {
                 const next = [item, ...apiKeys];
                 setApiKeys(next);
                 window.localStorage.setItem(API_KEYS_STORAGE, JSON.stringify(next));
-                showToast("success", "API key created");
+                showToast("success", t("developer.keyCreated"));
               }}
               className="rounded-md bg-blue-600 px-3 py-2 text-sm text-white"
             >
-              Create
+              {t("common.create")}
             </button>
           </div>
           <ul className="mt-3 space-y-2 text-xs text-slate-300">
@@ -77,29 +77,29 @@ export default function DeveloperPage() {
                 <p className="font-mono text-slate-400">{item.key}</p>
               </li>
             ))}
-            {apiKeys.length === 0 ? <li className="text-slate-500">No API keys.</li> : null}
+            {apiKeys.length === 0 ? <li className="text-slate-500">{t("developer.noKeys")}</li> : null}
           </ul>
         </div>
 
         <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
-          <h3 className="text-sm font-medium text-slate-200">Webhooks</h3>
+          <h3 className="text-sm font-medium text-slate-200">{t("developer.webhooks")}</h3>
           <div className="mt-3 space-y-2">
             <input
               value={webhookURL}
               onChange={(e) => setWebhookURL(e.target.value)}
               className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-              placeholder="https://your-app.com/webhook"
+              placeholder={t("developer.webhookUrl")}
             />
             <input
               value={webhookEvent}
               onChange={(e) => setWebhookEvent(e.target.value)}
               className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
-              placeholder="event name"
+              placeholder={t("developer.webhookEvent")}
             />
             <button
               onClick={() => {
                 if (!webhookURL.trim()) {
-                  showToast("error", "Webhook URL required");
+                  showToast("error", t("developer.webhookUrlRequired"));
                   return;
                 }
                 const item: WebhookItem = {
@@ -111,11 +111,11 @@ export default function DeveloperPage() {
                 const next = [item, ...webhooks];
                 setWebhooks(next);
                 window.localStorage.setItem(WEBHOOKS_STORAGE, JSON.stringify(next));
-                showToast("success", "Webhook created");
+                showToast("success", t("developer.webhookCreated"));
               }}
               className="rounded-md bg-blue-600 px-3 py-2 text-sm text-white"
             >
-              Add Webhook
+              {t("developer.addWebhook")}
             </button>
           </div>
           <ul className="mt-3 space-y-2 text-xs text-slate-300">
@@ -125,7 +125,7 @@ export default function DeveloperPage() {
                 <p>{item.event}</p>
               </li>
             ))}
-            {webhooks.length === 0 ? <li className="text-slate-500">No webhooks.</li> : null}
+            {webhooks.length === 0 ? <li className="text-slate-500">{t("developer.noWebhooks")}</li> : null}
           </ul>
         </div>
       </div>

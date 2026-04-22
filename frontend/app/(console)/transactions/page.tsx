@@ -3,10 +3,12 @@
 import { useMutation } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { DetailModal } from "@/components/detail-modal";
+import { useLocale } from "@/components/locale-provider";
 import { useToast } from "@/components/toast-provider";
 import { pay, queryBalance, queryLedger, queryTransaction } from "@/lib/console-api";
 import { toReadableError } from "@/lib/error-map";
-import { paySchema } from "@/lib/validation";
+import { formatStatus } from "@/lib/i18n";
+import { getValidationSchemas } from "@/lib/validation";
 
 type TxRow = {
   id: string;
@@ -17,6 +19,8 @@ type TxRow = {
 };
 
 export default function TransactionsPage() {
+  const { t, locale } = useLocale();
+  const { paySchema } = useMemo(() => getValidationSchemas(locale), [locale]);
   const { showToast } = useToast();
   const [payerDid, setPayerDid] = useState("");
   const [merchantId, setMerchantId] = useState("m1");
@@ -50,7 +54,7 @@ export default function TransactionsPage() {
   const pageCount = Math.max(1, Math.ceil(filteredRows.length / pageSize));
 
   const payMutation = useMutation({
-    mutationFn: () => pay({ payerDid, merchantId, amount, signature: "sig" }),
+    mutationFn: () => pay({ payerDid, merchantId, amount }),
     onSuccess: (data) => {
       setRows((prev) => [
         {
@@ -61,11 +65,11 @@ export default function TransactionsPage() {
         },
         ...prev,
       ]);
-      setMessage(`payment success: ${data.transactionId}`);
-      showToast("success", `payment success: ${data.transactionId}`);
+      setMessage(`${t("transactions.paySuccess")}: ${data.transactionId}`);
+      showToast("success", `${t("transactions.paySuccess")}: ${data.transactionId}`);
     },
     onError: (err) => {
-      const msg = `payment failed: ${toReadableError(err)}`;
+      const msg = `${t("common.failed")}: ${toReadableError(err, locale)}`;
       setMessage(msg);
       showToast("error", msg);
     },
@@ -74,11 +78,12 @@ export default function TransactionsPage() {
   const statusMutation = useMutation({
     mutationFn: () => queryTransaction(queryTxId),
     onSuccess: (data) => {
-      setMessage(`status: ${data.Status}, amount=${data.Amount}`);
-      showToast("info", `status: ${data.Status}`);
+      const localizedStatus = formatStatus(locale, data.Status);
+      setMessage(`${t("transactions.status")}: ${localizedStatus}, ${t("transactions.amount")}=${data.Amount}`);
+      showToast("info", `${t("transactions.status")}: ${localizedStatus}`);
     },
     onError: (err) => {
-      const msg = `query status failed: ${toReadableError(err)}`;
+      const msg = `${t("transactions.queryStatus")} ${t("common.failed").toLowerCase()}: ${toReadableError(err, locale)}`;
       setMessage(msg);
       showToast("error", msg);
     },
@@ -87,11 +92,11 @@ export default function TransactionsPage() {
   const balanceMutation = useMutation({
     mutationFn: () => queryBalance(queryVa),
     onSuccess: (data) => {
-      setMessage(`balance: ${data.balance}`);
-      showToast("info", `balance: ${data.balance}`);
+      setMessage(`${t("agents.balance")}: ${data.balance}`);
+      showToast("info", `${t("agents.balance")}: ${data.balance}`);
     },
     onError: (err) => {
-      const msg = `query balance failed: ${toReadableError(err)}`;
+      const msg = `${t("transactions.queryBalance")} ${t("common.failed").toLowerCase()}: ${toReadableError(err, locale)}`;
       setMessage(msg);
       showToast("error", msg);
     },
@@ -108,11 +113,11 @@ export default function TransactionsPage() {
         createdAt: tx.CreatedAt,
       }));
       setRows(mapped);
-      setMessage(`loaded ${mapped.length} ledger records`);
-      showToast("info", `loaded ${mapped.length} ledger records`);
+      setMessage(`${t("transactions.queryLedger")}: ${mapped.length} ${t("transactions.records")}`);
+      showToast("info", `${t("transactions.queryLedger")}: ${mapped.length}`);
     },
     onError: (err) => {
-      const msg = `query ledger failed: ${toReadableError(err)}`;
+      const msg = `${t("transactions.queryLedger")} ${t("common.failed").toLowerCase()}: ${toReadableError(err, locale)}`;
       setMessage(msg);
       showToast("error", msg);
     },
@@ -121,9 +126,9 @@ export default function TransactionsPage() {
   return (
     <section className="space-y-6">
       <div>
-        <h2 className="text-xl font-semibold">Transactions</h2>
+        <h2 className="text-xl font-semibold">{t("transactions.title")}</h2>
         <p className="mt-1 text-sm text-slate-400">
-          Track payment status, fees, and request tracing id.
+          {t("transactions.subtitle")}
         </p>
       </div>
 
@@ -139,7 +144,7 @@ export default function TransactionsPage() {
                 amount,
               });
               if (!parsed.success) {
-                const msg = parsed.error.issues[0]?.message ?? "参数不合法";
+                const msg = parsed.error.issues[0]?.message ?? `${t("common.failed")}`;
                 setMessage(msg);
                 showToast("error", msg);
                 return;
@@ -147,47 +152,47 @@ export default function TransactionsPage() {
               payMutation.mutate();
             }}
           >
-            <p className="text-xs uppercase tracking-wide text-slate-400">Create payment</p>
+            <p className="text-xs uppercase tracking-wide text-slate-400">{t("transactions.createPayment")}</p>
             <input
               value={payerDid}
               onChange={(e) => setPayerDid(e.target.value)}
-              placeholder="payer did"
+              placeholder={t("transactions.payerDid")}
               className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
             />
             <input
               value={merchantId}
               onChange={(e) => setMerchantId(e.target.value)}
-              placeholder="merchant id"
+              placeholder={t("transactions.merchantId")}
               className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
             />
             <input
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
-              placeholder="amount"
+              placeholder={t("transactions.amount")}
               className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
             />
             <button className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white">
-              Pay
+              {t("transactions.pay")}
             </button>
           </form>
           <div className="space-y-2">
-            <p className="text-xs uppercase tracking-wide text-slate-400">Query tools</p>
+            <p className="text-xs uppercase tracking-wide text-slate-400">{t("transactions.queryTools")}</p>
             <input
               value={queryTxId}
               onChange={(e) => setQueryTxId(e.target.value)}
-              placeholder="transaction id"
+              placeholder={t("transactions.txId")}
               className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
             />
             <button
               onClick={() => statusMutation.mutate()}
               className="mr-2 rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200"
             >
-              Query Status
+              {t("transactions.queryStatus")}
             </button>
             <input
               value={queryVa}
               onChange={(e) => setQueryVa(e.target.value)}
-              placeholder="va account id"
+              placeholder={t("agents.va")}
               className="mt-2 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
             />
             <div className="mt-2 flex gap-2">
@@ -195,13 +200,13 @@ export default function TransactionsPage() {
                 onClick={() => balanceMutation.mutate()}
                 className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200"
               >
-                Query Balance
+                {t("transactions.queryBalance")}
               </button>
               <button
                 onClick={() => ledgerMutation.mutate()}
                 className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200"
               >
-                Query Ledger
+                {t("transactions.queryLedger")}
               </button>
             </div>
           </div>
@@ -216,9 +221,9 @@ export default function TransactionsPage() {
             }}
             className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-sm"
           >
-            <option value="ALL">All status</option>
-            <option value="SETTLED">SETTLED</option>
-            <option value="FAILED">FAILED</option>
+            <option value="ALL">{t("transactions.allStatus")}</option>
+            <option value="SETTLED">{formatStatus(locale, "SETTLED")}</option>
+            <option value="FAILED">{formatStatus(locale, "FAILED")}</option>
           </select>
           <input
             value={keyword}
@@ -226,17 +231,17 @@ export default function TransactionsPage() {
               setKeyword(e.target.value);
               setPage(1);
             }}
-            placeholder="Search tx id/status"
+            placeholder={t("transactions.searchPlaceholder")}
             className="rounded-md border border-slate-700 bg-slate-950 px-3 py-1 text-sm"
           />
         </div>
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-slate-800 text-left text-slate-400">
-              <th className="pb-2">Transaction ID</th>
-              <th className="pb-2">Amount</th>
-              <th className="pb-2">Fee</th>
-              <th className="pb-2">Status</th>
+              <th className="pb-2">{t("transactions.txId")}</th>
+              <th className="pb-2">{t("transactions.amount")}</th>
+              <th className="pb-2">{t("transactions.fee")}</th>
+              <th className="pb-2">{t("transactions.status")}</th>
             </tr>
           </thead>
           <tbody>
@@ -257,7 +262,7 @@ export default function TransactionsPage() {
                         : "bg-rose-500/20 text-rose-300"
                     }`}
                   >
-                    {row.status}
+                    {formatStatus(locale, row.status)}
                   </span>
                 </td>
               </tr>
@@ -265,7 +270,7 @@ export default function TransactionsPage() {
             {pagedRows.length === 0 ? (
               <tr>
                 <td className="py-4 text-slate-500" colSpan={4}>
-                  No transaction data yet.
+                  {t("transactions.noData")}
                 </td>
               </tr>
             ) : null}
@@ -273,7 +278,7 @@ export default function TransactionsPage() {
         </table>
         <div className="mt-3 flex items-center justify-between text-sm text-slate-400">
           <p>
-            Page {page}/{pageCount} · {filteredRows.length} records
+            {t("transactions.page")} {page}/{pageCount} · {filteredRows.length} {t("transactions.records")}
           </p>
           <div className="flex gap-2">
             <button
@@ -281,30 +286,30 @@ export default function TransactionsPage() {
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               className="rounded-md border border-slate-700 px-2 py-1 disabled:opacity-50"
             >
-              Prev
+              {t("transactions.prev")}
             </button>
             <button
               disabled={page >= pageCount}
               onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
               className="rounded-md border border-slate-700 px-2 py-1 disabled:opacity-50"
             >
-              Next
+              {t("transactions.next")}
             </button>
           </div>
         </div>
       </div>
       <DetailModal
         open={!!selected}
-        title="Transaction Detail"
+        title={t("transactions.detail")}
         onClose={() => setSelected(null)}
       >
         {selected ? (
           <div className="space-y-1 font-mono text-xs">
-            <p>ID: {selected.id}</p>
-            <p>Amount: {selected.amount}</p>
-            <p>Fee: {selected.fee}</p>
-            <p>Status: {selected.status}</p>
-            <p>CreatedAt: {selected.createdAt ?? "N/A"}</p>
+            <p>{t("transactions.txId")}: {selected.id}</p>
+            <p>{t("transactions.amount")}: {selected.amount}</p>
+            <p>{t("transactions.fee")}: {selected.fee}</p>
+            <p>{t("transactions.status")}: {formatStatus(locale, selected.status)}</p>
+            <p>{t("common.createdAt")}: {selected.createdAt ?? t("common.notAvailable")}</p>
           </div>
         ) : null}
       </DetailModal>

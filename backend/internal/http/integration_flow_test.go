@@ -2,6 +2,9 @@ package http
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -18,9 +21,11 @@ func TestMVP8EndpointsFlow(t *testing.T) {
 	handler := server.Routes()
 
 	agentDid := "did:gusd:agent:e2e_1"
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	pubBase64 := base64.StdEncoding.EncodeToString(pub)
 
 	// 1) register
-	registerBody := mustJSON(t, map[string]any{"agentDid": agentDid})
+	registerBody := mustJSON(t, map[string]any{"agentDid": agentDid, "didPubKey": pubBase64})
 	registerResp := performRequest(t, handler, http.MethodPost, "/agent/did/register", registerBody, nil)
 	if registerResp.Code != http.StatusOK {
 		t.Fatalf("register status=%d", registerResp.Code)
@@ -43,7 +48,8 @@ func TestMVP8EndpointsFlow(t *testing.T) {
 		"vaAccountId": vaID,
 		"amount":      "100",
 	})
-	rechargeResp := performRequest(t, handler, http.MethodPost, "/fund/recharge", rechargeBody, nil)
+	rechargeHeaders := map[string]string{"Idempotency-Key": "rch-e2e-1"}
+	rechargeResp := performRequest(t, handler, http.MethodPost, "/fund/recharge", rechargeBody, rechargeHeaders)
 	if rechargeResp.Code != http.StatusOK {
 		t.Fatalf("recharge status=%d", rechargeResp.Code)
 	}
@@ -61,11 +67,12 @@ func TestMVP8EndpointsFlow(t *testing.T) {
 	}
 
 	// 5) pay
+	signaturePayload := buildPaySignaturePayload(agentDid, "m1", "10", "idem-e2e-1", now.Format(time.RFC3339))
 	payBody := mustJSON(t, map[string]any{
 		"payerDid":   agentDid,
 		"merchantId": "m1",
 		"amount":     "10",
-		"signature":  "sig",
+		"signature":  base64.StdEncoding.EncodeToString(ed25519.Sign(priv, signaturePayload)),
 	})
 	payHeaders := map[string]string{
 		"Idempotency-Key":  "idem-e2e-1",
