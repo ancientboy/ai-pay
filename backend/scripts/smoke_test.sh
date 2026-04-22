@@ -74,7 +74,7 @@ assert_contains "$header_redirect" "/login?next=%2Fdashboard" "重定向目标�
 login_resp="$(curl -i -sS -X POST "${FRONTEND_BASE_URL}/api/auth/login" \
   -H 'content-type: application/json' \
   -d '{"username":"admin","password":"admin123"}')"
-assert_contains "$login_resp" "ai_pay_session=1" "登录返回 session cookie"
+assert_contains "$login_resp" "set-cookie: ai_pay_session=" "登录返回 session cookie"
 
 agent="did:gusd:agent:smoke_$(date +%s)"
 register_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/agent/did/register" \
