@@ -567,7 +567,7 @@ func (s *PersistentService) ListDeveloperAPIKeys(limit int) []DeveloperAPIKey {
 		limit = 50
 	}
 	rows, err := s.store.DB.Query(`
-SELECT api_key_id, name, api_key, created_at
+SELECT id, name, api_key, created_at
 FROM developer_api_key
 ORDER BY created_at DESC
 LIMIT ?`, limit)
@@ -599,7 +599,7 @@ func (s *PersistentService) CreateDeveloperAPIKey(name string) (DeveloperAPIKey,
 		CreatedAt: time.Now().UTC(),
 	}
 	if _, err := s.store.DB.Exec(`
-INSERT INTO developer_api_key (api_key_id, name, api_key, created_at)
+INSERT INTO developer_api_key (id, name, api_key, created_at)
 VALUES (?, ?, ?, ?)`, item.ID, item.Name, item.Key, item.CreatedAt); err != nil {
 		return DeveloperAPIKey{}, err
 	}
@@ -611,7 +611,7 @@ func (s *PersistentService) ListDeveloperWebhooks(limit int) []DeveloperWebhook 
 		limit = 50
 	}
 	rows, err := s.store.DB.Query(`
-SELECT webhook_id, webhook_url, event, created_at
+SELECT id, url, event, created_at
 FROM developer_webhook
 ORDER BY created_at DESC
 LIMIT ?`, limit)
@@ -647,7 +647,7 @@ func (s *PersistentService) CreateDeveloperWebhook(url string, event string) (De
 		CreatedAt: time.Now().UTC(),
 	}
 	if _, err := s.store.DB.Exec(`
-INSERT INTO developer_webhook (webhook_id, webhook_url, event, created_at)
+INSERT INTO developer_webhook (id, url, event, created_at)
 VALUES (?, ?, ?, ?)`, item.ID, item.URL, item.Event, item.CreatedAt); err != nil {
 		return DeveloperWebhook{}, err
 	}
@@ -667,7 +667,7 @@ func (s *PersistentService) DeleteAPIKey(id string) error {
 	if trimmed == "" {
 		return &APIError{Code: "PAY-010", Message: "invalid id"}
 	}
-	if _, err := s.store.DB.Exec(`DELETE FROM developer_api_key WHERE api_key_id = ?`, trimmed); err != nil {
+	if _, err := s.store.DB.Exec(`DELETE FROM developer_api_key WHERE id = ?`, trimmed); err != nil {
 		return err
 	}
 	return nil
@@ -686,7 +686,7 @@ func (s *PersistentService) DeleteWebhook(id string) error {
 	if trimmed == "" {
 		return &APIError{Code: "PAY-010", Message: "invalid id"}
 	}
-	if _, err := s.store.DB.Exec(`DELETE FROM developer_webhook WHERE webhook_id = ?`, trimmed); err != nil {
+	if _, err := s.store.DB.Exec(`DELETE FROM developer_webhook WHERE id = ?`, trimmed); err != nil {
 		return err
 	}
 	return nil

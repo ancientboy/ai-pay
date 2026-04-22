@@ -69,7 +69,7 @@ func (s *Store) ListDeveloperAPIKeys(limit int) []DeveloperAPIKeyRow {
 		limit = 50
 	}
 	rows, err := s.DB.Query(`
-SELECT api_key_id, name, api_key, created_at
+SELECT id, name, api_key, created_at
 FROM developer_api_key
 ORDER BY created_at DESC
 LIMIT ?`, limit)
@@ -109,7 +109,7 @@ func (s *Store) ListDeveloperWebhooks(limit int) []DeveloperWebhookRow {
 		limit = 50
 	}
 	rows, err := s.DB.Query(`
-SELECT webhook_id, webhook_url, event, created_at
+SELECT id, url, event, created_at
 FROM developer_webhook
 ORDER BY created_at DESC
 LIMIT ?`, limit)
@@ -131,7 +131,7 @@ LIMIT ?`, limit)
 func (s *Store) CreateDeveloperWebhook(url string, event string) (DeveloperWebhookRow, error) {
 	id := fmt.Sprintf("wh_%d", time.Now().UnixNano())
 	if _, err := s.DB.Exec(`
-INSERT INTO developer_webhook (webhook_id, webhook_url, event, created_at)
+INSERT INTO developer_webhook (id, url, event, created_at)
 VALUES (?, ?, ?, UTC_TIMESTAMP())`, id, url, event); err != nil {
 		return DeveloperWebhookRow{}, err
 	}
