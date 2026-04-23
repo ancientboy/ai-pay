@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { verifySessionToken } from "@/lib/session";
 
 const protectedPaths = [
   "/dashboard",
@@ -18,13 +19,14 @@ export function proxy(request: NextRequest) {
   }
 
   const session = request.cookies.get("ai_pay_session")?.value;
-  if (session === "1") {
-    return NextResponse.next();
-  }
-
-  const loginURL = new URL("/login", request.url);
-  loginURL.searchParams.set("next", pathname);
-  return NextResponse.redirect(loginURL);
+  return (async () => {
+    if (await verifySessionToken(session)) {
+      return NextResponse.next();
+    }
+    const loginURL = new URL("/login", request.url);
+    loginURL.searchParams.set("next", pathname);
+    return NextResponse.redirect(loginURL);
+  })();
 }
 
 export const config = {
