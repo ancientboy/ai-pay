@@ -1,17 +1,26 @@
 package ops
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"strings"
 	"time"
 
 	"ai-pay-backend/internal/storage"
 )
 
 type Jobs struct {
-	store *storage.Store
+	store             *storage.Store
+	httpClient        *http.Client
+	webhookSigningKey string
 }
 
 type ReconcileResult struct {
@@ -20,7 +29,24 @@ type ReconcileResult struct {
 }
 
 func NewJobs(store *storage.Store) *Jobs {
-	return &Jobs{store: store}
+	return &Jobs{
+		store: store,
+		httpClient: &http.Client{
+			Timeout: 5 * time.Second,
+		},
+	}
+}
+
+func (j *Jobs) SetWebhookSigningSecret(secret string) {
+	j.webhookSigningKey = strings.TrimSpace(secret)
+}
+
+type WebhookDeliveryResult struct {
+	Checked int
+	Sent    int
+	Retried int
+	Dead    int
+	Skipped int
 }
 
 func (j *Jobs) RunStatusCompensation(ctx context.Context) (int64, error) {
@@ -141,4 +167,138 @@ func closeEnough(a, b float64) bool {
 		return a-b < eps
 	}
 	return b-a < eps
+}
+
+func (j *Jobs) RunWebhookDelivery(ctx context.Context, now time.Time, limit int) (WebhookDeliveryResult, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := j.store.DB.QueryContext(ctx, `
+SELECT id, webhook_id, url, event, payload, attempts, max_attempts
+FROM webhook_delivery_task
+WHERE status IN ('PENDING', 'RETRYING')
+  AND next_retry_at <= ?
+ORDER BY created_at ASC
+LIMIT ?`, now.UTC(), limit)
+	if err != nil {
+		return WebhookDeliveryResult{}, fmt.Errorf("query webhook tasks failed: %w", err)
+	}
+	defer rows.Close()
+	result := WebhookDeliveryResult{}
+	for rows.Next() {
+		result.Checked++
+		var id int64
+		var webhookID, url, event string
+		var payloadRaw string
+		var attempts, maxAttempts int
+		if err := rows.Scan(&id, &webhookID, &url, &event, &payloadRaw, &attempts, &maxAttempts); err != nil {
+			return result, fmt.Errorf("scan webhook task failed: %w", err)
+		}
+		if strings.TrimSpace(url) == "" {
+			result.Skipped++
+			continue
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBufferString(payloadRaw))
+		if err != nil {
+			if err := j.markWebhookTaskFailure(ctx, id, attempts, maxAttempts, "build request failed", now); err != nil {
+				return result, err
+			}
+			result.Retried++
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Webhook-Event", event)
+		req.Header.Set("X-Webhook-Delivery-Id", fmt.Sprintf("%d", id))
+		ts := now.UTC().Format(time.RFC3339)
+		nonce := fmt.Sprintf("wn_%d", time.Now().UnixNano())
+		attempt := attempts + 1
+		req.Header.Set("X-Webhook-Timestamp", ts)
+		req.Header.Set("X-Webhook-Nonce", nonce)
+		req.Header.Set("X-Webhook-Attempt", fmt.Sprintf("%d", attempt))
+		if j.webhookSigningKey != "" {
+			sign := buildWebhookSignatureV1(j.webhookSigningKey, id, event, ts, nonce, attempt, payloadRaw)
+			req.Header.Set("X-Webhook-Signature-Version", "v1")
+			req.Header.Set("X-Webhook-Signature", sign)
+		}
+		resp, err := j.httpClient.Do(req)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+		if err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			if _, err := j.store.DB.ExecContext(ctx, `
+UPDATE webhook_delivery_task
+SET status = 'SENT', attempts = attempts + 1, last_error = NULL, updated_at = UTC_TIMESTAMP()
+WHERE id = ?`, id); err != nil {
+				return result, fmt.Errorf("mark webhook sent failed: %w", err)
+			}
+			result.Sent++
+			continue
+		}
+		lastErr := "deliver failed"
+		if err != nil {
+			lastErr = err.Error()
+		} else {
+			lastErr = fmt.Sprintf("status %d", resp.StatusCode)
+		}
+		if err := j.markWebhookTaskFailure(ctx, id, attempts, maxAttempts, lastErr, now); err != nil {
+			return result, err
+		}
+		if attempts+1 >= maxAttempts {
+			result.Dead++
+		} else {
+			result.Retried++
+		}
+	}
+	return result, nil
+}
+
+func (j *Jobs) markWebhookTaskFailure(ctx context.Context, id int64, attempts, maxAttempts int, lastErr string, now time.Time) error {
+	nextAttempt := attempts + 1
+	if nextAttempt >= maxAttempts {
+		if _, err := j.store.DB.ExecContext(ctx, `
+UPDATE webhook_delivery_task
+SET status = 'DEAD', attempts = ?, last_error = ?, updated_at = UTC_TIMESTAMP()
+WHERE id = ?`, nextAttempt, truncateText(lastErr, 255), id); err != nil {
+			return fmt.Errorf("mark webhook dead failed: %w", err)
+		}
+		return nil
+	}
+	backoffSeconds := 1 << minInt(nextAttempt, 6)
+	nextRetry := now.UTC().Add(time.Duration(backoffSeconds) * time.Second)
+	if _, err := j.store.DB.ExecContext(ctx, `
+UPDATE webhook_delivery_task
+SET status = 'RETRYING', attempts = ?, next_retry_at = ?, last_error = ?, updated_at = UTC_TIMESTAMP()
+WHERE id = ?`, nextAttempt, nextRetry, truncateText(lastErr, 255), id); err != nil {
+		return fmt.Errorf("mark webhook retry failed: %w", err)
+	}
+	return nil
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func truncateText(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	return s[:limit]
+}
+
+func buildWebhookSignatureV1(secret string, deliveryID int64, event, ts, nonce string, attempt int, body string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	payload := fmt.Sprintf("%d|%s|%s|%s|%d|%s",
+		deliveryID,
+		strings.TrimSpace(event),
+		strings.TrimSpace(ts),
+		strings.TrimSpace(nonce),
+		attempt,
+		body,
+	)
+	_, _ = mac.Write([]byte(payload))
+	return hex.EncodeToString(mac.Sum(nil))
 }

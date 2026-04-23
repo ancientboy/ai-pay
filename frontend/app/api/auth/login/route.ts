@@ -7,6 +7,7 @@ import {
 
 const ADMIN_USERNAME = process.env.AI_PAY_ADMIN_USERNAME ?? "admin";
 const ADMIN_PASSWORD = process.env.AI_PAY_ADMIN_PASSWORD ?? "admin123";
+const DEFAULT_ROLE = process.env.AI_PAY_DEFAULT_ROLE ?? "operator";
 
 const loginAttempts = new Map<
   string,
@@ -39,6 +40,27 @@ function isRateLimited(ip: string) {
   return current.count > MAX_ATTEMPTS_PER_WINDOW;
 }
 
+function isEnglish(request: NextRequest) {
+  const language = request.headers.get("accept-language")?.toLowerCase() ?? "";
+  return language.startsWith("en");
+}
+
+function authMessage(
+  request: NextRequest,
+  code: "AUTH-001" | "AUTH-002" | "AUTH-003",
+) {
+  const en = isEnglish(request);
+  if (code === "AUTH-001") {
+    return en ? "Username and password are required" : "用户名和密码不能为空";
+  }
+  if (code === "AUTH-002") {
+    return en ? "Invalid username or password" : "用户名或密码错误";
+  }
+  return en
+    ? "Too many login attempts, please retry later"
+    : "登录尝试过于频繁，请稍后重试";
+}
+
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => null)) as
     | { username?: string; password?: string }
@@ -48,7 +70,7 @@ export async function POST(request: NextRequest) {
 
   if (!username || !password) {
     return NextResponse.json(
-      { code: "AUTH-001", message: "用户名和密码不能为空" },
+      { code: "AUTH-001", message: authMessage(request, "AUTH-001") },
       { status: 400 },
     );
   }
@@ -56,19 +78,19 @@ export async function POST(request: NextRequest) {
   const ip = clientIP(request);
   if (isRateLimited(ip)) {
     return NextResponse.json(
-      { code: "AUTH-003", message: "登录尝试过于频繁，请稍后重试" },
+      { code: "AUTH-003", message: authMessage(request, "AUTH-003") },
       { status: 429 },
     );
   }
 
   if (username !== ADMIN_USERNAME || password !== ADMIN_PASSWORD) {
     return NextResponse.json(
-      { code: "AUTH-002", message: "用户名或密码错误" },
+      { code: "AUTH-002", message: authMessage(request, "AUTH-002") },
       { status: 401 },
     );
   }
 
-  const token = await createSessionToken(username);
+  const token = await createSessionToken(username, DEFAULT_ROLE);
   loginAttempts.delete(ip);
   const response = NextResponse.json({ code: "0", message: "ok" });
   response.cookies.set(SESSION_COOKIE_NAME, token, sessionCookieOptions());

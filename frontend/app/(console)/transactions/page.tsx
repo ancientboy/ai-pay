@@ -1,12 +1,12 @@
 "use client";
 
 import { useMutation } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { DetailModal } from "@/components/detail-modal";
 import { useLocale } from "@/components/locale-provider";
 import { useToast } from "@/components/toast-provider";
 import { pay, queryBalance, queryLedger, queryTransaction } from "@/lib/console-api";
-import { toReadableError } from "@/lib/error-map";
+import { ApiClientError, toReadableError } from "@/lib/error-map";
 import { formatStatus } from "@/lib/i18n";
 import { getValidationSchemas } from "@/lib/validation";
 
@@ -18,22 +18,79 @@ type TxRow = {
   createdAt?: string;
 };
 
+type RecoverAction = "pay" | "status" | "balance" | "ledger";
+
+type RecoverableError = {
+  message: string;
+  code?: string;
+  requestId?: string;
+  action: RecoverAction;
+};
+
+type FilterDraft = {
+  statusFilter: "ALL" | "SETTLED" | "FAILED";
+  keyword: string;
+  queryVa: string;
+  queryTxId: string;
+};
+
+const TX_FILTER_DRAFT_KEY = "ai-pay.transactions.filters.v1";
+
+function loadFilterDraft(): FilterDraft {
+  if (typeof window === "undefined") {
+    return { statusFilter: "ALL", keyword: "", queryVa: "", queryTxId: "" };
+  }
+  try {
+    const raw = window.localStorage.getItem(TX_FILTER_DRAFT_KEY);
+    if (!raw) {
+      return { statusFilter: "ALL", keyword: "", queryVa: "", queryTxId: "" };
+    }
+    const parsed = JSON.parse(raw) as FilterDraft;
+    return {
+      statusFilter: parsed.statusFilter ?? "ALL",
+      keyword: parsed.keyword ?? "",
+      queryVa: parsed.queryVa ?? "",
+      queryTxId: parsed.queryTxId ?? "",
+    };
+  } catch {
+    return { statusFilter: "ALL", keyword: "", queryVa: "", queryTxId: "" };
+  }
+}
+
 export default function TransactionsPage() {
   const { t, locale } = useLocale();
   const { paySchema } = useMemo(() => getValidationSchemas(locale), [locale]);
   const { showToast } = useToast();
+  const [draft] = useState<FilterDraft>(() => loadFilterDraft());
   const [payerDid, setPayerDid] = useState("");
   const [merchantId, setMerchantId] = useState("m1");
   const [amount, setAmount] = useState("1");
-  const [queryTxId, setQueryTxId] = useState("");
-  const [queryVa, setQueryVa] = useState("");
+  const [queryTxId, setQueryTxId] = useState(draft.queryTxId);
+  const [queryVa, setQueryVa] = useState(draft.queryVa);
   const [message, setMessage] = useState("");
   const [rows, setRows] = useState<TxRow[]>([]);
-  const [statusFilter, setStatusFilter] = useState<"ALL" | "SETTLED" | "FAILED">("ALL");
-  const [keyword, setKeyword] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"ALL" | "SETTLED" | "FAILED">(draft.statusFilter);
+  const [keyword, setKeyword] = useState(draft.keyword);
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<TxRow | null>(null);
+  const [errorDetails, setErrorDetails] = useState<RecoverableError | null>(null);
   const pageSize = 10;
+
+  useEffect(() => {
+    const draft: FilterDraft = { statusFilter, keyword, queryVa, queryTxId };
+    window.localStorage.setItem(TX_FILTER_DRAFT_KEY, JSON.stringify(draft));
+  }, [statusFilter, keyword, queryVa, queryTxId]);
+
+  function setRecoverError(err: unknown, action: RecoverAction) {
+    const message = toReadableError(err, locale);
+    setMessage(message);
+    setErrorDetails(
+      err instanceof ApiClientError
+        ? { message, code: err.code, requestId: err.requestId, action }
+        : { message, action },
+    );
+    showToast("error", message);
+  }
 
   const filteredRows = useMemo(() => {
     return rows.filter((row) => {
@@ -66,12 +123,11 @@ export default function TransactionsPage() {
         ...prev,
       ]);
       setMessage(`${t("transactions.paySuccess")}: ${data.transactionId}`);
+      setErrorDetails(null);
       showToast("success", `${t("transactions.paySuccess")}: ${data.transactionId}`);
     },
     onError: (err) => {
-      const msg = `${t("common.failed")}: ${toReadableError(err, locale)}`;
-      setMessage(msg);
-      showToast("error", msg);
+      setRecoverError(err, "pay");
     },
   });
 
@@ -80,12 +136,11 @@ export default function TransactionsPage() {
     onSuccess: (data) => {
       const localizedStatus = formatStatus(locale, data.Status);
       setMessage(`${t("transactions.status")}: ${localizedStatus}, ${t("transactions.amount")}=${data.Amount}`);
+      setErrorDetails(null);
       showToast("info", `${t("transactions.status")}: ${localizedStatus}`);
     },
     onError: (err) => {
-      const msg = `${t("transactions.queryStatus")} ${t("common.failed").toLowerCase()}: ${toReadableError(err, locale)}`;
-      setMessage(msg);
-      showToast("error", msg);
+      setRecoverError(err, "status");
     },
   });
 
@@ -93,12 +148,11 @@ export default function TransactionsPage() {
     mutationFn: () => queryBalance(queryVa),
     onSuccess: (data) => {
       setMessage(`${t("agents.balance")}: ${data.balance}`);
+      setErrorDetails(null);
       showToast("info", `${t("agents.balance")}: ${data.balance}`);
     },
     onError: (err) => {
-      const msg = `${t("transactions.queryBalance")} ${t("common.failed").toLowerCase()}: ${toReadableError(err, locale)}`;
-      setMessage(msg);
-      showToast("error", msg);
+      setRecoverError(err, "balance");
     },
   });
 
@@ -114,14 +168,54 @@ export default function TransactionsPage() {
       }));
       setRows(mapped);
       setMessage(`${t("transactions.queryLedger")}: ${mapped.length} ${t("transactions.records")}`);
+      setErrorDetails(null);
       showToast("info", `${t("transactions.queryLedger")}: ${mapped.length}`);
     },
     onError: (err) => {
-      const msg = `${t("transactions.queryLedger")} ${t("common.failed").toLowerCase()}: ${toReadableError(err, locale)}`;
-      setMessage(msg);
-      showToast("error", msg);
+      setRecoverError(err, "ledger");
     },
   });
+
+  function retryLastError() {
+    if (!errorDetails) {
+      return;
+    }
+    switch (errorDetails.action) {
+      case "pay":
+        payMutation.mutate();
+        break;
+      case "status":
+        statusMutation.mutate();
+        break;
+      case "balance":
+        balanceMutation.mutate();
+        break;
+      case "ledger":
+        ledgerMutation.mutate();
+        break;
+      default:
+        break;
+    }
+  }
+
+  async function copyErrorInfo() {
+    if (!errorDetails) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(
+        [
+          `${t("common.errorMessage")}: ${errorDetails.message}`,
+          `${t("common.errorCode")}: ${errorDetails.code ?? t("common.notAvailable")}`,
+          `${t("common.requestId")}: ${errorDetails.requestId ?? t("common.notAvailable")}`,
+          `${t("common.failedAction")}: ${errorDetails.action}`,
+        ].join("\n"),
+      );
+      showToast("success", t("common.copySuccess"));
+    } catch {
+      showToast("error", t("common.copyFailed"));
+    }
+  }
 
   return (
     <section className="space-y-6">
@@ -138,6 +232,7 @@ export default function TransactionsPage() {
             className="space-y-2"
             onSubmit={(e) => {
               e.preventDefault();
+              setErrorDetails(null);
               const parsed = paySchema.safeParse({
                 payerDid,
                 merchantId,
@@ -212,6 +307,28 @@ export default function TransactionsPage() {
           </div>
         </div>
         {message ? <p className="mb-3 text-sm text-slate-300">{message}</p> : null}
+        {errorDetails ? (
+          <div className="mb-3 rounded-md border border-rose-700/60 bg-rose-950/30 p-3 text-xs text-rose-100">
+            <p>{t("common.errorCode")}: {errorDetails.code ?? t("common.notAvailable")}</p>
+            <p>{t("common.requestId")}: {errorDetails.requestId ?? t("common.notAvailable")}</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={retryLastError}
+                className="rounded border border-rose-500/60 px-2 py-1"
+              >
+                {t("common.retry")}
+              </button>
+              <button
+                type="button"
+                onClick={copyErrorInfo}
+                className="rounded border border-rose-500/60 px-2 py-1"
+              >
+                {t("common.copyError")}
+              </button>
+            </div>
+          </div>
+        ) : null}
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <select
             value={statusFilter}

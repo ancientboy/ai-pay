@@ -16,6 +16,7 @@ Open [http://127.0.0.1:3000](http://127.0.0.1:3000).
 ## Environment
 
 - `NEXT_PUBLIC_API_BASE_URL`: backend API endpoint.
+- `NEXT_PUBLIC_LOG_SEARCH_URL_TEMPLATE`: optional requestId log-search template, e.g. `https://logs.example.com/search?q={requestId}`.
 - Default value in `.env.example`: `http://127.0.0.1:8080`
 - Runtime override supported in Settings page (stored in localStorage).
 

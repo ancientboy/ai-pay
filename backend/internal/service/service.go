@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -99,6 +100,30 @@ type DeveloperWebhook struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+type WebhookDelivery struct {
+	ID          int64           `json:"id"`
+	WebhookID   string          `json:"webhookId"`
+	URL         string          `json:"url"`
+	Event       string          `json:"event"`
+	DedupeKey   string          `json:"dedupeKey"`
+	Payload     json.RawMessage `json:"payload"`
+	Status      string          `json:"status"`
+	Attempts    int             `json:"attempts"`
+	MaxAttempts int             `json:"maxAttempts"`
+	NextRetryAt time.Time       `json:"nextRetryAt"`
+	LastError   string          `json:"lastError,omitempty"`
+	CreatedAt   time.Time       `json:"createdAt"`
+	UpdatedAt   time.Time       `json:"updatedAt"`
+}
+
+type WebhookDeliveryStats struct {
+	Pending  int `json:"pending"`
+	Retrying int `json:"retrying"`
+	Sent     int `json:"sent"`
+	Dead     int `json:"dead"`
+	Total    int `json:"total"`
+}
+
 type Service struct {
 	mu             sync.Mutex
 	agents         map[string]Agent
@@ -115,6 +140,8 @@ type Service struct {
 	actionIdem     map[string]struct{}
 	apiKeys        []DeveloperAPIKey
 	webhooks       []DeveloperWebhook
+	webhookDeliver []WebhookDelivery
+	webhookSeq     int64
 }
 
 type holdRecord struct {
@@ -147,6 +174,9 @@ type PaymentService interface {
 	ListWebhooks() []DeveloperWebhook
 	CreateWebhook(url string, event string) (DeveloperWebhook, error)
 	DeleteWebhook(id string) error
+	ListWebhookDeliveries(status string, event string, webhookID string, limit int, offset int) ([]WebhookDelivery, error)
+	ReplayWebhookDelivery(id int64) error
+	WebhookDeliveryStats() (WebhookDeliveryStats, error)
 }
 
 func New() *Service {
@@ -165,6 +195,7 @@ func New() *Service {
 		actionIdem:     map[string]struct{}{},
 		apiKeys:        []DeveloperAPIKey{},
 		webhooks:       []DeveloperWebhook{},
+		webhookDeliver: []WebhookDelivery{},
 	}
 }
 
@@ -386,6 +417,14 @@ func (s *Service) ResolveSettling(transactionID string, success bool) error {
 		tx.Fee = calcFee(tx.Amount)
 		tx.NetAmount = tx.Amount - tx.Fee
 		tx.Status = "SETTLED"
+		s.enqueueWebhookDelivery("payment.settled", "tx:"+transactionID, map[string]any{
+			"transactionId": transactionID,
+			"status":        "SETTLED",
+			"amount":        tx.Amount,
+			"fee":           tx.Fee,
+			"netAmount":     tx.NetAmount,
+			"time":          time.Now().UTC().Format(time.RFC3339),
+		})
 	} else {
 		if err := s.releaseHold(tx.HoldID); err != nil {
 			return err
@@ -444,6 +483,13 @@ func (s *Service) Refund(transactionID string, idemKey string) error {
 	acc.Balance += tx.Amount
 	tx.Status = "REFUNDED"
 	s.orders[transactionID] = tx
+	s.enqueueWebhookDelivery("payment.refunded", "tx:"+transactionID, map[string]any{
+		"transactionId": transactionID,
+		"status":        "REFUNDED",
+		"amount":        tx.Amount,
+		"agentDid":      tx.PayerDID,
+		"time":          time.Now().UTC().Format(time.RFC3339),
+	})
 	s.actionIdem["refund:"+idemKey] = struct{}{}
 	return nil
 }
@@ -617,7 +663,9 @@ func (s *Service) ListAPIKeys() []DeveloperAPIKey {
 	limit := 50
 	out := make([]DeveloperAPIKey, 0, limit)
 	for _, item := range s.apiKeys {
-		out = append(out, item)
+		masked := item
+		masked.Key = maskAPIKey(item.Key)
+		out = append(out, masked)
 		if len(out) >= limit {
 			break
 		}
@@ -632,13 +680,16 @@ func (s *Service) CreateAPIKey(name string) (DeveloperAPIKey, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	plainKey := fmt.Sprintf("ak_live_%d", time.Now().UnixNano())
 	item := DeveloperAPIKey{
 		ID:        fmt.Sprintf("key_%d", time.Now().UnixNano()),
 		Name:      trimmed,
-		Key:       fmt.Sprintf("ak_live_%d", time.Now().UnixNano()),
+		Key:       plainKey,
 		CreatedAt: time.Now().UTC(),
 	}
-	s.apiKeys = append([]DeveloperAPIKey{item}, s.apiKeys...)
+	stored := item
+	stored.Key = hashAPIKey(plainKey)
+	s.apiKeys = append([]DeveloperAPIKey{stored}, s.apiKeys...)
 	return item, nil
 }
 
@@ -682,8 +733,8 @@ func (s *Service) ListWebhooks() []DeveloperWebhook {
 func (s *Service) CreateWebhook(url string, event string) (DeveloperWebhook, error) {
 	trimmedURL := strings.TrimSpace(url)
 	trimmedEvent := strings.TrimSpace(event)
-	if trimmedURL == "" || (!strings.HasPrefix(trimmedURL, "http://") && !strings.HasPrefix(trimmedURL, "https://")) {
-		return DeveloperWebhook{}, &APIError{Code: "PAY-010", Message: "invalid webhook url"}
+	if err := validateWebhookURL(trimmedURL); err != nil {
+		return DeveloperWebhook{}, err
 	}
 	if trimmedEvent == "" {
 		trimmedEvent = "payment.settled"
@@ -721,4 +772,113 @@ func (s *Service) DeleteWebhook(id string) error {
 	}
 	s.webhooks = next
 	return nil
+}
+
+func (s *Service) ListWebhookDeliveries(status string, event string, webhookID string, limit int, offset int) ([]WebhookDelivery, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	status = strings.ToUpper(strings.TrimSpace(status))
+	event = strings.TrimSpace(event)
+	webhookID = strings.TrimSpace(webhookID)
+	out := make([]WebhookDelivery, 0, limit)
+	skipped := 0
+	for _, item := range s.webhookDeliver {
+		if status != "" && strings.ToUpper(item.Status) != status {
+			continue
+		}
+		if event != "" && item.Event != event {
+			continue
+		}
+		if webhookID != "" && item.WebhookID != webhookID {
+			continue
+		}
+		if skipped < offset {
+			skipped++
+			continue
+		}
+		out = append(out, item)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (s *Service) ReplayWebhookDelivery(id int64) error {
+	if id <= 0 {
+		return &APIError{Code: "PAY-010", Message: "invalid id"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, item := range s.webhookDeliver {
+		if item.ID != id {
+			continue
+		}
+		item.Status = "PENDING"
+		item.Attempts = 0
+		item.NextRetryAt = time.Now().UTC()
+		item.LastError = ""
+		item.UpdatedAt = time.Now().UTC()
+		s.webhookDeliver[i] = item
+		return nil
+	}
+	return &APIError{Code: "PAY-010", Message: "delivery not found"}
+}
+
+func (s *Service) WebhookDeliveryStats() (WebhookDeliveryStats, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stats := WebhookDeliveryStats{}
+	for _, item := range s.webhookDeliver {
+		switch strings.ToUpper(strings.TrimSpace(item.Status)) {
+		case "PENDING":
+			stats.Pending++
+		case "RETRYING":
+			stats.Retrying++
+		case "SENT":
+			stats.Sent++
+		case "DEAD":
+			stats.Dead++
+		}
+		stats.Total++
+	}
+	return stats, nil
+}
+
+func (s *Service) enqueueWebhookDelivery(event, dedupeKey string, payload map[string]any) {
+	if len(s.webhooks) == 0 {
+		return
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	now := time.Now().UTC()
+	for _, wh := range s.webhooks {
+		if wh.Event != event {
+			continue
+		}
+		s.webhookSeq++
+		item := WebhookDelivery{
+			ID:          s.webhookSeq,
+			WebhookID:   wh.ID,
+			URL:         wh.URL,
+			Event:       event,
+			DedupeKey:   dedupeKey,
+			Payload:     json.RawMessage(body),
+			Status:      "PENDING",
+			Attempts:    0,
+			MaxAttempts: 5,
+			NextRetryAt: now,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		s.webhookDeliver = append([]WebhookDelivery{item}, s.webhookDeliver...)
+	}
 }

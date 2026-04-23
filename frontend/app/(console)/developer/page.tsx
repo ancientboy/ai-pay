@@ -2,18 +2,38 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { DetailModal } from "@/components/detail-modal";
 import { useLocale } from "@/components/locale-provider";
 import { useToast } from "@/components/toast-provider";
 import {
   createDeveloperApiKey,
   createDeveloperWebhook,
+  getDeveloperWebhookDeliveryStats,
   listDeveloperApiKeys,
+  listDeveloperWebhookDeliveries,
   listDeveloperWebhooks,
+  replayWebhookDelivery,
 } from "@/lib/console-api";
 import { toReadableError } from "@/lib/error-map";
+import { formatStatus } from "@/lib/i18n";
 
 type ApiKeyItem = { id: string; name: string; key: string; createdAt: string };
 type WebhookItem = { id: string; url: string; event: string; createdAt: string };
+type DeliveryItem = {
+  id: number;
+  webhookId: string;
+  url: string;
+  event: string;
+  dedupeKey: string;
+  payload: Record<string, unknown>;
+  status: "PENDING" | "RETRYING" | "SENT" | "DEAD";
+  attempts: number;
+  maxAttempts: number;
+  nextRetryAt: string;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+};
 
 export default function DeveloperPage() {
   const { t, locale } = useLocale();
@@ -22,6 +42,12 @@ export default function DeveloperPage() {
   const [apiKeyName, setApiKeyName] = useState("default");
   const [webhookURL, setWebhookURL] = useState("");
   const [webhookEvent, setWebhookEvent] = useState("payment.settled");
+  const [deliveryStatus, setDeliveryStatus] = useState<"" | DeliveryItem["status"]>("");
+  const [deliveryEvent, setDeliveryEvent] = useState("");
+  const [deliveryWebhookId, setDeliveryWebhookId] = useState("");
+  const [deliveryPage, setDeliveryPage] = useState(1);
+  const [selectedDelivery, setSelectedDelivery] = useState<DeliveryItem | null>(null);
+  const pageSize = 10;
 
   const apiKeysQuery = useQuery({
     queryKey: ["developer", "apiKeys"],
@@ -31,6 +57,23 @@ export default function DeveloperPage() {
   const webhooksQuery = useQuery({
     queryKey: ["developer", "webhooks"],
     queryFn: listDeveloperWebhooks,
+  });
+
+  const deliveryStatsQuery = useQuery({
+    queryKey: ["developer", "deliveries", "stats"],
+    queryFn: getDeveloperWebhookDeliveryStats,
+  });
+
+  const deliveriesQuery = useQuery({
+    queryKey: ["developer", "deliveries", deliveryStatus, deliveryEvent, deliveryWebhookId, deliveryPage],
+    queryFn: () =>
+      listDeveloperWebhookDeliveries({
+        status: deliveryStatus,
+        event: deliveryEvent.trim(),
+        webhookId: deliveryWebhookId.trim(),
+        limit: pageSize,
+        offset: (deliveryPage - 1) * pageSize,
+      }),
   });
 
   const createApiKeyMutation = useMutation({
@@ -66,6 +109,38 @@ export default function DeveloperPage() {
       showToast("error", toReadableError(err, locale));
     },
   });
+
+  const replayDeliveryMutation = useMutation({
+    mutationFn: (id: number) => replayWebhookDelivery(id),
+    onSuccess: () => {
+      showToast("success", t("developer.replaySuccess"));
+      queryClient.invalidateQueries({ queryKey: ["developer", "deliveries"] });
+      queryClient.invalidateQueries({ queryKey: ["developer", "deliveries", "stats"] });
+    },
+    onError: (err) => {
+      showToast("error", toReadableError(err, locale));
+    },
+  });
+
+  const stats = deliveryStatsQuery.data ?? {
+    pending: 0,
+    retrying: 0,
+    sent: 0,
+    dead: 0,
+    total: 0,
+  };
+
+  const selectedRequestID = extractRequestID(selectedDelivery?.payload);
+  const requestSearchURL = buildRequestSearchURL(selectedRequestID);
+
+  async function copyText(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast("success", t("common.copySuccess"));
+    } catch {
+      showToast("error", t("common.copyFailed"));
+    }
+  }
 
   return (
     <section className="space-y-6">
@@ -156,6 +231,257 @@ export default function DeveloperPage() {
           </ul>
         </div>
       </div>
+
+      <div className="space-y-4 rounded-xl border border-slate-800 bg-slate-900 p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-medium text-slate-200">{t("developer.deliveryCenter")}</h3>
+            <p className="mt-1 text-xs text-slate-400">{t("developer.deliverySubtitle")}</p>
+          </div>
+          <button
+            onClick={() => {
+              deliveriesQuery.refetch();
+              deliveryStatsQuery.refetch();
+            }}
+            className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-200"
+          >
+            {t("developer.refresh")}
+          </button>
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-5">
+          {([
+            ["pending", stats.pending, "PENDING"],
+            ["retrying", stats.retrying, "RETRYING"],
+            ["sent", stats.sent, "SENT"],
+            ["dead", stats.dead, "DEAD"],
+            ["total", stats.total, "TOTAL"],
+          ] as const).map(([key, value, status]) => (
+            <div key={key} className="rounded-md border border-slate-800 bg-slate-950 p-3">
+              <p className="text-xs text-slate-400">
+                {status === "TOTAL" ? t("developer.total") : formatStatus(locale, status)}
+              </p>
+              <p className="mt-1 text-lg font-semibold text-slate-100">{value}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="grid gap-2 md:grid-cols-3">
+          <select
+            value={deliveryStatus}
+            onChange={(e) => {
+              setDeliveryStatus(e.target.value as "" | DeliveryItem["status"]);
+              setDeliveryPage(1);
+            }}
+            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+          >
+            <option value="">{t("developer.allStatus")}</option>
+            <option value="PENDING">{formatStatus(locale, "PENDING")}</option>
+            <option value="RETRYING">{formatStatus(locale, "RETRYING")}</option>
+            <option value="SENT">{formatStatus(locale, "SENT")}</option>
+            <option value="DEAD">{formatStatus(locale, "DEAD")}</option>
+          </select>
+          <input
+            value={deliveryEvent}
+            onChange={(e) => {
+              setDeliveryEvent(e.target.value);
+              setDeliveryPage(1);
+            }}
+            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+            placeholder={t("developer.eventFilter")}
+          />
+          <input
+            value={deliveryWebhookId}
+            onChange={(e) => {
+              setDeliveryWebhookId(e.target.value);
+              setDeliveryPage(1);
+            }}
+            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+            placeholder={t("developer.webhookIdFilter")}
+          />
+        </div>
+        <div className="grid gap-2 md:grid-cols-2">
+          <button
+            onClick={() => deliveriesQuery.refetch()}
+            className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200"
+          >
+            {t("developer.refresh")}
+          </button>
+          <div className="flex items-center justify-end gap-2 text-xs text-slate-300">
+            <button
+              onClick={() => setDeliveryPage((prev) => Math.max(1, prev - 1))}
+              disabled={deliveryPage === 1}
+              className="rounded border border-slate-700 px-2 py-1 disabled:opacity-40"
+            >
+              {t("transactions.prev")}
+            </button>
+            <span>
+              {t("transactions.page")} {deliveryPage}
+            </span>
+            <button
+              onClick={() => {
+                if ((deliveriesQuery.data ?? []).length >= pageSize) {
+                  setDeliveryPage((prev) => prev + 1);
+                }
+              }}
+              disabled={(deliveriesQuery.data ?? []).length < pageSize}
+              className="rounded border border-slate-700 px-2 py-1 disabled:opacity-40"
+            >
+              {t("transactions.next")}
+            </button>
+          </div>
+        </div>
+
+        <ul className="space-y-2 text-xs text-slate-300">
+          {(deliveriesQuery.data ?? []).map((item) => (
+            <li key={item.id} className="rounded border border-slate-800 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-mono text-slate-400">#{item.id} · {item.event}</p>
+                <span className="rounded border border-slate-700 px-2 py-0.5 text-[11px]">
+                  {formatStatus(locale, item.status)}
+                </span>
+              </div>
+              <p className="mt-1 truncate font-mono text-[11px] text-slate-500">{item.url}</p>
+              <p className="mt-1 text-[11px] text-slate-400">
+                {t("developer.attempts")}: {item.attempts}/{item.maxAttempts} · {t("developer.nextRetryAt")}:{" "}
+                {item.nextRetryAt ? new Date(item.nextRetryAt).toLocaleString() : "-"}
+              </p>
+              <p className="mt-1 break-all text-[11px] text-slate-400">
+                {t("developer.dedupeKey")}: {item.dedupeKey}
+              </p>
+              {item.lastError ? (
+                <p className="mt-1 break-all text-[11px] text-red-300">
+                  {t("developer.lastError")}: {item.lastError}
+                </p>
+              ) : null}
+              <details className="mt-2">
+                <summary className="cursor-pointer text-[11px] text-slate-400">
+                  {t("developer.payload")}
+                </summary>
+                <pre className="mt-1 overflow-x-auto rounded bg-slate-950 p-2 text-[11px] text-slate-300">
+                  {JSON.stringify(item.payload, null, 2)}
+                </pre>
+              </details>
+              {item.status === "DEAD" ? (
+                <button
+                  onClick={() => replayDeliveryMutation.mutate(item.id)}
+                  disabled={replayDeliveryMutation.isPending}
+                  className="mt-2 rounded-md bg-amber-600 px-2 py-1 text-[11px] text-white"
+                >
+                  {t("developer.replay")}
+                </button>
+              ) : null}
+              <button
+                onClick={() => setSelectedDelivery(item)}
+                className="mt-2 ml-2 rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-200"
+              >
+                {t("developer.viewDetail")}
+              </button>
+            </li>
+          ))}
+          {(deliveriesQuery.data ?? []).length === 0 ? (
+            <li className="text-slate-500">{t("developer.noDeliveries")}</li>
+          ) : null}
+        </ul>
+      </div>
+      <DetailModal
+        open={!!selectedDelivery}
+        title={t("developer.deliveryDetail")}
+        onClose={() => setSelectedDelivery(null)}
+      >
+        {selectedDelivery ? (
+          <div className="space-y-2 text-xs">
+            <p className="font-mono text-slate-300">#{selectedDelivery.id}</p>
+            <p>{t("developer.webhookIdLabel")}: {selectedDelivery.webhookId}</p>
+            <p className="break-all font-mono text-slate-400">{selectedDelivery.url}</p>
+            <p>{t("transactions.status")}: {formatStatus(locale, selectedDelivery.status)}</p>
+            <p>
+              {t("developer.attempts")}: {selectedDelivery.attempts}/{selectedDelivery.maxAttempts}
+            </p>
+            <p>
+              {t("common.requestId")}: {selectedRequestID ?? t("common.notAvailable")}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => copyText(buildReplayCurl(selectedDelivery))}
+                className="rounded border border-slate-700 px-2 py-1"
+              >
+                {t("developer.copyReplayCurl")}
+              </button>
+              <button
+                onClick={() =>
+                  copyText(JSON.stringify(selectedDelivery.payload ?? {}, null, 2))
+                }
+                className="rounded border border-slate-700 px-2 py-1"
+              >
+                {t("developer.copyPayload")}
+              </button>
+              {selectedRequestID ? (
+                <button
+                  onClick={() => copyText(selectedRequestID)}
+                  className="rounded border border-slate-700 px-2 py-1"
+                >
+                  {t("developer.copyRequestId")}
+                </button>
+              ) : null}
+              {requestSearchURL ? (
+                <a
+                  href={requestSearchURL}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded border border-blue-600/60 px-2 py-1 text-blue-300"
+                >
+                  {t("developer.searchRequestId")}
+                </a>
+              ) : null}
+            </div>
+            <pre className="max-h-72 overflow-auto rounded bg-slate-950 p-2 text-[11px] text-slate-300">
+              {JSON.stringify(selectedDelivery.payload ?? {}, null, 2)}
+            </pre>
+          </div>
+        ) : null}
+      </DetailModal>
     </section>
   );
+}
+
+function extractRequestID(payload?: Record<string, unknown> | null): string | null {
+  if (!payload) {
+    return null;
+  }
+  const direct = payload.requestId ?? payload.request_id;
+  if (typeof direct === "string" && direct.trim()) {
+    return direct.trim();
+  }
+  const meta = payload.meta;
+  if (meta && typeof meta === "object") {
+    const maybe = (meta as Record<string, unknown>).requestId;
+    if (typeof maybe === "string" && maybe.trim()) {
+      return maybe.trim();
+    }
+  }
+  return null;
+}
+
+function buildRequestSearchURL(requestID: string | null): string | null {
+  if (!requestID) {
+    return null;
+  }
+  const template = process.env.NEXT_PUBLIC_LOG_SEARCH_URL_TEMPLATE;
+  if (!template || !template.trim()) {
+    return null;
+  }
+  return template.replaceAll("{requestId}", encodeURIComponent(requestID));
+}
+
+function buildReplayCurl(item: DeliveryItem): string {
+  const payload = JSON.stringify(item.payload ?? {}, null, 2);
+  const escapedPayload = payload.replace(/'/g, "'\"'\"'");
+  return [
+    `curl -X POST '${item.url}' \\`,
+    "  -H 'Content-Type: application/json' \\",
+    `  -H 'X-Webhook-Event: ${item.event}' \\`,
+    `  -H 'X-Webhook-Delivery-Id: ${item.id}' \\`,
+    "  -d '" + escapedPayload + "'",
+  ].join("\n");
 }

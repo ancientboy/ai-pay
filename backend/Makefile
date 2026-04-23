@@ -31,6 +31,8 @@ migrate:
 	mysql -uroot -proot ai_pay < migrations/004_add_account_hold.sql
 	mysql -uroot -proot ai_pay < migrations/005_add_agent_did_pub_key.sql
 	mysql -uroot -proot ai_pay < migrations/006_add_pay_order_hold_id.sql
+	mysql -uroot -proot ai_pay < migrations/007_add_developer_resources.sql
+	mysql -uroot -proot ai_pay < migrations/008_add_webhook_delivery_task.sql
 
 health:
 	curl -s http://127.0.0.1:8080/health

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { verifySessionToken } from "@/lib/session";
+import { parseSessionToken } from "@/lib/session";
 
 const protectedPaths = [
   "/dashboard",
@@ -20,7 +20,11 @@ export function proxy(request: NextRequest) {
 
   const session = request.cookies.get("ai_pay_session")?.value;
   return (async () => {
-    if (await verifySessionToken(session)) {
+    const claims = await parseSessionToken(session);
+    if (claims) {
+      if (pathname.startsWith("/developer") && claims.role === "readonly") {
+        return NextResponse.redirect(new URL("/dashboard", request.url));
+      }
       return NextResponse.next();
     }
     const loginURL = new URL("/login", request.url);

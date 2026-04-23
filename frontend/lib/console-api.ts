@@ -40,12 +40,29 @@ async function request<T>(
     ...init,
     headers,
   });
-  const payload = (await response.json()) as ApiResponse<T>;
-  if (!response.ok || payload.code !== "0") {
+  let payload: ApiResponse<T> | null = null;
+  try {
+    payload = (await response.json()) as ApiResponse<T>;
+  } catch {
+    payload = null;
+  }
+  if (!response.ok || payload?.code !== "0") {
+    const requestId =
+      response.headers.get("x-request-id") ||
+      (payload?.data &&
+      typeof payload.data === "object" &&
+      payload.data !== null &&
+      "requestId" in payload.data
+        ? String((payload.data as { requestId?: string }).requestId ?? "")
+        : undefined);
     throw new ApiClientError(
-      payload.code || "PAY-010",
-      payload.message || "request failed",
+      payload?.code || "PAY-010",
+      payload?.message || "request failed",
+      requestId,
     );
+  }
+  if (!payload) {
+    throw new ApiClientError("PAY-010", "request failed");
   }
   return payload.data;
 }
@@ -209,6 +226,32 @@ export type DeveloperWebhook = {
   createdAt: string;
 };
 
+export type WebhookDeliveryStatus = "PENDING" | "RETRYING" | "SENT" | "DEAD";
+
+export type DeveloperWebhookDelivery = {
+  id: number;
+  webhookId: string;
+  url: string;
+  event: string;
+  dedupeKey: string;
+  payload: Record<string, unknown>;
+  status: WebhookDeliveryStatus;
+  attempts: number;
+  maxAttempts: number;
+  nextRetryAt: string;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type DeveloperWebhookDeliveryStats = {
+  pending: number;
+  retrying: number;
+  sent: number;
+  dead: number;
+  total: number;
+};
+
 export function listApiKeys() {
   return request<DeveloperAPIKey[]>("/developer/api-keys");
 }
@@ -231,6 +274,50 @@ export function createWebhook(url: string, event: string) {
   });
 }
 
+export function listWebhookDeliveries(input?: {
+  status?: WebhookDeliveryStatus | "";
+  event?: string;
+  webhookId?: string;
+  limit?: number;
+  offset?: number;
+}) {
+  const query = new URLSearchParams();
+  if (input?.status) {
+    query.set("status", input.status);
+  }
+  if (input?.event && input.event.trim()) {
+    query.set("event", input.event.trim());
+  }
+  if (input?.webhookId && input.webhookId.trim()) {
+    query.set("webhookId", input.webhookId.trim());
+  }
+  if (input?.limit && Number.isFinite(input.limit) && input.limit > 0) {
+    query.set("limit", String(input.limit));
+  }
+  if (
+    typeof input?.offset === "number" &&
+    Number.isFinite(input.offset) &&
+    input.offset >= 0
+  ) {
+    query.set("offset", String(input.offset));
+  }
+  const suffix = query.toString();
+  return request<DeveloperWebhookDelivery[]>(
+    `/developer/webhook-deliveries${suffix ? `?${suffix}` : ""}`,
+  );
+}
+
+export function getWebhookDeliveryStats() {
+  return request<DeveloperWebhookDeliveryStats>("/developer/webhook-deliveries/stats");
+}
+
+export function replayWebhookDelivery(id: number) {
+  return request("/developer/webhook-deliveries/replay", {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  });
+}
+
 // Backward-compatible aliases for pages using older names.
 export const listDeveloperApiKeys = listApiKeys;
 export const createDeveloperApiKey = createApiKey;
@@ -238,3 +325,5 @@ export const listDeveloperWebhooks = listWebhooks;
 export function createDeveloperWebhook(input: { url: string; event: string }) {
   return createWebhook(input.url, input.event);
 }
+export const listDeveloperWebhookDeliveries = listWebhookDeliveries;
+export const getDeveloperWebhookDeliveryStats = getWebhookDeliveryStats;

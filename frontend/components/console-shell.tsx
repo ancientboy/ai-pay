@@ -1,18 +1,25 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import { useState } from "react";
 import { LocaleSwitcher } from "@/components/locale-switcher";
 import { useLocale } from "@/components/locale-provider";
 
 export function ConsoleShell({ children }: { children: React.ReactNode }) {
   const { t } = useLocale();
+  const router = useRouter();
+  const pathname = usePathname();
+  const [loggingOut, setLoggingOut] = useState(false);
+  const defaultRole = process.env.NEXT_PUBLIC_AI_PAY_DEFAULT_ROLE ?? "operator";
+  const canManageDeveloper = defaultRole !== "readonly";
   const navItems = [
     { href: "/dashboard", label: t("nav.dashboard") },
     { href: "/agents", label: t("nav.agents") },
     { href: "/authorize", label: t("nav.authorize") },
     { href: "/recharge", label: t("nav.recharge") },
     { href: "/transactions", label: t("nav.transactions") },
-    { href: "/developer", label: t("nav.developer") },
+    ...(canManageDeveloper ? [{ href: "/developer", label: t("nav.developer") }] : []),
     { href: "/settings", label: t("nav.settings") },
   ];
 
@@ -29,7 +36,11 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
               <Link
                 key={item.href}
                 href={item.href}
-                className="rounded-md px-3 py-2 text-sm text-slate-300 transition hover:bg-slate-800 hover:text-white"
+                className={`rounded-md px-3 py-2 text-sm transition ${
+                  pathname.startsWith(item.href)
+                    ? "bg-slate-800 text-white"
+                    : "text-slate-300 hover:bg-slate-800 hover:text-white"
+                }`}
               >
                 {item.label}
               </Link>
@@ -45,10 +56,30 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
               <p className="text-sm text-slate-300">{t("app.controlCenter")}</p>
             </div>
             <div className="flex items-center gap-3">
+              <div className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">
+                {t("app.role")}: {defaultRole}
+              </div>
               <LocaleSwitcher />
               <div className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">
                 {t("common.environment")}: {t("common.local")}
               </div>
+              <button
+                type="button"
+                disabled={loggingOut}
+                onClick={async () => {
+                  setLoggingOut(true);
+                  try {
+                    await fetch("/api/auth/logout", { method: "POST" });
+                  } finally {
+                    router.replace("/login");
+                    router.refresh();
+                    setLoggingOut(false);
+                  }
+                }}
+                className="rounded border border-slate-700 px-3 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-60"
+              >
+                {loggingOut ? `${t("common.loading")}` : t("common.logout")}
+              </button>
             </div>
           </header>
           <main className="flex-1 p-6">{children}</main>

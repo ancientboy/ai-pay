@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -356,6 +357,17 @@ SET status = 'SETTLED', fee = ?, net_amount = ?
 WHERE order_id = ?`, fee, net, transactionID); err != nil {
 			return err
 		}
+		payload := map[string]any{
+			"transactionId": transactionID,
+			"status":        "SETTLED",
+			"amount":        amount,
+			"fee":           fee,
+			"netAmount":     net,
+			"time":          time.Now().UTC().Format(time.RFC3339),
+		}
+		if err := s.enqueueWebhookEventTx(tx, "payment.settled", "tx:"+transactionID, payload); err != nil {
+			return err
+		}
 	} else {
 		if err := s.releaseHoldTx(tx, holdID.String); err != nil {
 			return err
@@ -428,10 +440,50 @@ SET status = 'REFUNDED'
 WHERE order_id = ?`, transactionID); err != nil {
 		return err
 	}
+	payload := map[string]any{
+		"transactionId": transactionID,
+		"status":        "REFUNDED",
+		"amount":        amount,
+		"agentDid":      agentDID,
+		"time":          time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := s.enqueueWebhookEventTx(tx, "payment.refunded", "tx:"+transactionID, payload); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
 	return s.store.Redis.Set(ctx, idem, transactionID, 24*time.Hour).Err()
+}
+
+func (s *PersistentService) enqueueWebhookEventTx(tx *sql.Tx, event, dedupeKey string, payload map[string]any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	rows, err := tx.Query(`
+SELECT id, url
+FROM developer_webhook
+WHERE event = ?`, event)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var webhookID, url string
+		if err := rows.Scan(&webhookID, &url); err != nil {
+			continue
+		}
+		if _, err := tx.Exec(`
+INSERT IGNORE INTO webhook_delivery_task
+  (webhook_id, url, event, dedupe_key, payload, status, attempts, max_attempts, next_retry_at, created_at, updated_at)
+VALUES
+  (?, ?, ?, ?, ?, 'PENDING', 0, 5, UTC_TIMESTAMP(), UTC_TIMESTAMP(), UTC_TIMESTAMP())`,
+			webhookID, url, event, dedupeKey, string(body)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *PersistentService) BalanceByVA(va string) (float64, error) {
@@ -582,6 +634,7 @@ LIMIT ?`, limit)
 		if err := rows.Scan(&item.ID, &item.Name, &item.Key, &item.CreatedAt); err != nil {
 			continue
 		}
+		item.Key = maskAPIKey(item.Key)
 		out = append(out, item)
 	}
 	return out
@@ -592,15 +645,17 @@ func (s *PersistentService) CreateDeveloperAPIKey(name string) (DeveloperAPIKey,
 	if trimmed == "" {
 		return DeveloperAPIKey{}, &APIError{Code: "PAY-010", Message: "invalid name"}
 	}
+	plainKey := fmt.Sprintf("ak_live_%d", time.Now().UnixNano())
 	item := DeveloperAPIKey{
 		ID:        fmt.Sprintf("key_%d", time.Now().UnixNano()),
 		Name:      trimmed,
-		Key:       fmt.Sprintf("ak_live_%d", time.Now().UnixNano()),
+		Key:       plainKey,
 		CreatedAt: time.Now().UTC(),
 	}
+	hashed := hashAPIKey(plainKey)
 	if _, err := s.store.DB.Exec(`
 INSERT INTO developer_api_key (id, name, api_key, created_at)
-VALUES (?, ?, ?, ?)`, item.ID, item.Name, item.Key, item.CreatedAt); err != nil {
+VALUES (?, ?, ?, ?)`, item.ID, item.Name, hashed, item.CreatedAt); err != nil {
 		return DeveloperAPIKey{}, err
 	}
 	return item, nil
@@ -633,8 +688,8 @@ LIMIT ?`, limit)
 
 func (s *PersistentService) CreateDeveloperWebhook(url string, event string) (DeveloperWebhook, error) {
 	trimmedURL := strings.TrimSpace(url)
-	if trimmedURL == "" || (!strings.HasPrefix(trimmedURL, "http://") && !strings.HasPrefix(trimmedURL, "https://")) {
-		return DeveloperWebhook{}, &APIError{Code: "PAY-010", Message: "invalid url"}
+	if err := validateWebhookURL(trimmedURL); err != nil {
+		return DeveloperWebhook{}, err
 	}
 	trimmedEvent := strings.TrimSpace(event)
 	if trimmedEvent == "" {
@@ -690,6 +745,107 @@ func (s *PersistentService) DeleteWebhook(id string) error {
 		return err
 	}
 	return nil
+}
+
+func (s *PersistentService) ListWebhookDeliveries(status string, event string, webhookID string, limit int, offset int) ([]WebhookDelivery, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	args := make([]any, 0, 3)
+	query := `
+SELECT id, webhook_id, url, event, dedupe_key, payload, status, attempts, max_attempts, next_retry_at, COALESCE(last_error, ''), created_at, updated_at
+FROM webhook_delivery_task
+WHERE 1 = 1`
+	if trimmed := strings.ToUpper(strings.TrimSpace(status)); trimmed != "" {
+		query += " AND status = ?"
+		args = append(args, trimmed)
+	}
+	if trimmed := strings.TrimSpace(event); trimmed != "" {
+		query += " AND event = ?"
+		args = append(args, trimmed)
+	}
+	if trimmed := strings.TrimSpace(webhookID); trimmed != "" {
+		query += " AND webhook_id = ?"
+		args = append(args, trimmed)
+	}
+	query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	args = append(args, limit)
+	args = append(args, offset)
+	rows, err := s.store.DB.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]WebhookDelivery, 0, limit)
+	for rows.Next() {
+		var item WebhookDelivery
+		var payloadRaw []byte
+		if err := rows.Scan(
+			&item.ID, &item.WebhookID, &item.URL, &item.Event, &item.DedupeKey, &payloadRaw,
+			&item.Status, &item.Attempts, &item.MaxAttempts, &item.NextRetryAt, &item.LastError, &item.CreatedAt, &item.UpdatedAt,
+		); err != nil {
+			continue
+		}
+		item.Payload = json.RawMessage(payloadRaw)
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func (s *PersistentService) ReplayWebhookDelivery(id int64) error {
+	if id <= 0 {
+		return &APIError{Code: "PAY-010", Message: "invalid id"}
+	}
+	result, err := s.store.DB.Exec(`
+UPDATE webhook_delivery_task
+SET status = 'PENDING',
+    attempts = 0,
+    next_retry_at = UTC_TIMESTAMP(),
+    last_error = NULL,
+    updated_at = UTC_TIMESTAMP()
+WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return &APIError{Code: "PAY-010", Message: "delivery not found"}
+	}
+	return nil
+}
+
+func (s *PersistentService) WebhookDeliveryStats() (WebhookDeliveryStats, error) {
+	stats := WebhookDeliveryStats{}
+	rows, err := s.store.DB.Query(`
+SELECT status, COUNT(*)
+FROM webhook_delivery_task
+GROUP BY status`)
+	if err != nil {
+		return stats, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			continue
+		}
+		switch strings.ToUpper(strings.TrimSpace(status)) {
+		case "PENDING":
+			stats.Pending += count
+		case "RETRYING":
+			stats.Retrying += count
+		case "SENT":
+			stats.Sent += count
+		case "DEAD":
+			stats.Dead += count
+		}
+		stats.Total += count
+	}
+	return stats, nil
 }
 
 func merchantInWhitelist(raw string, merchant string) bool {

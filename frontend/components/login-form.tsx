@@ -3,10 +3,11 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useLocale } from "@/components/locale-provider";
+import { ApiClientError, toReadableError } from "@/lib/error-map";
 
 export function LoginForm({ next = "/dashboard" }: { next?: string }) {
   const router = useRouter();
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("admin123");
   const [error, setError] = useState("");
@@ -31,7 +32,11 @@ export function LoginForm({ next = "/dashboard" }: { next?: string }) {
               message?: string;
             };
             if (!response.ok || payload.code !== "0") {
-              setError(payload.message || t("login.failed"));
+              if (payload.code) {
+                setError(toReadableError(new ApiClientError(payload.code, payload.message ?? ""), locale));
+              } else {
+                setError(payload.message || t("login.failed"));
+              }
               return;
             }
             router.replace(next);

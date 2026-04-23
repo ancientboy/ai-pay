@@ -10,6 +10,15 @@ const messages: Record<Locale, DictObject> = {
       close: "关闭",
       create: "创建",
       save: "保存",
+      retry: "重试",
+      logout: "退出登录",
+      copyError: "复制错误信息",
+      copySuccess: "已复制到剪贴板",
+      copyFailed: "复制失败，请手动复制",
+      errorCode: "错误码",
+      requestId: "请求ID",
+      errorMessage: "错误信息",
+      failedAction: "失败动作",
       loading: "加载中...",
       success: "成功",
       failed: "失败",
@@ -38,6 +47,7 @@ const messages: Record<Locale, DictObject> = {
       controlCenter: "控制中心",
       aiNative: "AI 原生支付",
       language: "语言",
+      role: "角色",
     },
     login: {
       title: "AI Pay 登录",
@@ -63,6 +73,11 @@ const messages: Record<Locale, DictObject> = {
       timestamp: "时间戳",
       ready: "就绪",
       trend: "趋势",
+      metricsUnavailableTitle: "指标暂时不可用",
+      metricsUnavailableDesc: "系统已降级展示基础信息，请稍后重试或刷新页面。",
+      retry: "重试加载",
+      spendAxis: "支出",
+      successAxis: "成功率%",
     },
     agents: {
       title: "Agent 管理",
@@ -103,6 +118,17 @@ const messages: Record<Locale, DictObject> = {
       rechargeId: "充值单号",
       settled: "充值已到账",
       noRecords: "暂无充值记录",
+      confirmTitle: "提交前确认",
+      confirmHint: "建议核对目标账户与金额，避免误充。",
+      target: "充值目标",
+      flowTitle: "到账流程说明",
+      flowStep1: "提交充值请求，系统生成充值订单。",
+      flowStep2: "风控和账户校验通过后进入处理状态。",
+      flowStep3: "订单完成后入账，可在最近记录中查看状态。",
+      commonFailuresTitle: "常见失败原因",
+      commonFailure1: "目标账户不存在或状态不可用。",
+      commonFailure2: "请求过快触发幂等/频控限制。",
+      commonFailure3: "通道异常，建议稍后重试并保留 requestId。",
     },
     transactions: {
       title: "交易",
@@ -134,6 +160,9 @@ const messages: Record<Locale, DictObject> = {
       settled: "已结算",
       failed: "失败",
       pending: "处理中",
+      sent: "已送达",
+      retrying: "重试中",
+      dead: "死信",
       unknown: "未知",
     },
     developer: {
@@ -151,6 +180,32 @@ const messages: Record<Locale, DictObject> = {
       webhookCreated: "Webhook 已创建",
       noWebhooks: "暂无 Webhook",
       addWebhook: "新增 Webhook",
+      deliveryCenter: "Webhook 投递中心",
+      deliverySubtitle: "查看投递状态、筛选记录并重放死信任务",
+      deliveryStats: "投递统计",
+      deliveryList: "投递记录",
+      statusFilter: "状态筛选",
+      eventFilter: "事件筛选",
+      webhookIdFilter: "Webhook ID 筛选",
+      allStatus: "全部状态",
+      allEvents: "全部事件",
+      refresh: "刷新",
+      replay: "重放",
+      replaySuccess: "重放任务已提交",
+      viewDetail: "查看详情",
+      deliveryDetail: "投递详情",
+      noDeliveries: "暂无投递记录",
+      total: "总数",
+      webhookIdLabel: "Webhook ID",
+      copyReplayCurl: "复制重放 curl",
+      copyPayload: "复制 Payload",
+      copyRequestId: "复制 Request ID",
+      searchRequestId: "检索 Request ID",
+      attempts: "尝试次数",
+      nextRetryAt: "下次重试",
+      lastError: "最近错误",
+      dedupeKey: "幂等键",
+      payload: "负载",
     },
     settings: {
       title: "设置",
@@ -186,6 +241,15 @@ const messages: Record<Locale, DictObject> = {
       close: "Close",
       create: "Create",
       save: "Save",
+      retry: "Retry",
+      logout: "Sign out",
+      copyError: "Copy error details",
+      copySuccess: "Copied to clipboard",
+      copyFailed: "Copy failed, please copy manually",
+      errorCode: "Error Code",
+      requestId: "Request ID",
+      errorMessage: "Error Message",
+      failedAction: "Failed Action",
       loading: "Loading...",
       success: "Success",
       failed: "Failed",
@@ -214,6 +278,7 @@ const messages: Record<Locale, DictObject> = {
       controlCenter: "Control Center",
       aiNative: "AI-native Payments",
       language: "Language",
+      role: "Role",
     },
     login: {
       title: "AI Pay Login",
@@ -239,6 +304,11 @@ const messages: Record<Locale, DictObject> = {
       timestamp: "Timestamp",
       ready: "Ready",
       trend: "Trend",
+      metricsUnavailableTitle: "Metrics temporarily unavailable",
+      metricsUnavailableDesc: "Showing fallback cards now. Please retry in a moment.",
+      retry: "Retry loading",
+      spendAxis: "Spend",
+      successAxis: "Success%",
     },
     agents: {
       title: "Agents",
@@ -279,6 +349,17 @@ const messages: Record<Locale, DictObject> = {
       rechargeId: "Recharge ID",
       settled: "Recharge settled",
       noRecords: "No records yet.",
+      confirmTitle: "Pre-submit Confirmation",
+      confirmHint: "Confirm target account and amount to avoid mistakes.",
+      target: "Recharge Target",
+      flowTitle: "Settlement Flow",
+      flowStep1: "Submit a recharge request and create a recharge order.",
+      flowStep2: "The order enters processing after validation and risk checks.",
+      flowStep3: "Funds are credited when settled and visible in recent records.",
+      commonFailuresTitle: "Common Failure Reasons",
+      commonFailure1: "Target account is missing or unavailable.",
+      commonFailure2: "Request was too frequent and hit idempotency/rate limit rules.",
+      commonFailure3: "Upstream channel issue, retry later and keep the request ID.",
     },
     transactions: {
       title: "Transactions",
@@ -310,6 +391,9 @@ const messages: Record<Locale, DictObject> = {
       settled: "Settled",
       failed: "Failed",
       pending: "Pending",
+      sent: "Sent",
+      retrying: "Retrying",
+      dead: "Dead-letter",
       unknown: "Unknown",
     },
     developer: {
@@ -327,6 +411,32 @@ const messages: Record<Locale, DictObject> = {
       webhookCreated: "Webhook created",
       noWebhooks: "No webhooks",
       addWebhook: "Add Webhook",
+      deliveryCenter: "Webhook Delivery Center",
+      deliverySubtitle: "Track delivery state, filter records, and replay dead-letter tasks",
+      deliveryStats: "Delivery Stats",
+      deliveryList: "Delivery Records",
+      statusFilter: "Status Filter",
+      eventFilter: "Event Filter",
+      webhookIdFilter: "Webhook ID Filter",
+      allStatus: "All Status",
+      allEvents: "All Events",
+      refresh: "Refresh",
+      replay: "Replay",
+      replaySuccess: "Replay submitted",
+      viewDetail: "View Detail",
+      deliveryDetail: "Delivery Detail",
+      noDeliveries: "No delivery records",
+      total: "Total",
+      webhookIdLabel: "Webhook ID",
+      copyReplayCurl: "Copy replay curl",
+      copyPayload: "Copy Payload",
+      copyRequestId: "Copy Request ID",
+      searchRequestId: "Search Request ID",
+      attempts: "Attempts",
+      nextRetryAt: "Next Retry",
+      lastError: "Last Error",
+      dedupeKey: "Dedupe Key",
+      payload: "Payload",
     },
     settings: {
       title: "Settings",
@@ -382,11 +492,26 @@ export function t(locale: Locale, key: string): string {
   let node: string | DictObject | undefined = messages[locale];
   for (const seg of segments) {
     if (!node || typeof node === "string") {
-      return key;
+      node = undefined;
+      break;
     }
     node = node[seg];
   }
-  return typeof node === "string" ? node : key;
+  if (typeof node === "string") {
+    return node;
+  }
+
+  let fallbackNode: string | DictObject | undefined = messages["zh-CN"];
+  for (const seg of segments) {
+    if (!fallbackNode || typeof fallbackNode === "string") {
+      return locale === "en-US" ? "Text unavailable" : "文案缺失";
+    }
+    fallbackNode = fallbackNode[seg];
+  }
+  if (typeof fallbackNode === "string") {
+    return fallbackNode;
+  }
+  return locale === "en-US" ? "Text unavailable" : "文案缺失";
 }
 
 export function formatStatus(locale: Locale, status?: string | null): string {
@@ -400,6 +525,12 @@ export function formatStatus(locale: Locale, status?: string | null): string {
     case "PENDING":
     case "PROCESSING":
       return t(locale, "status.pending");
+    case "SENT":
+      return t(locale, "status.sent");
+    case "RETRYING":
+      return t(locale, "status.retrying");
+    case "DEAD":
+      return t(locale, "status.dead");
     default:
       return status || t(locale, "status.unknown");
   }

@@ -33,8 +33,15 @@ export default async function DashboardPage() {
   const [health, ready, metrics] = await Promise.all([
     getHealth().catch(() => null),
     getReady().catch(() => null),
-    getDashboardMetrics(),
+    getDashboardMetrics().catch(() => null),
   ]);
+  const fallbackMetrics = {
+    totalBalance: 0,
+    todaySpend: 0,
+    paymentSuccessRate: 0,
+    alertCount: 0,
+  };
+  const metricData = metrics ?? fallbackMetrics;
 
   return (
     <section className="space-y-6">
@@ -43,15 +50,25 @@ export default async function DashboardPage() {
         <p className="mt-1 text-sm text-slate-400">{t(locale, "dashboard.subtitle")}</p>
       </div>
 
+      {!metrics ? (
+        <div className="rounded-xl border border-amber-700/60 bg-amber-950/30 p-4 text-sm text-amber-100">
+          <p className="font-medium">{t(locale, "dashboard.metricsUnavailableTitle")}</p>
+          <p className="mt-1 text-amber-200">{t(locale, "dashboard.metricsUnavailableDesc")}</p>
+          <a href="/dashboard" className="mt-3 inline-block rounded border border-amber-600/60 px-3 py-1 text-xs">
+            {t(locale, "dashboard.retry")}
+          </a>
+        </div>
+      ) : null}
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard label={t(locale, "dashboard.totalBalance")} value={metrics.totalBalance} />
-        <MetricCard label={t(locale, "dashboard.todaySpend")} value={metrics.todaySpend} />
+        <MetricCard label={t(locale, "dashboard.totalBalance")} value={metricData.totalBalance} />
+        <MetricCard label={t(locale, "dashboard.todaySpend")} value={metricData.todaySpend} />
         <MetricCard
           label={t(locale, "dashboard.successRate")}
-          value={metrics.paymentSuccessRate}
+          value={metricData.paymentSuccessRate}
           suffix="%"
         />
-        <MetricCard label={t(locale, "dashboard.openAlerts")} value={metrics.alertCount} />
+        <MetricCard label={t(locale, "dashboard.openAlerts")} value={metricData.alertCount} />
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
@@ -80,11 +97,13 @@ export default async function DashboardPage() {
       </div>
 
       <MetricsTrendChart
-        todaySpend={metrics.todaySpend}
-        successRate={metrics.paymentSuccessRate}
+        todaySpend={metricData.todaySpend}
+        successRate={metricData.paymentSuccessRate}
         title={t(locale, "dashboard.trend")}
         spendLabel={t(locale, "dashboard.todaySpend")}
         successLabel={t(locale, "dashboard.successRate")}
+        spendAxisLabel={t(locale, "dashboard.spendAxis")}
+        successAxisLabel={t(locale, "dashboard.successAxis")}
       />
     </section>
   );

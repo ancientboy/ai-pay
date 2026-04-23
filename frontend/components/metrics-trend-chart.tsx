@@ -8,12 +8,16 @@ export function MetricsTrendChart({
   title = "Trend",
   spendLabel = "Today Spend",
   successLabel = "Success Rate",
+  spendAxisLabel = "Spend",
+  successAxisLabel = "Success%",
 }: {
   todaySpend: number;
   successRate: number;
   title?: string;
   spendLabel?: string;
   successLabel?: string;
+  spendAxisLabel?: string;
+  successAxisLabel?: string;
 }) {
   const option = {
     backgroundColor: "transparent",
@@ -32,14 +36,14 @@ export function MetricsTrendChart({
     yAxis: [
       {
         type: "value",
-        name: "Spend",
+        name: spendAxisLabel,
         axisLabel: { color: "#9FB0CC" },
         axisLine: { lineStyle: { color: "#334155" } },
         splitLine: { lineStyle: { color: "#1F2937" } },
       },
       {
         type: "value",
-        name: "Success%",
+        name: successAxisLabel,
         min: 0,
         max: 100,
         axisLabel: { color: "#9FB0CC" },

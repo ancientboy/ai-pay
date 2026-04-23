@@ -9,6 +9,9 @@ const ERROR_MAP: Record<string, string> = {
   "PAY-008": "幂等键冲突或缺失",
   "PAY-009": "清算失败，已回滚",
   "PAY-010": "系统繁忙或请求参数无效",
+  "AUTH-001": "用户名和密码不能为空",
+  "AUTH-002": "用户名或密码错误",
+  "AUTH-003": "登录尝试过于频繁，请稍后重试",
 };
 
 const ERROR_MAP_EN: Record<string, string> = {
@@ -22,29 +25,38 @@ const ERROR_MAP_EN: Record<string, string> = {
   "PAY-008": "Idempotency key conflict or missing",
   "PAY-009": "Settlement failed and rolled back",
   "PAY-010": "System busy or invalid request",
+  "AUTH-001": "Username and password are required",
+  "AUTH-002": "Invalid username or password",
+  "AUTH-003": "Too many login attempts, please retry later",
 };
 
 export class ApiClientError extends Error {
   code: string;
+  requestId?: string;
+  rawMessage?: string;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, requestId?: string) {
     super(message);
     this.code = code;
+    this.requestId = requestId;
+    this.rawMessage = message;
     this.name = "ApiClientError";
   }
 }
 
 export function toReadableError(err: unknown, locale: "zh-CN" | "en-US" = "zh-CN"): string {
   const map = locale === "en-US" ? ERROR_MAP_EN : ERROR_MAP;
+  const unknown = locale === "en-US" ? "Unknown error" : "未知错误";
   if (err instanceof ApiClientError) {
     const friendly = map[err.code];
+    const wrappedCode = locale === "en-US" ? `(${err.code})` : `（${err.code}）`;
     if (friendly) {
-      return `${friendly}（${err.code}）`;
+      return `${friendly} ${wrappedCode}`;
     }
-    return `${err.message}（${err.code}）`;
+    return `${err.message} ${wrappedCode}`;
   }
   if (err instanceof Error) {
-    return err.message;
+    return err.message || unknown;
   }
-  return "未知错误";
+  return unknown;
 }

@@ -30,7 +30,29 @@ Go 实现的 MVP 后端，覆盖文档中第一阶段核心接口：
 - 基础限流：
   - 按 IP 每分钟限制
   - 按 Agent DID 每分钟限制
+  - 持久化模式自动启用 Redis 限流（多实例共享）
 - 支付日志脱敏输出（不记录签名原文）
+- 可选敏感接口鉴权（建议生产开启）：
+  - `ADMIN_BEARER_TOKEN`：管理员令牌；`developer/*` 写接口与 `/payment/unfreeze`、`/payment/refund` 需要管理员令牌
+  - `READONLY_BEARER_TOKEN`：只读令牌；可访问 `GET /developer/api-keys`、`GET /developer/webhooks`
+  - `CALLBACK_TOKEN`：开启后 `/payment/status/callback` 需：
+    - `X-Callback-Token: <token>`
+    - `X-Callback-Timestamp: <RFC3339>`
+    - `X-Callback-Nonce: <unique nonce>`（10 分钟窗口内不可复用，防重放）
+    - `X-Callback-Idempotency-Key: <retry-stable key>`（同 key 重试会返回幂等成功，负载变化会冲突）
+  - `CALLBACK_SIGNING_SECRET`：开启后额外要求：
+    - `X-Callback-Signature-Version: v1`
+    - `X-Callback-Signature`，算法：
+      - `hex(HMAC_SHA256(secret, transactionId|status|timestamp|nonce|idempotencyKey))`
+
+- 开发者安全能力：
+  - API Key 列表接口仅返回掩码值；完整 key 仅在创建时返回一次
+  - 服务端与数据库仅保存 API Key 哈希，不落明文
+  - Webhook URL 拦截 `localhost`、私网/回环/链路本地地址以及 `.local/.internal` 域名，降低 SSRF 风险
+  - Webhook 出站签名（可选）：配置 `WEBHOOK_SIGNING_SECRET` 后，投递附带：
+    - `X-Webhook-Timestamp` / `X-Webhook-Nonce` / `X-Webhook-Attempt`
+    - `X-Webhook-Signature-Version: v1`
+    - `X-Webhook-Signature: hex(HMAC_SHA256(secret, deliveryId|event|timestamp|nonce|attempt|rawBody))`
 
 ## 可观测与补偿（M3）
 
@@ -38,7 +60,12 @@ Go 实现的 MVP 后端，覆盖文档中第一阶段核心接口：
 - 持久化模式下自动启动定时任务：
   - 状态补偿（每 1 分钟）：将超时 `SETTLING` 订单标记为 `FAILED`
   - 日对账（每 5 分钟）：校验 `充值-支付` 与账户余额一致性
+  - Webhook 投递执行器（每 15 秒）：处理 `payment.settled` / `payment.refunded` 事件，失败自动重试并进入死信
 - 对账异常与任务失败会输出 `[ALERT]` 日志
+- 新增开发者投递运维接口：
+  - `GET /developer/webhook-deliveries`（支持 `status/event/webhookId/limit/offset`）
+  - `GET /developer/webhook-deliveries/stats`（返回 `pending/retrying/sent/dead/total` 聚合）
+  - `POST /developer/webhook-deliveries/replay`（按 `id` 重放）
 
 ## 联调与发布（M4）
 
@@ -65,7 +92,9 @@ docker compose up -d
 VA 卡号字段由 `migrations/003_add_va_card_no.sql` 提供。  
 冻结账务能力（`frozen_balance` + `account_hold`）由 `migrations/004_add_account_hold.sql` 提供。
 DID 公钥字段由 `migrations/005_add_agent_did_pub_key.sql` 提供。
-订单冻结关联字段（`pay_order.hold_id`）由 `migrations/006_add_pay_order_hold_id.sql` 提供。
+订单冻结关联字段（`pay_order.hold_id`）由 `migrations/006_add_pay_order_hold_id.sql` 提供。  
+开发者资源表（API Key / Webhook）由 `migrations/007_add_developer_resources.sql` 提供。
+Webhook 投递任务表（重试 + 死信）由 `migrations/008_add_webhook_delivery_task.sql` 提供。
 默认 docker 映射端口为 `3307 -> 3306`，避免与本机已有 MySQL 冲突。
 
 如果你在本地已经初始化过数据库，请手动执行：
@@ -76,6 +105,8 @@ mysql -uroot -proot ai_pay < migrations/003_add_va_card_no.sql
 mysql -uroot -proot ai_pay < migrations/004_add_account_hold.sql
 mysql -uroot -proot ai_pay < migrations/005_add_agent_did_pub_key.sql
 mysql -uroot -proot ai_pay < migrations/006_add_pay_order_hold_id.sql
+mysql -uroot -proot ai_pay < migrations/007_add_developer_resources.sql
+mysql -uroot -proot ai_pay < migrations/008_add_webhook_delivery_task.sql
 ```
 
 ## 运行
@@ -88,7 +119,10 @@ go run ./cmd/server
 ```
 
 默认端口 `8080`，可用环境变量 `PORT` 覆盖。  
-若未配置 `MYSQL_DSN` 与 `REDIS_ADDR`，服务会自动回退到内存模式。
+若未配置 `MYSQL_DSN` 与 `REDIS_ADDR`，服务会自动回退到内存模式。  
+服务已启用基础生产超时与优雅停机（`ReadHeaderTimeout` / `ReadTimeout` / `WriteTimeout` / `IdleTimeout` + `SIGTERM` 优雅关闭）。
+
+`GET /ready` 在持久化模式会执行 MySQL 与 Redis 探活，依赖异常时返回 `503` 与 `ready=false`。
 
 也可使用 `Makefile` 快速执行：
 
@@ -104,6 +138,8 @@ make test
 cd backend
 go test ./...
 ```
+
+持久化链路集成测试会读取环境变量 `MYSQL_DSN` / `REDIS_ADDR`；若未配置会自动 skip。
 
 端到端冒烟（需前端已启动在 `:3000`）：
 

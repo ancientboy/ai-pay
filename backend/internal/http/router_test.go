@@ -2,10 +2,12 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -154,6 +156,41 @@ func TestHealthAndReady(t *testing.T) {
 	handler.ServeHTTP(readyResp, readyReq)
 	if readyResp.Code != http.StatusOK {
 		t.Fatalf("ready expected 200 got %d", readyResp.Code)
+	}
+}
+
+func TestReadyReturns503WhenDependencyCheckFails(t *testing.T) {
+	svc := service.New()
+	server := NewServerWithReadiness(svc, func(ctx context.Context) error {
+		return errors.New("redis unavailable")
+	})
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	rr := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ready expected 503 got %d", rr.Code)
+	}
+	var payload struct {
+		Code string `json:"code"`
+		Data struct {
+			Ready bool   `json:"ready"`
+			Error string `json:"error"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal response failed: %v", err)
+	}
+	if payload.Code != "0" {
+		t.Fatalf("expected code 0 got %s", payload.Code)
+	}
+	if payload.Data.Ready {
+		t.Fatalf("expected ready=false when check fails")
+	}
+	if payload.Data.Error == "" {
+		t.Fatalf("expected error detail in ready response")
+	}
+	if payload.Data.Error != "dependency_unavailable" {
+		t.Fatalf("expected masked readiness error, got %s", payload.Data.Error)
 	}
 }
 
@@ -438,6 +475,16 @@ func TestDeveloperAPIKeyAndWebhookCRUD(t *testing.T) {
 	if listKeyResp.Code != http.StatusOK {
 		t.Fatalf("list api keys expected 200 got %d", listKeyResp.Code)
 	}
+	var listedKeyPayload map[string]any
+	_ = json.Unmarshal(listKeyResp.Body.Bytes(), &listedKeyPayload)
+	listData := listedKeyPayload["data"].([]any)
+	if len(listData) == 0 {
+		t.Fatalf("expected api key list to contain data")
+	}
+	listedFirst := listData[0].(map[string]any)
+	if listedFirst["key"] == keyData["key"] {
+		t.Fatalf("expected listed api key to be masked")
+	}
 
 	deleteKeyReq := httptest.NewRequest(http.MethodDelete, "/developer/api-keys?id="+keyID, nil)
 	deleteKeyResp := httptest.NewRecorder()
@@ -460,6 +507,39 @@ func TestDeveloperAPIKeyAndWebhookCRUD(t *testing.T) {
 	if createWebhookResp.Code != http.StatusOK {
 		t.Fatalf("create webhook expected 200 got %d", createWebhookResp.Code)
 	}
+	createRefundWebhookReq := httptest.NewRequest(
+		http.MethodPost,
+		"/developer/webhooks",
+		bytes.NewReader(mustJSONMap(t, map[string]string{
+			"url":   "https://example.com/hook-refund",
+			"event": "payment.refunded",
+		})),
+	)
+	createRefundWebhookReq.Header.Set("Content-Type", "application/json")
+	createRefundWebhookResp := httptest.NewRecorder()
+	handler.ServeHTTP(createRefundWebhookResp, createRefundWebhookReq)
+	if createRefundWebhookResp.Code != http.StatusOK {
+		t.Fatalf("create refund webhook expected 200 got %d", createRefundWebhookResp.Code)
+	}
+	var createdRefundHookPayload map[string]any
+	_ = json.Unmarshal(createRefundWebhookResp.Body.Bytes(), &createdRefundHookPayload)
+	refundHookData := createdRefundHookPayload["data"].(map[string]any)
+	refundHookID := refundHookData["id"].(string)
+
+	blockedWebhookReq := httptest.NewRequest(
+		http.MethodPost,
+		"/developer/webhooks",
+		bytes.NewReader(mustJSONMap(t, map[string]string{
+			"url":   "http://127.0.0.1/callback",
+			"event": "payment.settled",
+		})),
+	)
+	blockedWebhookReq.Header.Set("Content-Type", "application/json")
+	blockedWebhookResp := httptest.NewRecorder()
+	handler.ServeHTTP(blockedWebhookResp, blockedWebhookReq)
+	if blockedWebhookResp.Code != http.StatusBadRequest {
+		t.Fatalf("blocked webhook expected 400 got %d", blockedWebhookResp.Code)
+	}
 
 	var createdHookPayload map[string]any
 	_ = json.Unmarshal(createWebhookResp.Body.Bytes(), &createdHookPayload)
@@ -481,6 +561,295 @@ func TestDeveloperAPIKeyAndWebhookCRUD(t *testing.T) {
 	handler.ServeHTTP(deleteWebhookResp, deleteWebhookReq)
 	if deleteWebhookResp.Code != http.StatusOK {
 		t.Fatalf("delete webhook expected 200 got %d", deleteWebhookResp.Code)
+	}
+
+	agent := "did:gusd:agent:delivery-http"
+	_ = svc.RegisterAgent(agent)
+	acc := svc.CreateAccount(agent)
+	_ = svc.Recharge(acc.VAAccountID, "20", "rch-http-delivery-1")
+	_ = svc.SetAuthorizeRule(agent, "20", "100", []string{"m1"})
+	payResp, payErr := svc.Pay(service.PayRequest{
+		PayerDID:       agent,
+		MerchantID:     "m1",
+		Amount:         "2",
+		IdempotencyKey: "idem-http-delivery-pay-1",
+		Signature:      "sig",
+	})
+	if payErr != nil {
+		t.Fatalf("seed pay failed: %v", payErr)
+	}
+	if err := svc.Refund(payResp.TransactionID, "idem-http-delivery-refund-1"); err != nil {
+		t.Fatalf("seed refund failed: %v", err)
+	}
+	deliveryListReq := httptest.NewRequest(http.MethodGet, "/developer/webhook-deliveries?event=payment.refunded", nil)
+	deliveryListResp := httptest.NewRecorder()
+	handler.ServeHTTP(deliveryListResp, deliveryListReq)
+	if deliveryListResp.Code != http.StatusOK {
+		t.Fatalf("list webhook deliveries expected 200 got %d", deliveryListResp.Code)
+	}
+	var deliveryPayload map[string]any
+	_ = json.Unmarshal(deliveryListResp.Body.Bytes(), &deliveryPayload)
+	listed := deliveryPayload["data"].([]any)
+	if len(listed) == 0 {
+		t.Fatalf("expected webhook deliveries")
+	}
+	firstDelivery := listed[0].(map[string]any)
+	deliveryID := int64(firstDelivery["id"].(float64))
+	replayBody, _ := json.Marshal(map[string]any{"id": deliveryID})
+	replayReq := httptest.NewRequest(http.MethodPost, "/developer/webhook-deliveries/replay", bytes.NewReader(replayBody))
+	replayReq.Header.Set("Content-Type", "application/json")
+	replayResp := httptest.NewRecorder()
+	handler.ServeHTTP(replayResp, replayReq)
+	if replayResp.Code != http.StatusOK {
+		t.Fatalf("replay webhook delivery expected 200 got %d", replayResp.Code)
+	}
+	deliveryByWebhookReq := httptest.NewRequest(http.MethodGet, "/developer/webhook-deliveries?webhookId="+refundHookID+"&limit=1&offset=0", nil)
+	deliveryByWebhookResp := httptest.NewRecorder()
+	handler.ServeHTTP(deliveryByWebhookResp, deliveryByWebhookReq)
+	if deliveryByWebhookResp.Code != http.StatusOK {
+		t.Fatalf("delivery list by webhook id expected 200 got %d", deliveryByWebhookResp.Code)
+	}
+	deliveryStatsReq := httptest.NewRequest(http.MethodGet, "/developer/webhook-deliveries/stats", nil)
+	deliveryStatsResp := httptest.NewRecorder()
+	handler.ServeHTTP(deliveryStatsResp, deliveryStatsReq)
+	if deliveryStatsResp.Code != http.StatusOK {
+		t.Fatalf("delivery stats expected 200 got %d", deliveryStatsResp.Code)
+	}
+}
+
+func TestDeveloperEndpointsRequireAdminTokenWhenConfigured(t *testing.T) {
+	svc := service.New()
+	server := NewServerForTest(svc, time.Now, 100, 100)
+	server.SetAdminBearerToken("test-admin-token")
+	handler := server.Routes()
+
+	noAuthReq := httptest.NewRequest(http.MethodGet, "/developer/api-keys", nil)
+	noAuthResp := httptest.NewRecorder()
+	handler.ServeHTTP(noAuthResp, noAuthReq)
+	if noAuthResp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without admin token, got %d", noAuthResp.Code)
+	}
+
+	authedReq := httptest.NewRequest(http.MethodGet, "/developer/api-keys", nil)
+	authedReq.Header.Set("Authorization", "Bearer test-admin-token")
+	authedResp := httptest.NewRecorder()
+	handler.ServeHTTP(authedResp, authedReq)
+	if authedResp.Code != http.StatusOK {
+		t.Fatalf("expected 200 with admin token, got %d", authedResp.Code)
+	}
+}
+
+func TestDeveloperReadEndpointsAllowReadonlyToken(t *testing.T) {
+	svc := service.New()
+	server := NewServerForTest(svc, time.Now, 100, 100)
+	server.SetAdminBearerToken("admin-token")
+	server.SetReadonlyBearerToken("readonly-token")
+	handler := server.Routes()
+
+	readReq := httptest.NewRequest(http.MethodGet, "/developer/api-keys", nil)
+	readReq.Header.Set("Authorization", "Bearer readonly-token")
+	readResp := httptest.NewRecorder()
+	handler.ServeHTTP(readResp, readReq)
+	if readResp.Code != http.StatusOK {
+		t.Fatalf("readonly token should access developer read endpoint, got %d", readResp.Code)
+	}
+	readDeliveryReq := httptest.NewRequest(http.MethodGet, "/developer/webhook-deliveries", nil)
+	readDeliveryReq.Header.Set("Authorization", "Bearer readonly-token")
+	readDeliveryResp := httptest.NewRecorder()
+	handler.ServeHTTP(readDeliveryResp, readDeliveryReq)
+	if readDeliveryResp.Code != http.StatusOK {
+		t.Fatalf("readonly token should access delivery read endpoint, got %d", readDeliveryResp.Code)
+	}
+	readDeliveryStatsReq := httptest.NewRequest(http.MethodGet, "/developer/webhook-deliveries/stats", nil)
+	readDeliveryStatsReq.Header.Set("Authorization", "Bearer readonly-token")
+	readDeliveryStatsResp := httptest.NewRecorder()
+	handler.ServeHTTP(readDeliveryStatsResp, readDeliveryStatsReq)
+	if readDeliveryStatsResp.Code != http.StatusOK {
+		t.Fatalf("readonly token should access delivery stats endpoint, got %d", readDeliveryStatsResp.Code)
+	}
+
+	writeReq := httptest.NewRequest(http.MethodPost, "/developer/api-keys", bytes.NewReader(mustJSONMap(t, map[string]string{"name": "r"})))
+	writeReq.Header.Set("Content-Type", "application/json")
+	writeReq.Header.Set("Authorization", "Bearer readonly-token")
+	writeResp := httptest.NewRecorder()
+	handler.ServeHTTP(writeResp, writeReq)
+	if writeResp.Code != http.StatusUnauthorized {
+		t.Fatalf("readonly token should not access developer write endpoint, got %d", writeResp.Code)
+	}
+}
+
+func TestCallbackRequiresTokenWhenConfigured(t *testing.T) {
+	svc := service.New()
+	server := NewServerForTest(svc, time.Now, 100, 100)
+	server.SetCallbackToken("test-callback-token")
+	handler := server.Routes()
+
+	body := mustJSONMap(t, map[string]string{
+		"transactionId": "tx_1",
+		"status":        "SETTLED",
+	})
+	noTokenReq := httptest.NewRequest(http.MethodPost, "/payment/status/callback", bytes.NewReader(body))
+	noTokenReq.Header.Set("Content-Type", "application/json")
+	noTokenResp := httptest.NewRecorder()
+	handler.ServeHTTP(noTokenResp, noTokenReq)
+	if noTokenResp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without callback token, got %d", noTokenResp.Code)
+	}
+
+	tokenReq := httptest.NewRequest(http.MethodPost, "/payment/status/callback", bytes.NewReader(body))
+	tokenReq.Header.Set("Content-Type", "application/json")
+	tokenReq.Header.Set("X-Callback-Token", "test-callback-token")
+	tokenReq.Header.Set("X-Callback-Timestamp", time.Now().UTC().Format(time.RFC3339))
+	tokenReq.Header.Set("X-Callback-Nonce", "nonce-callback-1")
+	tokenReq.Header.Set("X-Callback-Idempotency-Key", "cb-idem-1")
+	tokenResp := httptest.NewRecorder()
+	handler.ServeHTTP(tokenResp, tokenReq)
+	// With token+timestamp+nonce it should pass auth and continue to business logic.
+	if tokenResp.Code == http.StatusUnauthorized {
+		t.Fatalf("expected callback auth checks to pass, got %d", tokenResp.Code)
+	}
+}
+
+func TestCallbackRejectsReplayedNonce(t *testing.T) {
+	svc := service.New()
+	server := NewServerForTest(svc, time.Now, 100, 100)
+	server.SetCallbackToken("test-callback-token")
+	handler := server.Routes()
+
+	body := mustJSONMap(t, map[string]string{
+		"transactionId": "tx_replay",
+		"status":        "SETTLED",
+	})
+	req1 := httptest.NewRequest(http.MethodPost, "/payment/status/callback", bytes.NewReader(body))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("X-Callback-Token", "test-callback-token")
+	req1.Header.Set("X-Callback-Timestamp", time.Now().UTC().Format(time.RFC3339))
+	req1.Header.Set("X-Callback-Nonce", "nonce-replay-1")
+	req1.Header.Set("X-Callback-Idempotency-Key", "cb-idem-replay-1")
+	resp1 := httptest.NewRecorder()
+	handler.ServeHTTP(resp1, req1)
+	if resp1.Code == http.StatusUnauthorized {
+		t.Fatalf("first callback should pass auth checks, got %d", resp1.Code)
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/payment/status/callback", bytes.NewReader(body))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("X-Callback-Token", "test-callback-token")
+	req2.Header.Set("X-Callback-Timestamp", time.Now().UTC().Format(time.RFC3339))
+	req2.Header.Set("X-Callback-Nonce", "nonce-replay-1")
+	req2.Header.Set("X-Callback-Idempotency-Key", "cb-idem-replay-2")
+	resp2 := httptest.NewRecorder()
+	handler.ServeHTTP(resp2, req2)
+	if resp2.Code != http.StatusConflict {
+		t.Fatalf("expected replay callback 409, got %d", resp2.Code)
+	}
+}
+
+func TestCallbackRequiresValidSignatureWhenConfigured(t *testing.T) {
+	svc := service.New()
+	server := NewServerForTest(svc, time.Now, 100, 100)
+	server.SetCallbackToken("token-secure")
+	server.SetCallbackSigningSecret("sign-secure")
+	handler := server.Routes()
+
+	body := mustJSONMap(t, map[string]string{
+		"transactionId": "tx_sign",
+		"status":        "SETTLED",
+	})
+	ts := time.Now().UTC().Format(time.RFC3339)
+	nonce := "nonce-sign-1"
+
+	reqWithoutSign := httptest.NewRequest(http.MethodPost, "/payment/status/callback", bytes.NewReader(body))
+	reqWithoutSign.Header.Set("Content-Type", "application/json")
+	reqWithoutSign.Header.Set("X-Callback-Token", "token-secure")
+	reqWithoutSign.Header.Set("X-Callback-Timestamp", ts)
+	reqWithoutSign.Header.Set("X-Callback-Nonce", nonce)
+	reqWithoutSign.Header.Set("X-Callback-Idempotency-Key", "cb-idem-sign-1")
+	respWithoutSign := httptest.NewRecorder()
+	handler.ServeHTTP(respWithoutSign, reqWithoutSign)
+	if respWithoutSign.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 without callback signature version, got %d", respWithoutSign.Code)
+	}
+
+	reqWithSign := httptest.NewRequest(http.MethodPost, "/payment/status/callback", bytes.NewReader(body))
+	reqWithSign.Header.Set("Content-Type", "application/json")
+	reqWithSign.Header.Set("X-Callback-Token", "token-secure")
+	reqWithSign.Header.Set("X-Callback-Timestamp", ts)
+	reqWithSign.Header.Set("X-Callback-Nonce", "nonce-sign-2")
+	reqWithSign.Header.Set("X-Callback-Idempotency-Key", "cb-idem-sign-2")
+	reqWithSign.Header.Set("X-Callback-Signature-Version", "v1")
+	reqWithSign.Header.Set("X-Callback-Signature", buildCallbackSignatureV1("sign-secure", "tx_sign", "SETTLED", ts, "nonce-sign-2", "cb-idem-sign-2"))
+	respWithSign := httptest.NewRecorder()
+	handler.ServeHTTP(respWithSign, reqWithSign)
+	if respWithSign.Code == http.StatusUnauthorized {
+		t.Fatalf("expected callback signature auth to pass with valid signature")
+	}
+}
+
+func TestCallbackReplayByIdempotencyKeyReturnsOK(t *testing.T) {
+	svc := service.New()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	agent := "did:gusd:agent:callback-idem"
+	_ = svc.RegisterAgent(agent)
+	_ = svc.SetAgentPublicKey(agent, base64.StdEncoding.EncodeToString(pub))
+	acc := svc.CreateAccount(agent)
+	_ = svc.Recharge(acc.VAAccountID, "50", "rch-http-cb-idem-1")
+	_ = svc.SetAuthorizeRule(agent, "50", "200", []string{"m_async"})
+
+	server := NewServerForTest(svc, time.Now, 100, 100)
+	server.SetCallbackToken("token-retry")
+	handler := server.Routes()
+
+	idemPay := "idem-cb-idem-pay-1"
+	tsPay := time.Now().UTC().Format(time.RFC3339)
+	signPayload := buildPaySignaturePayload(agent, "m_async", "10", idemPay, tsPay)
+	payBody := map[string]string{
+		"payerDid":   agent,
+		"merchantId": "m_async",
+		"amount":     "10",
+		"signature":  base64.StdEncoding.EncodeToString(ed25519.Sign(priv, signPayload)),
+	}
+	payReq := httptest.NewRequest(http.MethodPost, "/payment/x402/pay", bytes.NewReader(mustJSONMap(t, payBody)))
+	payReq.Header.Set("Content-Type", "application/json")
+	payReq.Header.Set("Idempotency-Key", idemPay)
+	payReq.Header.Set("X-Sign-Timestamp", tsPay)
+	payResp := httptest.NewRecorder()
+	handler.ServeHTTP(payResp, payReq)
+	if payResp.Code != http.StatusOK {
+		t.Fatalf("pay expected 200 got %d", payResp.Code)
+	}
+	var payPayload map[string]any
+	_ = json.Unmarshal(payResp.Body.Bytes(), &payPayload)
+	txID := payPayload["data"].(map[string]any)["transactionId"].(string)
+
+	body := mustJSONMap(t, map[string]string{
+		"transactionId": txID,
+		"status":        "SETTLED",
+	})
+	ts := time.Now().UTC().Format(time.RFC3339)
+
+	req1 := httptest.NewRequest(http.MethodPost, "/payment/status/callback", bytes.NewReader(body))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("X-Callback-Token", "token-retry")
+	req1.Header.Set("X-Callback-Timestamp", ts)
+	req1.Header.Set("X-Callback-Nonce", "nonce-retry-1")
+	req1.Header.Set("X-Callback-Idempotency-Key", "cb-idem-retry-1")
+	resp1 := httptest.NewRecorder()
+	handler.ServeHTTP(resp1, req1)
+	if resp1.Code != http.StatusOK {
+		t.Fatalf("expected first callback to succeed, got %d", resp1.Code)
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/payment/status/callback", bytes.NewReader(body))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("X-Callback-Token", "token-retry")
+	req2.Header.Set("X-Callback-Timestamp", ts)
+	req2.Header.Set("X-Callback-Nonce", "nonce-retry-1")
+	req2.Header.Set("X-Callback-Idempotency-Key", "cb-idem-retry-1")
+	resp2 := httptest.NewRecorder()
+	handler.ServeHTTP(resp2, req2)
+	if resp2.Code != http.StatusOK {
+		t.Fatalf("expected callback retry by same idempotency key to return 200, got %d", resp2.Code)
 	}
 }
 

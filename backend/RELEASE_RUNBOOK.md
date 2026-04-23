@@ -5,8 +5,16 @@
 1. **预发布验证**
    - 执行：`go test ./...`
    - 检查关键接口：开户、充值、授权、支付、状态查询
+   - 生产环境确认安全变量已配置：`ADMIN_BEARER_TOKEN`、`CALLBACK_TOKEN`
+   - 如需验证出站 webhook 验签，配置：`WEBHOOK_SIGNING_SECRET`
+   - 与回调方联调并确认请求头：
+     - `X-Callback-Token`
+     - `X-Callback-Timestamp`
+     - `X-Callback-Nonce`
+     - `X-Callback-Idempotency-Key`
+     - `X-Callback-Signature-Version`、`X-Callback-Signature`（启用 `CALLBACK_SIGNING_SECRET` 时必填）
 2. **数据库迁移**
-   - 顺序执行：`001_init.sql` -> `002_add_fee_and_recharge_log.sql` -> `003_add_va_card_no.sql` -> `004_add_account_hold.sql` -> `005_add_agent_did_pub_key.sql` -> `006_add_pay_order_hold_id.sql`
+   - 顺序执行：`001_init.sql` -> `002_add_fee_and_recharge_log.sql` -> `003_add_va_card_no.sql` -> `004_add_account_hold.sql` -> `005_add_agent_did_pub_key.sql` -> `006_add_pay_order_hold_id.sql` -> `007_add_developer_resources.sql` -> `008_add_webhook_delivery_task.sql`
    - 校验表结构与索引是否创建成功
 3. **小流量灰度**
    - 先仅开放 10% Agent DID 到新版本
@@ -22,6 +30,9 @@
 - 余额不一致告警（目标 = 0）
 - `PAY-003` 占比（余额不足，确认是否异常突增）
 - 429 限流占比（确认是否限流配置过严）
+- `GET /ready` 结果（持久化模式需稳定返回 `ready=true`）
+- Webhook 投递成功率与死信新增量（死信应保持低位，异常增长需立即排查）
+- 死信重放可用性（`POST /developer/webhook-deliveries/replay`）
 
 ## 回滚触发条件
 
@@ -34,7 +45,7 @@
 
 - 执行：`bash scripts/rollback.sh`
 - 回滚后验证：
-  - 健康检查通过：`/health`、`/ready`
+  - 健康检查通过：`/health` 返回 `status=ok`，`/ready` 返回 `ready=true`
   - 端到端冒烟通过：`bash scripts/smoke_test.sh`
   - 无新增对账告警
   - 支付成功率恢复

@@ -143,6 +143,20 @@ VALUES (?, ?, ?, UTC_TIMESTAMP())`, id, url, event); err != nil {
 	}, nil
 }
 
+func (s *Store) Ping(ctx context.Context) error {
+	if s.DB != nil {
+		if err := s.DB.PingContext(ctx); err != nil {
+			return fmt.Errorf("ping mysql: %w", err)
+		}
+	}
+	if s.Redis != nil {
+		if err := s.Redis.Ping(ctx).Err(); err != nil {
+			return fmt.Errorf("ping redis: %w", err)
+		}
+	}
+	return nil
+}
+
 func (s *Store) Close() error {
 	var errs []error
 	if s.Redis != nil {

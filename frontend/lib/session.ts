@@ -4,8 +4,9 @@ const SIGNATURE_ALGORITHM = { name: "HMAC", hash: "SHA-256" } as const;
 export const SESSION_COOKIE_NAME = "ai_pay_session";
 export const SESSION_TTL_SECONDS = 60 * 60 * 8;
 
-type SessionClaims = {
+export type SessionClaims = {
   sub: string;
+  role?: string;
   iat: number;
   exp: number;
 };
@@ -72,10 +73,11 @@ function safeEqual(a: string, b: string) {
   return diff === 0;
 }
 
-export async function createSessionToken(subject: string) {
+export async function createSessionToken(subject: string, role = "operator") {
   const now = Math.floor(Date.now() / 1000);
   const claims: SessionClaims = {
     sub: subject,
+    role,
     iat: now,
     exp: now + SESSION_TTL_SECONDS,
   };
@@ -85,17 +87,22 @@ export async function createSessionToken(subject: string) {
 }
 
 export async function verifySessionToken(token?: string) {
+  const claims = await parseSessionToken(token);
+  return !!claims;
+}
+
+export async function parseSessionToken(token?: string): Promise<SessionClaims | null> {
   if (!token) {
-    return false;
+    return null;
   }
   const [payloadSegment, signature] = token.split(".");
   if (!payloadSegment || !signature) {
-    return false;
+    return null;
   }
 
   const expected = await signPayload(payloadSegment);
   if (!safeEqual(signature, expected)) {
-    return false;
+    return null;
   }
 
   try {
@@ -104,17 +111,17 @@ export async function verifySessionToken(token?: string) {
     ) as SessionClaims;
     const now = Math.floor(Date.now() / 1000);
     if (!claims.sub || !claims.iat || !claims.exp) {
-      return false;
+      return null;
     }
     if (claims.exp <= now) {
-      return false;
+      return null;
     }
-    if (claims.iat > now+ 60) {
-      return false;
+    if (claims.iat > now + 60) {
+      return null;
     }
-    return true;
+    return claims;
   } catch {
-    return false;
+    return null;
   }
 }
 
