@@ -230,3 +230,11 @@ export function createWebhook(url: string, event: string) {
     body: JSON.stringify({ url, event }),
   });
 }
+
+// Backward-compatible aliases for pages using older names.
+export const listDeveloperApiKeys = listApiKeys;
+export const createDeveloperApiKey = createApiKey;
+export const listDeveloperWebhooks = listWebhooks;
+export function createDeveloperWebhook(input: { url: string; event: string }) {
+  return createWebhook(input.url, input.event);
+}
