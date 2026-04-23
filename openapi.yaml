@@ -1,0 +1,568 @@
+openapi: 3.0.3
+info:
+  title: AI Pay MVP API
+  version: 1.0.0
+  description: OpenAPI contract for currently implemented backend endpoints.
+servers:
+  - url: http://127.0.0.1:8080
+    description: Local backend server
+tags:
+  - name: system
+  - name: agent
+  - name: account
+  - name: recharge
+  - name: authorize
+  - name: payment
+  - name: metrics
+paths:
+  /health:
+    get:
+      tags: [system]
+      summary: Health check
+      responses:
+        "200":
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /ready:
+    get:
+      tags: [system]
+      summary: Readiness check
+      responses:
+        "200":
+          description: Service ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadyResponse"
+  /agent/did/register:
+    post:
+      tags: [agent]
+      summary: Register agent DID and public key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterAgentRequest"
+      responses:
+        "200":
+          description: Agent registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRegisterResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /account/create:
+    post:
+      tags: [account]
+      summary: Create wallet and VA account for agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAccountRequest"
+      responses:
+        "200":
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateAccountResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /agent/list:
+    get:
+      tags: [agent]
+      summary: List agents
+      responses:
+        "200":
+          description: Agent list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentListResponse"
+  /fund/recharge:
+    post:
+      tags: [recharge]
+      summary: Recharge by VA account or card number
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RechargeRequest"
+      responses:
+        "200":
+          description: Recharge accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /fund/recharge/list:
+    get:
+      tags: [recharge]
+      summary: List recharge records
+      parameters:
+        - in: query
+          name: accountId
+          schema:
+            type: string
+          required: false
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+          required: false
+      responses:
+        "200":
+          description: Recharge records
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RechargeListResponse"
+  /authorize/payment/set:
+    post:
+      tags: [authorize]
+      summary: Set payment authorize rule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthorizeRequest"
+      responses:
+        "200":
+          description: Rule set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /payment/x402/pay:
+    post:
+      tags: [payment]
+      summary: Execute x402 payment
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/SignTimestamp"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PayRequest"
+      responses:
+        "200":
+          description: Payment response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PayResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          description: Rate limited
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /payment/status/callback:
+    post:
+      tags: [payment]
+      summary: Resolve settling status from channel callback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StatusCallbackRequest"
+      responses:
+        "200":
+          description: Callback accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /payment/unfreeze:
+    post:
+      tags: [payment]
+      summary: Unfreeze a settling payment
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransactionActionRequest"
+      responses:
+        "200":
+          description: Unfreeze success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /payment/refund:
+    post:
+      tags: [payment]
+      summary: Refund a settled payment
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TransactionActionRequest"
+      responses:
+        "200":
+          description: Refund success
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /payment/status/query:
+    get:
+      tags: [payment]
+      summary: Query payment status by transaction ID
+      parameters:
+        - in: query
+          name: transactionId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Payment status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentStatusResponse"
+        "404":
+          description: Transaction not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /account/balance/query:
+    get:
+      tags: [account]
+      summary: Query VA balance
+      parameters:
+        - in: query
+          name: accountId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Balance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BalanceResponse"
+        "404":
+          description: Account not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /account/ledger/query:
+    get:
+      tags: [account]
+      summary: Query VA ledger
+      parameters:
+        - in: query
+          name: accountId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Ledger entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LedgerResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /metrics/overview:
+    get:
+      tags: [metrics]
+      summary: Query overview metrics
+      responses:
+        "200":
+          description: Metrics payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricsResponse"
+        "500":
+          description: Failed to query metrics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  parameters:
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      schema:
+        type: string
+    SignTimestamp:
+      in: header
+      name: X-Sign-Timestamp
+      required: true
+      schema:
+        type: string
+        format: date-time
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    MessageResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+    HealthResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          type: object
+          required: [status, requestId, time]
+          properties:
+            status:
+              type: string
+            requestId:
+              type: string
+            time:
+              type: string
+              format: date-time
+    ReadyResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          type: object
+          required: [ready, requestId, time]
+          properties:
+            ready:
+              type: boolean
+            requestId:
+              type: string
+            time:
+              type: string
+              format: date-time
+    RegisterAgentRequest:
+      type: object
+      required: [agentDid, didPubKey]
+      properties:
+        agentDid:
+          type: string
+        didPubKey:
+          type: string
+    Agent:
+      type: object
+      additionalProperties: true
+    AgentRegisterResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          $ref: "#/components/schemas/Agent"
+    CreateAccountRequest:
+      type: object
+      required: [agentDid]
+      properties:
+        agentDid:
+          type: string
+    Account:
+      type: object
+      properties:
+        WalletAddress:
+          type: string
+        VAAccountID:
+          type: string
+        VACardNo:
+          type: string
+        AgentDID:
+          type: string
+        Balance:
+          type: number
+    CreateAccountResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          $ref: "#/components/schemas/Account"
+    AgentListResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    RechargeRequest:
+      type: object
+      required: [amount]
+      properties:
+        vaAccountId:
+          type: string
+        vaCardNo:
+          type: string
+        amount:
+          type: string
+    RechargeListResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    AuthorizeRequest:
+      type: object
+      required: [agentDid, singleLimit, dailyLimit, whitelist]
+      properties:
+        agentDid:
+          type: string
+        singleLimit:
+          type: string
+        dailyLimit:
+          type: string
+        whitelist:
+          type: array
+          items:
+            type: string
+    PayRequest:
+      type: object
+      required: [payerDid, merchantId, amount, signature]
+      properties:
+        payerDid:
+          type: string
+        merchantId:
+          type: string
+        amount:
+          type: string
+        signature:
+          type: string
+    PayResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          type: object
+          properties:
+            transactionId:
+              type: string
+            status:
+              type: string
+    StatusCallbackRequest:
+      type: object
+      required: [transactionId, status]
+      properties:
+        transactionId:
+          type: string
+        status:
+          type: string
+          enum: [SETTLED, FAILED]
+    TransactionActionRequest:
+      type: object
+      required: [transactionId]
+      properties:
+        transactionId:
+          type: string
+    PaymentStatusResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
+    BalanceResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          type: object
+          required: [balance]
+          properties:
+            balance:
+              type: number
+    LedgerResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    MetricsResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
