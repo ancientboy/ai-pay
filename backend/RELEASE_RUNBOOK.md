@@ -6,7 +6,7 @@
    - 执行：`go test ./...`
    - 检查关键接口：开户、充值、授权、支付、状态查询
 2. **数据库迁移**
-   - 顺序执行：`001_init.sql` -> `002_add_fee_and_recharge_log.sql`
+   - 顺序执行：`001_init.sql` -> `002_add_fee_and_recharge_log.sql` -> `003_add_va_card_no.sql` -> `004_add_account_hold.sql` -> `005_add_agent_did_pub_key.sql` -> `006_add_pay_order_hold_id.sql`
    - 校验表结构与索引是否创建成功
 3. **小流量灰度**
    - 先仅开放 10% Agent DID 到新版本
@@ -32,8 +32,9 @@
 
 ## 回滚操作
 
-- 执行：`scripts/rollback.sh`
+- 执行：`bash scripts/rollback.sh`
 - 回滚后验证：
-  - 8 个接口冒烟通过
+  - 健康检查通过：`/health`、`/ready`
+  - 端到端冒烟通过：`bash scripts/smoke_test.sh`
   - 无新增对账告警
   - 支付成功率恢复
