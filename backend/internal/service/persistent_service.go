@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"ai-pay-backend/internal/storage"
@@ -13,6 +14,10 @@ import (
 
 type PersistentService struct {
 	store *storage.Store
+}
+
+type scanRows interface {
+	Scan(dest ...any) error
 }
 
 func NewPersistent(store *storage.Store) *PersistentService {
@@ -555,6 +560,136 @@ FROM fund_recharge_order`
 		out = append(out, item)
 	}
 	return out
+}
+
+func (s *PersistentService) ListDeveloperAPIKeys(limit int) []DeveloperAPIKey {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.store.DB.Query(`
+SELECT id, name, api_key, created_at
+FROM developer_api_key
+ORDER BY created_at DESC
+LIMIT ?`, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	out := make([]DeveloperAPIKey, 0, limit)
+	for rows.Next() {
+		var item DeveloperAPIKey
+		if err := rows.Scan(&item.ID, &item.Name, &item.Key, &item.CreatedAt); err != nil {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func (s *PersistentService) CreateDeveloperAPIKey(name string) (DeveloperAPIKey, error) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return DeveloperAPIKey{}, &APIError{Code: "PAY-010", Message: "invalid name"}
+	}
+	item := DeveloperAPIKey{
+		ID:        fmt.Sprintf("key_%d", time.Now().UnixNano()),
+		Name:      trimmed,
+		Key:       fmt.Sprintf("ak_live_%d", time.Now().UnixNano()),
+		CreatedAt: time.Now().UTC(),
+	}
+	if _, err := s.store.DB.Exec(`
+INSERT INTO developer_api_key (id, name, api_key, created_at)
+VALUES (?, ?, ?, ?)`, item.ID, item.Name, item.Key, item.CreatedAt); err != nil {
+		return DeveloperAPIKey{}, err
+	}
+	return item, nil
+}
+
+func (s *PersistentService) ListDeveloperWebhooks(limit int) []DeveloperWebhook {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.store.DB.Query(`
+SELECT id, url, event, created_at
+FROM developer_webhook
+ORDER BY created_at DESC
+LIMIT ?`, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	out := make([]DeveloperWebhook, 0, limit)
+	for rows.Next() {
+		var item DeveloperWebhook
+		if err := rows.Scan(&item.ID, &item.URL, &item.Event, &item.CreatedAt); err != nil {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func (s *PersistentService) CreateDeveloperWebhook(url string, event string) (DeveloperWebhook, error) {
+	trimmedURL := strings.TrimSpace(url)
+	if trimmedURL == "" || (!strings.HasPrefix(trimmedURL, "http://") && !strings.HasPrefix(trimmedURL, "https://")) {
+		return DeveloperWebhook{}, &APIError{Code: "PAY-010", Message: "invalid url"}
+	}
+	trimmedEvent := strings.TrimSpace(event)
+	if trimmedEvent == "" {
+		trimmedEvent = "payment.settled"
+	}
+	item := DeveloperWebhook{
+		ID:        fmt.Sprintf("wh_%d", time.Now().UnixNano()),
+		URL:       trimmedURL,
+		Event:     trimmedEvent,
+		CreatedAt: time.Now().UTC(),
+	}
+	if _, err := s.store.DB.Exec(`
+INSERT INTO developer_webhook (id, url, event, created_at)
+VALUES (?, ?, ?, ?)`, item.ID, item.URL, item.Event, item.CreatedAt); err != nil {
+		return DeveloperWebhook{}, err
+	}
+	return item, nil
+}
+
+func (s *PersistentService) ListAPIKeys() []DeveloperAPIKey {
+	return s.ListDeveloperAPIKeys(50)
+}
+
+func (s *PersistentService) CreateAPIKey(name string) (DeveloperAPIKey, error) {
+	return s.CreateDeveloperAPIKey(name)
+}
+
+func (s *PersistentService) DeleteAPIKey(id string) error {
+	trimmed := strings.TrimSpace(id)
+	if trimmed == "" {
+		return &APIError{Code: "PAY-010", Message: "invalid id"}
+	}
+	if _, err := s.store.DB.Exec(`DELETE FROM developer_api_key WHERE id = ?`, trimmed); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *PersistentService) ListWebhooks() []DeveloperWebhook {
+	return s.ListDeveloperWebhooks(50)
+}
+
+func (s *PersistentService) CreateWebhook(url string, event string) (DeveloperWebhook, error) {
+	return s.CreateDeveloperWebhook(url, event)
+}
+
+func (s *PersistentService) DeleteWebhook(id string) error {
+	trimmed := strings.TrimSpace(id)
+	if trimmed == "" {
+		return &APIError{Code: "PAY-010", Message: "invalid id"}
+	}
+	if _, err := s.store.DB.Exec(`DELETE FROM developer_webhook WHERE id = ?`, trimmed); err != nil {
+		return err
+	}
+	return nil
 }
 
 func merchantInWhitelist(raw string, merchant string) bool {

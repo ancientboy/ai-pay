@@ -194,3 +194,39 @@ export function listRecharges(accountId?: string, limit = 20) {
     }>
   >(`/fund/recharge/list?${query.toString()}`);
 }
+
+export type DeveloperAPIKey = {
+  id: string;
+  name: string;
+  key: string;
+  createdAt: string;
+};
+
+export type DeveloperWebhook = {
+  id: string;
+  url: string;
+  event: string;
+  createdAt: string;
+};
+
+export function listApiKeys() {
+  return request<DeveloperAPIKey[]>("/developer/api-keys");
+}
+
+export function createApiKey(name: string) {
+  return request<DeveloperAPIKey>("/developer/api-keys", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function listWebhooks() {
+  return request<DeveloperWebhook[]>("/developer/webhooks");
+}
+
+export function createWebhook(url: string, event: string) {
+  return request<DeveloperWebhook>("/developer/webhooks", {
+    method: "POST",
+    body: JSON.stringify({ url, event }),
+  });
+}

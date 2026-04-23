@@ -16,6 +16,20 @@ type Store struct {
 	Redis *redis.Client
 }
 
+type DeveloperAPIKeyRow struct {
+	ID        string
+	Name      string
+	Key       string
+	CreatedAt time.Time
+}
+
+type DeveloperWebhookRow struct {
+	ID        string
+	URL       string
+	Event     string
+	CreatedAt time.Time
+}
+
 type Config struct {
 	MySQLDSN      string
 	RedisAddr     string
@@ -47,6 +61,85 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 	return &Store{
 		DB:    db,
 		Redis: rdb,
+	}, nil
+}
+
+func (s *Store) ListDeveloperAPIKeys(limit int) []DeveloperAPIKeyRow {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.DB.Query(`
+SELECT id, name, api_key, created_at
+FROM developer_api_key
+ORDER BY created_at DESC
+LIMIT ?`, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]DeveloperAPIKeyRow, 0, limit)
+	for rows.Next() {
+		var item DeveloperAPIKeyRow
+		if err := rows.Scan(&item.ID, &item.Name, &item.Key, &item.CreatedAt); err != nil {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func (s *Store) CreateDeveloperAPIKey(name string) (DeveloperAPIKeyRow, error) {
+	id := fmt.Sprintf("key_%d", time.Now().UnixNano())
+	key := fmt.Sprintf("ak_live_%d", time.Now().UnixNano())
+	if _, err := s.DB.Exec(`
+INSERT INTO developer_api_key (api_key_id, name, api_key, created_at)
+VALUES (?, ?, ?, UTC_TIMESTAMP())`, id, name, key); err != nil {
+		return DeveloperAPIKeyRow{}, err
+	}
+	return DeveloperAPIKeyRow{
+		ID:        id,
+		Name:      name,
+		Key:       key,
+		CreatedAt: time.Now().UTC(),
+	}, nil
+}
+
+func (s *Store) ListDeveloperWebhooks(limit int) []DeveloperWebhookRow {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.DB.Query(`
+SELECT id, url, event, created_at
+FROM developer_webhook
+ORDER BY created_at DESC
+LIMIT ?`, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]DeveloperWebhookRow, 0, limit)
+	for rows.Next() {
+		var item DeveloperWebhookRow
+		if err := rows.Scan(&item.ID, &item.URL, &item.Event, &item.CreatedAt); err != nil {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func (s *Store) CreateDeveloperWebhook(url string, event string) (DeveloperWebhookRow, error) {
+	id := fmt.Sprintf("wh_%d", time.Now().UnixNano())
+	if _, err := s.DB.Exec(`
+INSERT INTO developer_webhook (id, url, event, created_at)
+VALUES (?, ?, ?, UTC_TIMESTAMP())`, id, url, event); err != nil {
+		return DeveloperWebhookRow{}, err
+	}
+	return DeveloperWebhookRow{
+		ID:        id,
+		URL:       url,
+		Event:     event,
+		CreatedAt: time.Now().UTC(),
 	}, nil
 }
 

@@ -407,6 +407,83 @@ func TestRefundEndpoint(t *testing.T) {
 	}
 }
 
+func TestDeveloperAPIKeyAndWebhookCRUD(t *testing.T) {
+	svc := service.New()
+	server := NewServerForTest(svc, time.Now, 100, 100)
+	handler := server.Routes()
+
+	createKeyReq := httptest.NewRequest(
+		http.MethodPost,
+		"/developer/api-keys",
+		bytes.NewReader(mustJSONMap(t, map[string]string{"name": "default"})),
+	)
+	createKeyReq.Header.Set("Content-Type", "application/json")
+	createKeyResp := httptest.NewRecorder()
+	handler.ServeHTTP(createKeyResp, createKeyReq)
+	if createKeyResp.Code != http.StatusOK {
+		t.Fatalf("create api key expected 200 got %d", createKeyResp.Code)
+	}
+
+	var createdKeyPayload map[string]any
+	_ = json.Unmarshal(createKeyResp.Body.Bytes(), &createdKeyPayload)
+	keyData := createdKeyPayload["data"].(map[string]any)
+	keyID := keyData["id"].(string)
+	if keyID == "" {
+		t.Fatalf("expected api key id")
+	}
+
+	listKeyReq := httptest.NewRequest(http.MethodGet, "/developer/api-keys", nil)
+	listKeyResp := httptest.NewRecorder()
+	handler.ServeHTTP(listKeyResp, listKeyReq)
+	if listKeyResp.Code != http.StatusOK {
+		t.Fatalf("list api keys expected 200 got %d", listKeyResp.Code)
+	}
+
+	deleteKeyReq := httptest.NewRequest(http.MethodDelete, "/developer/api-keys?id="+keyID, nil)
+	deleteKeyResp := httptest.NewRecorder()
+	handler.ServeHTTP(deleteKeyResp, deleteKeyReq)
+	if deleteKeyResp.Code != http.StatusOK {
+		t.Fatalf("delete api key expected 200 got %d", deleteKeyResp.Code)
+	}
+
+	createWebhookReq := httptest.NewRequest(
+		http.MethodPost,
+		"/developer/webhooks",
+		bytes.NewReader(mustJSONMap(t, map[string]string{
+			"url":   "https://example.com/hook",
+			"event": "payment.settled",
+		})),
+	)
+	createWebhookReq.Header.Set("Content-Type", "application/json")
+	createWebhookResp := httptest.NewRecorder()
+	handler.ServeHTTP(createWebhookResp, createWebhookReq)
+	if createWebhookResp.Code != http.StatusOK {
+		t.Fatalf("create webhook expected 200 got %d", createWebhookResp.Code)
+	}
+
+	var createdHookPayload map[string]any
+	_ = json.Unmarshal(createWebhookResp.Body.Bytes(), &createdHookPayload)
+	hookData := createdHookPayload["data"].(map[string]any)
+	hookID := hookData["id"].(string)
+	if hookID == "" {
+		t.Fatalf("expected webhook id")
+	}
+
+	listWebhookReq := httptest.NewRequest(http.MethodGet, "/developer/webhooks", nil)
+	listWebhookResp := httptest.NewRecorder()
+	handler.ServeHTTP(listWebhookResp, listWebhookReq)
+	if listWebhookResp.Code != http.StatusOK {
+		t.Fatalf("list webhooks expected 200 got %d", listWebhookResp.Code)
+	}
+
+	deleteWebhookReq := httptest.NewRequest(http.MethodDelete, "/developer/webhooks?id="+hookID, nil)
+	deleteWebhookResp := httptest.NewRecorder()
+	handler.ServeHTTP(deleteWebhookResp, deleteWebhookReq)
+	if deleteWebhookResp.Code != http.StatusOK {
+		t.Fatalf("delete webhook expected 200 got %d", deleteWebhookResp.Code)
+	}
+}
+
 func seedServiceForPay() *service.Service {
 	svc := service.New()
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
