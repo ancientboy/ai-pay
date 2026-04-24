@@ -722,6 +722,163 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /developer/audit-logs:
+    get:
+      tags: [developer]
+      summary: List audit logs
+      parameters:
+        - $ref: "#/components/parameters/DeveloperReadAuthorization"
+        - in: query
+          name: action
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: resource
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+        - in: query
+          name: offset
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "200":
+          description: Audit log list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditLogListResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /developer/risk-config:
+    get:
+      tags: [developer]
+      summary: Get risk configuration
+      parameters:
+        - $ref: "#/components/parameters/DeveloperReadAuthorization"
+      responses:
+        "200":
+          description: Risk configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RiskConfigResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags: [developer]
+      summary: Set risk configuration
+      parameters:
+        - $ref: "#/components/parameters/AdminAuthorization"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetRiskConfigRequest"
+      responses:
+        "200":
+          description: Risk configuration updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RiskConfigResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /developer/channel-routes:
+    get:
+      tags: [developer]
+      summary: List channel routes
+      parameters:
+        - $ref: "#/components/parameters/DeveloperReadAuthorization"
+      responses:
+        "200":
+          description: Channel routes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChannelRouteListResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags: [developer]
+      summary: Set one channel route
+      parameters:
+        - $ref: "#/components/parameters/AdminAuthorization"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetChannelRouteRequest"
+      responses:
+        "200":
+          description: Channel route updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChannelRouteResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [developer]
+      summary: Delete one channel route
+      parameters:
+        - $ref: "#/components/parameters/AdminAuthorization"
+        - in: query
+          name: merchantId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /developer/webhook-deliveries/replay:
     post:
       tags: [developer]
@@ -1382,3 +1539,106 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/WebhookDeliveryStats"
+    AuditLog:
+      type: object
+      properties:
+        id:
+          type: integer
+        actor:
+          type: string
+        role:
+          type: string
+        action:
+          type: string
+        resource:
+          type: string
+        requestId:
+          type: string
+        detail:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+    AuditLogListResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditLog"
+    RiskConfig:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        singleAmountLimit:
+          type: number
+        blockedMerchants:
+          type: array
+          items:
+            type: string
+        updatedAt:
+          type: string
+          format: date-time
+    SetRiskConfigRequest:
+      type: object
+      required: [enabled, singleAmountLimit]
+      properties:
+        enabled:
+          type: boolean
+        singleAmountLimit:
+          type: string
+        blockedMerchants:
+          type: array
+          items:
+            type: string
+    RiskConfigResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          $ref: "#/components/schemas/RiskConfig"
+    ChannelRoute:
+      type: object
+      properties:
+        merchantId:
+          type: string
+        mode:
+          type: string
+          enum: [SETTLE, ASYNC, FAIL]
+        updatedAt:
+          type: string
+          format: date-time
+    SetChannelRouteRequest:
+      type: object
+      required: [merchantId, mode]
+      properties:
+        merchantId:
+          type: string
+        mode:
+          type: string
+          enum: [SETTLE, ASYNC, FAIL]
+    ChannelRouteResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          $ref: "#/components/schemas/ChannelRoute"
+    ChannelRouteListResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChannelRoute"

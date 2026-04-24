@@ -104,11 +104,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /payment/status/query", s.handleStatus)
 	mux.HandleFunc("GET /account/balance/query", s.handleBalance)
 	mux.HandleFunc("GET /account/ledger/query", s.handleLedger)
-	mux.HandleFunc("GET /account/interest/query", s.handleInterest)
-	mux.HandleFunc("POST /account/va/topup/config", s.handleVATopupConfigSet)
-	mux.HandleFunc("GET /account/va/topup/config", s.handleVATopupConfigGet)
-	mux.HandleFunc("POST /account/va/transfer", s.handleVATransfer)
-	mux.HandleFunc("GET /account/va/transfer/list", s.handleVATransferList)
+	mux.Handle("GET /account/interest/query", s.withReadAuth(http.HandlerFunc(s.handleInterest)))
+	mux.Handle("POST /account/va/topup/config", s.withAdminAuth(http.HandlerFunc(s.handleVATopupConfigSet)))
+	mux.Handle("GET /account/va/topup/config", s.withReadAuth(http.HandlerFunc(s.handleVATopupConfigGet)))
+	mux.Handle("POST /account/va/transfer", s.withAdminAuth(http.HandlerFunc(s.handleVATransfer)))
+	mux.Handle("GET /account/va/transfer/list", s.withReadAuth(http.HandlerFunc(s.handleVATransferList)))
 	mux.HandleFunc("GET /metrics/overview", s.handleOverviewMetrics)
 	mux.Handle("GET /developer/api-keys", s.withReadAuth(http.HandlerFunc(s.handleAPIKeyList)))
 	mux.Handle("POST /developer/api-keys", s.withAdminAuth(http.HandlerFunc(s.handleAPIKeyCreate)))
@@ -119,6 +119,12 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /developer/webhook-deliveries", s.withReadAuth(http.HandlerFunc(s.handleWebhookDeliveryList)))
 	mux.Handle("GET /developer/webhook-deliveries/stats", s.withReadAuth(http.HandlerFunc(s.handleWebhookDeliveryStats)))
 	mux.Handle("POST /developer/webhook-deliveries/replay", s.withAdminAuth(http.HandlerFunc(s.handleWebhookDeliveryReplay)))
+	mux.Handle("GET /developer/audit-logs", s.withReadAuth(http.HandlerFunc(s.handleAuditLogList)))
+	mux.Handle("GET /developer/risk-config", s.withReadAuth(http.HandlerFunc(s.handleRiskConfigGet)))
+	mux.Handle("POST /developer/risk-config", s.withAdminAuth(http.HandlerFunc(s.handleRiskConfigSet)))
+	mux.Handle("GET /developer/channel-routes", s.withReadAuth(http.HandlerFunc(s.handleChannelRouteList)))
+	mux.Handle("POST /developer/channel-routes", s.withAdminAuth(http.HandlerFunc(s.handleChannelRouteSet)))
+	mux.Handle("DELETE /developer/channel-routes", s.withAdminAuth(http.HandlerFunc(s.handleChannelRouteDelete)))
 	return s.withRequestID(mux)
 }
 
@@ -310,6 +316,7 @@ func (s *Server) handleAuthorizeSet(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, r, "set authorize rule", err)
 		return
 	}
+	s.appendAuditLog(r, "authorize_set", req.AgentDID, map[string]any{"singleLimit": req.SingleLimit, "dailyLimit": req.DailyLimit})
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
 }
 
@@ -327,6 +334,7 @@ func (s *Server) handleAuthorizeUpdate(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, r, "update authorize rule", err)
 		return
 	}
+	s.appendAuditLog(r, "authorize_update", req.AgentDID, map[string]any{"singleLimit": req.SingleLimit, "dailyLimit": req.DailyLimit})
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
 }
 
@@ -344,6 +352,7 @@ func (s *Server) handleAuthorizeFreeze(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, r, "freeze authorize rule", err)
 		return
 	}
+	s.appendAuditLog(r, "authorize_freeze", req.AgentDID, map[string]any{})
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
 }
 
@@ -361,6 +370,7 @@ func (s *Server) handleAuthorizeActivate(w http.ResponseWriter, r *http.Request)
 		writeInternalError(w, r, "activate authorize rule", err)
 		return
 	}
+	s.appendAuditLog(r, "authorize_activate", req.AgentDID, map[string]any{})
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
 }
 
@@ -496,6 +506,7 @@ func (s *Server) handleUnfreeze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("requestId=%s unfreeze tx=%s", getRequestID(r.Context()), req.TransactionID)
+	s.appendAuditLog(r, "payment_unfreeze", req.TransactionID, map[string]any{"idempotencyKey": idem})
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
 }
 
@@ -515,6 +526,7 @@ func (s *Server) handleRefund(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("requestId=%s refund tx=%s", getRequestID(r.Context()), req.TransactionID)
+	s.appendAuditLog(r, "payment_refund", req.TransactionID, map[string]any{"idempotencyKey": idem})
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
 }
 
@@ -579,6 +591,11 @@ func (s *Server) handleVATopupConfigSet(w http.ResponseWriter, r *http.Request) 
 		writeInternalError(w, r, "set va topup config", err)
 		return
 	}
+	s.appendAuditLog(r, "va_topup_config_set", req.AccountID, map[string]any{
+		"autoTopupEnabled": req.AutoTopupEnabled,
+		"thresholdAmount":  req.ThresholdAmount,
+		"targetAmount":     req.TargetAmount,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
 }
 
@@ -622,6 +639,7 @@ func (s *Server) handleVATransfer(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, r, "va transfer", err)
 		return
 	}
+	s.appendAuditLog(r, "va_transfer", req.FromAccountID+"->"+req.ToAccountID, map[string]any{"amount": req.Amount, "idempotencyKey": idem})
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
 }
 
@@ -630,6 +648,18 @@ func (s *Server) handleVATransferList(w http.ResponseWriter, r *http.Request) {
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	startTime := strings.TrimSpace(r.URL.Query().Get("startTime"))
 	endTime := strings.TrimSpace(r.URL.Query().Get("endTime"))
+	if startTime != "" {
+		if _, err := time.Parse(time.RFC3339, startTime); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid startTime"})
+			return
+		}
+	}
+	if endTime != "" {
+		if _, err := time.Parse(time.RFC3339, endTime); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid endTime"})
+			return
+		}
+	}
 	limit := 20
 	offset := 0
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
@@ -776,6 +806,17 @@ type replayWebhookDeliveryReq struct {
 	ID int64 `json:"id"`
 }
 
+type riskConfigSetReq struct {
+	Enabled           bool     `json:"enabled"`
+	SingleAmountLimit string   `json:"singleAmountLimit"`
+	BlockedMerchants  []string `json:"blockedMerchants"`
+}
+
+type channelRouteSetReq struct {
+	MerchantID string `json:"merchantId"`
+	Mode       string `json:"mode"`
+}
+
 func (s *Server) handleWebhookDeliveryReplay(w http.ResponseWriter, r *http.Request) {
 	var req replayWebhookDeliveryReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID <= 0 {
@@ -791,6 +832,94 @@ func (s *Server) handleWebhookDeliveryReplay(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	log.Printf("requestId=%s webhook delivery replay id=%d", getRequestID(r.Context()), req.ID)
+	s.appendAuditLog(r, "webhook_delivery_replay", strconv.FormatInt(req.ID, 10), map[string]any{})
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
+}
+
+func (s *Server) handleAuditLogList(w http.ResponseWriter, r *http.Request) {
+	action := strings.TrimSpace(r.URL.Query().Get("action"))
+	resource := strings.TrimSpace(r.URL.Query().Get("resource"))
+	limit := 50
+	offset := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+	items := s.svc.ListAuditLogs(action, resource, limit, offset)
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": items})
+}
+
+func (s *Server) handleRiskConfigGet(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": s.svc.GetRiskConfig()})
+}
+
+func (s *Server) handleRiskConfigSet(w http.ResponseWriter, r *http.Request) {
+	var req riskConfigSetReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !isPositiveDecimal(req.SingleAmountLimit) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	item, err := s.svc.SetRiskConfig(req.Enabled, req.SingleAmountLimit, req.BlockedMerchants)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "set risk config", err)
+		return
+	}
+	s.appendAuditLog(r, "risk_config_set", "global", map[string]any{
+		"enabled":           req.Enabled,
+		"singleAmountLimit": req.SingleAmountLimit,
+		"blockedCount":      len(req.BlockedMerchants),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handleChannelRouteList(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": s.svc.ListChannelRoutes()})
+}
+
+func (s *Server) handleChannelRouteSet(w http.ResponseWriter, r *http.Request) {
+	var req channelRouteSetReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	item, err := s.svc.SetChannelRoute(req.MerchantID, req.Mode)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "set channel route", err)
+		return
+	}
+	s.appendAuditLog(r, "channel_route_set", req.MerchantID, map[string]any{"mode": req.Mode})
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handleChannelRouteDelete(w http.ResponseWriter, r *http.Request) {
+	merchantID := strings.TrimSpace(r.URL.Query().Get("merchantId"))
+	if merchantID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if err := s.svc.DeleteChannelRoute(merchantID); err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "delete channel route", err)
+		return
+	}
+	s.appendAuditLog(r, "channel_route_delete", merchantID, map[string]any{})
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
 }
 
@@ -1030,6 +1159,24 @@ func secureEqual(a, b string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+func (s *Server) appendAuditLog(r *http.Request, action string, resource string, detail map[string]any) {
+	role := "admin"
+	actor := "system"
+	if token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")); token != "" {
+		if s.readonlyToken != "" && secureEqual(token, s.readonlyToken) {
+			role = "readonly"
+		}
+		if len(token) > 8 {
+			actor = token[:4] + "***" + token[len(token)-2:]
+		} else {
+			actor = "***"
+		}
+	}
+	if err := s.svc.AppendAuditLog(actor, role, action, resource, getRequestID(r.Context()), detail); err != nil {
+		log.Printf("requestId=%s append audit failed: %v", getRequestID(r.Context()), err)
+	}
 }
 
 func buildCallbackSignatureV1(secret, transactionID, status, ts, nonce, idemKey string) string {

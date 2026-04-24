@@ -125,6 +125,87 @@ func TestPayDailyLimitExceeded(t *testing.T) {
 	}
 }
 
+func TestPayRiskBlockedMerchant(t *testing.T) {
+	svc := New()
+	_ = svc.RegisterAgent("did:gusd:agent:risk-merchant")
+	acc := svc.CreateAccount("did:gusd:agent:risk-merchant")
+	_ = svc.Recharge(acc.VAAccountID, "100", "rch-risk-merchant")
+	_ = svc.SetAuthorizeRule("did:gusd:agent:risk-merchant", "2000", "5000", []string{"m_risk_block"})
+
+	_, err := svc.Pay(PayRequest{
+		PayerDID:       "did:gusd:agent:risk-merchant",
+		MerchantID:     "m_risk_block",
+		Amount:         "10",
+		IdempotencyKey: "idem-risk-merchant",
+		Signature:      "sig",
+	})
+	if err == nil || err.Code != "PAY-002" {
+		t.Fatalf("expected PAY-002 risk block got %+v", err)
+	}
+}
+
+func TestPayRiskAmountExceeded(t *testing.T) {
+	svc := New()
+	_ = svc.RegisterAgent("did:gusd:agent:risk-amount")
+	acc := svc.CreateAccount("did:gusd:agent:risk-amount")
+	_ = svc.Recharge(acc.VAAccountID, "5000", "rch-risk-amount")
+	_ = svc.SetAuthorizeRule("did:gusd:agent:risk-amount", "5000", "10000", []string{"m1"})
+
+	_, err := svc.Pay(PayRequest{
+		PayerDID:       "did:gusd:agent:risk-amount",
+		MerchantID:     "m1",
+		Amount:         "1500",
+		IdempotencyKey: "idem-risk-amount",
+		Signature:      "sig",
+	})
+	if err == nil || err.Code != "PAY-002" {
+		t.Fatalf("expected PAY-002 risk amount exceeded got %+v", err)
+	}
+}
+
+func TestPayRiskConfigCanDisableChecks(t *testing.T) {
+	svc := New()
+	_ = svc.RegisterAgent("did:gusd:agent:risk-disable")
+	acc := svc.CreateAccount("did:gusd:agent:risk-disable")
+	_ = svc.Recharge(acc.VAAccountID, "5000", "rch-risk-disable")
+	_ = svc.SetAuthorizeRule("did:gusd:agent:risk-disable", "5000", "10000", []string{"m1"})
+	_, _ = svc.SetRiskConfig(false, "1000", []string{"m1"})
+
+	resp, err := svc.Pay(PayRequest{
+		PayerDID:       "did:gusd:agent:risk-disable",
+		MerchantID:     "m1",
+		Amount:         "1500",
+		IdempotencyKey: "idem-risk-disable",
+		Signature:      "sig",
+	})
+	if err != nil {
+		t.Fatalf("expected risk disabled pay success, got %v", err)
+	}
+	if resp.Status != "SETTLED" {
+		t.Fatalf("expected SETTLED got %s", resp.Status)
+	}
+}
+
+func TestPayChannelRouteCanForceFail(t *testing.T) {
+	svc := New()
+	_ = svc.RegisterAgent("did:gusd:agent:route-fail")
+	acc := svc.CreateAccount("did:gusd:agent:route-fail")
+	_ = svc.Recharge(acc.VAAccountID, "100", "rch-route-fail")
+	_ = svc.SetAuthorizeRule("did:gusd:agent:route-fail", "100", "500", []string{"m_route_fail"})
+	_, _ = svc.SetChannelRoute("m_route_fail", "FAIL")
+
+	_, err := svc.Pay(PayRequest{
+		PayerDID:       "did:gusd:agent:route-fail",
+		MerchantID:     "m_route_fail",
+		Amount:         "10",
+		IdempotencyKey: "idem-route-fail",
+		Signature:      "sig",
+	})
+	if err == nil || err.Code != "PAY-007" {
+		t.Fatalf("expected channel fail PAY-007 got %+v", err)
+	}
+}
+
 func TestPayChannelTimeoutRollsBackFrozenBalance(t *testing.T) {
 	svc := New()
 	_ = svc.RegisterAgent("did:gusd:agent:rollback")

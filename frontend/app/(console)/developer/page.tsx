@@ -8,11 +8,17 @@ import { useToast } from "@/components/toast-provider";
 import {
   createDeveloperApiKey,
   createDeveloperWebhook,
+  deleteChannelRoute,
+  getRiskConfig,
   getDeveloperWebhookDeliveryStats,
+  listAuditLogs,
+  listChannelRoutes,
   listDeveloperApiKeys,
   listDeveloperWebhookDeliveries,
   listDeveloperWebhooks,
   replayWebhookDelivery,
+  setChannelRoute,
+  setRiskConfig,
 } from "@/lib/console-api";
 import { toReadableError } from "@/lib/error-map";
 import { formatStatus } from "@/lib/i18n";
@@ -47,6 +53,13 @@ export default function DeveloperPage() {
   const [deliveryWebhookId, setDeliveryWebhookId] = useState("");
   const [deliveryPage, setDeliveryPage] = useState(1);
   const [selectedDelivery, setSelectedDelivery] = useState<DeliveryItem | null>(null);
+  const [riskEnabled, setRiskEnabled] = useState<boolean | null>(null);
+  const [riskSingleLimit, setRiskSingleLimit] = useState<string | null>(null);
+  const [riskBlockedMerchants, setRiskBlockedMerchants] = useState<string | null>(null);
+  const [routeMerchantId, setRouteMerchantId] = useState("");
+  const [routeMode, setRouteMode] = useState<"SETTLE" | "ASYNC" | "FAIL">("SETTLE");
+  const [auditAction, setAuditAction] = useState("");
+  const [auditResource, setAuditResource] = useState("");
   const pageSize = 10;
 
   const apiKeysQuery = useQuery({
@@ -74,6 +87,18 @@ export default function DeveloperPage() {
         limit: pageSize,
         offset: (deliveryPage - 1) * pageSize,
       }),
+  });
+  const riskConfigQuery = useQuery({
+    queryKey: ["developer", "riskConfig"],
+    queryFn: getRiskConfig,
+  });
+  const channelRoutesQuery = useQuery({
+    queryKey: ["developer", "channelRoutes"],
+    queryFn: listChannelRoutes,
+  });
+  const auditLogsQuery = useQuery({
+    queryKey: ["developer", "auditLogs", auditAction, auditResource],
+    queryFn: () => listAuditLogs({ action: auditAction.trim(), resource: auditResource.trim(), limit: 20, offset: 0 }),
   });
 
   const createApiKeyMutation = useMutation({
@@ -120,6 +145,50 @@ export default function DeveloperPage() {
     onError: (err) => {
       showToast("error", toReadableError(err, locale));
     },
+  });
+  const setRiskEnabledValue = riskEnabled ?? riskConfigQuery.data?.enabled ?? true;
+  const riskSingleLimitValue = riskSingleLimit ?? String(riskConfigQuery.data?.singleAmountLimit ?? 1000);
+  const riskBlockedMerchantsValue =
+    riskBlockedMerchants ?? (riskConfigQuery.data?.blockedMerchants ?? ["m_risk_block"]).join(",");
+
+  const setRiskConfigMutation = useMutation({
+    mutationFn: () =>
+      setRiskConfig({
+        enabled: setRiskEnabledValue,
+        singleAmountLimit: riskSingleLimitValue,
+        blockedMerchants: riskBlockedMerchantsValue
+          .split(",")
+          .map((v) => v.trim())
+          .filter(Boolean),
+      }),
+    onSuccess: () => {
+      showToast("success", t("developer.riskConfigSaved"));
+      setRiskEnabled(null);
+      setRiskSingleLimit(null);
+      setRiskBlockedMerchants(null);
+      queryClient.invalidateQueries({ queryKey: ["developer", "riskConfig"] });
+      queryClient.invalidateQueries({ queryKey: ["developer", "auditLogs"] });
+    },
+    onError: (err) => showToast("error", toReadableError(err, locale)),
+  });
+  const setChannelRouteMutation = useMutation({
+    mutationFn: () => setChannelRoute({ merchantId: routeMerchantId.trim(), mode: routeMode }),
+    onSuccess: () => {
+      setRouteMerchantId("");
+      showToast("success", t("developer.channelRouteSaved"));
+      queryClient.invalidateQueries({ queryKey: ["developer", "channelRoutes"] });
+      queryClient.invalidateQueries({ queryKey: ["developer", "auditLogs"] });
+    },
+    onError: (err) => showToast("error", toReadableError(err, locale)),
+  });
+  const deleteChannelRouteMutation = useMutation({
+    mutationFn: (merchantId: string) => deleteChannelRoute(merchantId),
+    onSuccess: () => {
+      showToast("success", t("developer.channelRouteDeleted"));
+      queryClient.invalidateQueries({ queryKey: ["developer", "channelRoutes"] });
+      queryClient.invalidateQueries({ queryKey: ["developer", "auditLogs"] });
+    },
+    onError: (err) => showToast("error", toReadableError(err, locale)),
   });
 
   const stats = deliveryStatsQuery.data ?? {
@@ -382,6 +451,113 @@ export default function DeveloperPage() {
           {(deliveriesQuery.data ?? []).length === 0 ? (
             <li className="text-slate-500">{t("developer.noDeliveries")}</li>
           ) : null}
+        </ul>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <h3 className="text-sm font-medium text-slate-200">{t("developer.riskConfig")}</h3>
+          <label className="mt-3 flex items-center gap-2 text-sm text-slate-300">
+            <input type="checkbox" checked={setRiskEnabledValue} onChange={(e) => setRiskEnabled(e.target.checked)} />
+            {t("developer.riskEnabled")}
+          </label>
+          <input
+            value={riskSingleLimitValue}
+            onChange={(e) => setRiskSingleLimit(e.target.value)}
+            className="mt-2 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+            placeholder={t("developer.riskSingleLimit")}
+          />
+          <input
+            value={riskBlockedMerchantsValue}
+            onChange={(e) => setRiskBlockedMerchants(e.target.value)}
+            className="mt-2 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+            placeholder={t("developer.riskBlockedMerchants")}
+          />
+          <button
+            onClick={() => setRiskConfigMutation.mutate()}
+            disabled={setRiskConfigMutation.isPending}
+            className="mt-2 rounded-md bg-blue-600 px-3 py-2 text-sm text-white"
+          >
+            {t("common.save")}
+          </button>
+        </div>
+
+        <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <h3 className="text-sm font-medium text-slate-200">{t("developer.channelRoutes")}</h3>
+          <div className="mt-2 space-y-2">
+            <input
+              value={routeMerchantId}
+              onChange={(e) => setRouteMerchantId(e.target.value)}
+              className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+              placeholder={t("developer.channelMerchantId")}
+            />
+            <select
+              value={routeMode}
+              onChange={(e) => setRouteMode(e.target.value as "SETTLE" | "ASYNC" | "FAIL")}
+              className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+            >
+              <option value="SETTLE">{t("developer.channelSettle")}</option>
+              <option value="ASYNC">{t("developer.channelAsync")}</option>
+              <option value="FAIL">{t("developer.channelFail")}</option>
+            </select>
+            <button
+              onClick={() => {
+                if (!routeMerchantId.trim()) {
+                  showToast("error", t("developer.channelMerchantId"));
+                  return;
+                }
+                setChannelRouteMutation.mutate();
+              }}
+              disabled={setChannelRouteMutation.isPending}
+              className="rounded-md bg-blue-600 px-3 py-2 text-sm text-white"
+            >
+              {t("common.save")}
+            </button>
+          </div>
+          <ul className="mt-3 space-y-2 text-xs text-slate-300">
+            {(channelRoutesQuery.data ?? []).map((item) => (
+              <li key={item.merchantId} className="flex items-center justify-between rounded border border-slate-800 p-2">
+                <span>{item.merchantId} · {item.mode}</span>
+                <button
+                  onClick={() => deleteChannelRouteMutation.mutate(item.merchantId)}
+                  className="rounded border border-slate-700 px-2 py-1"
+                >
+                  {t("common.close")}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+        <h3 className="text-sm font-medium text-slate-200">{t("developer.auditLogs")}</h3>
+        <div className="mt-2 grid gap-2 md:grid-cols-3">
+          <input
+            value={auditAction}
+            onChange={(e) => setAuditAction(e.target.value)}
+            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+            placeholder={t("developer.auditActionFilter")}
+          />
+          <input
+            value={auditResource}
+            onChange={(e) => setAuditResource(e.target.value)}
+            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+            placeholder={t("developer.auditResourceFilter")}
+          />
+          <button onClick={() => auditLogsQuery.refetch()} className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200">
+            {t("developer.refresh")}
+          </button>
+        </div>
+        <ul className="mt-3 space-y-2 text-xs text-slate-300">
+          {(auditLogsQuery.data ?? []).map((item) => (
+            <li key={item.id} className="rounded border border-slate-800 p-2">
+              <p>#{item.id} · {item.action} · {item.resource}</p>
+              <p className="text-slate-500">{item.actor} / {item.role} / {item.requestId}</p>
+              <pre className="mt-1 overflow-x-auto rounded bg-slate-950 p-2 text-[11px]">{JSON.stringify(item.detail ?? {}, null, 2)}</pre>
+            </li>
+          ))}
+          {(auditLogsQuery.data ?? []).length === 0 ? <li className="text-slate-500">{t("developer.noAuditLogs")}</li> : null}
         </ul>
       </div>
       <DetailModal

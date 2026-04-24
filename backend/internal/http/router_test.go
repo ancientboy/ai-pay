@@ -730,6 +730,17 @@ func TestVATransferEndpointWithIdempotency(t *testing.T) {
 	if !ok || len(items) == 0 {
 		t.Fatalf("expected transfer list data in time window")
 	}
+
+	invalidTimeReq := httptest.NewRequest(
+		http.MethodGet,
+		"/account/va/transfer/list?accountId="+accA.VAAccountID+"&startTime=invalid-time",
+		nil,
+	)
+	invalidTimeResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(invalidTimeResp, invalidTimeReq)
+	if invalidTimeResp.Code != http.StatusBadRequest {
+		t.Fatalf("invalid startTime expected 400 got %d", invalidTimeResp.Code)
+	}
 }
 
 func TestDeveloperAPIKeyAndWebhookCRUD(t *testing.T) {
@@ -963,6 +974,116 @@ func TestDeveloperReadEndpointsAllowReadonlyToken(t *testing.T) {
 	handler.ServeHTTP(writeResp, writeReq)
 	if writeResp.Code != http.StatusUnauthorized {
 		t.Fatalf("readonly token should not access developer write endpoint, got %d", writeResp.Code)
+	}
+}
+
+func TestFundsEndpointsRespectRoleTokens(t *testing.T) {
+	svc := service.New()
+	_ = svc.RegisterAgent("did:gusd:agent:role-a")
+	_ = svc.RegisterAgent("did:gusd:agent:role-b")
+	accA := svc.CreateAccount("did:gusd:agent:role-a")
+	accB := svc.CreateAccount("did:gusd:agent:role-b")
+	_ = svc.Recharge(accA.VAAccountID, "20", "rch-role-token-1")
+
+	server := NewServerForTest(svc, time.Now, 100, 100)
+	server.SetAdminBearerToken("admin-token")
+	server.SetReadonlyBearerToken("readonly-token")
+	handler := server.Routes()
+
+	readReq := httptest.NewRequest(http.MethodGet, "/account/va/transfer/list?accountId="+accA.VAAccountID, nil)
+	readReq.Header.Set("Authorization", "Bearer readonly-token")
+	readResp := httptest.NewRecorder()
+	handler.ServeHTTP(readResp, readReq)
+	if readResp.Code != http.StatusOK {
+		t.Fatalf("readonly token should access transfer list, got %d", readResp.Code)
+	}
+
+	writeBody := mustJSONMap(t, map[string]string{
+		"fromAccountId": accA.VAAccountID,
+		"toAccountId":   accB.VAAccountID,
+		"amount":        "1",
+	})
+	adminWriteReq := httptest.NewRequest(http.MethodPost, "/account/va/transfer", bytes.NewReader(writeBody))
+	adminWriteReq.Header.Set("Content-Type", "application/json")
+	adminWriteReq.Header.Set("Idempotency-Key", "idem-role-token-admin")
+	adminWriteReq.Header.Set("Authorization", "Bearer admin-token")
+	adminWriteResp := httptest.NewRecorder()
+	handler.ServeHTTP(adminWriteResp, adminWriteReq)
+	if adminWriteResp.Code != http.StatusOK {
+		t.Fatalf("admin token should access transfer write endpoint, got %d", adminWriteResp.Code)
+	}
+
+	writeReq := httptest.NewRequest(http.MethodPost, "/account/va/transfer", bytes.NewReader(writeBody))
+	writeReq.Header.Set("Content-Type", "application/json")
+	writeReq.Header.Set("Idempotency-Key", "idem-role-token-1")
+	writeReq.Header.Set("Authorization", "Bearer readonly-token")
+	writeResp := httptest.NewRecorder()
+	handler.ServeHTTP(writeResp, writeReq)
+	if writeResp.Code != http.StatusUnauthorized {
+		t.Fatalf("readonly token should not access transfer write endpoint, got %d", writeResp.Code)
+	}
+
+	auditReq := httptest.NewRequest(http.MethodGet, "/developer/audit-logs?action=va_transfer&limit=10&offset=0", nil)
+	auditReq.Header.Set("Authorization", "Bearer readonly-token")
+	auditResp := httptest.NewRecorder()
+	handler.ServeHTTP(auditResp, auditReq)
+	if auditResp.Code != http.StatusOK {
+		t.Fatalf("readonly token should access audit log list, got %d", auditResp.Code)
+	}
+	var payload map[string]any
+	_ = json.Unmarshal(auditResp.Body.Bytes(), &payload)
+	items, ok := payload["data"].([]any)
+	if !ok || len(items) == 0 {
+		t.Fatalf("expected audit logs after transfer")
+	}
+}
+
+func TestRiskConfigAndChannelRouteEndpoints(t *testing.T) {
+	svc := service.New()
+	server := NewServerForTest(svc, time.Now, 100, 100)
+	server.SetAdminBearerToken("admin-token")
+	server.SetReadonlyBearerToken("readonly-token")
+	handler := server.Routes()
+
+	setRiskReq := httptest.NewRequest(http.MethodPost, "/developer/risk-config", bytes.NewReader(mustJSONAny(t, map[string]any{
+		"enabled":           true,
+		"singleAmountLimit": "888",
+		"blockedMerchants":  []string{"m_block_x"},
+	})))
+	setRiskReq.Header.Set("Content-Type", "application/json")
+	setRiskReq.Header.Set("Authorization", "Bearer admin-token")
+	setRiskResp := httptest.NewRecorder()
+	handler.ServeHTTP(setRiskResp, setRiskReq)
+	if setRiskResp.Code != http.StatusOK {
+		t.Fatalf("set risk config expected 200 got %d", setRiskResp.Code)
+	}
+
+	getRiskReq := httptest.NewRequest(http.MethodGet, "/developer/risk-config", nil)
+	getRiskReq.Header.Set("Authorization", "Bearer readonly-token")
+	getRiskResp := httptest.NewRecorder()
+	handler.ServeHTTP(getRiskResp, getRiskReq)
+	if getRiskResp.Code != http.StatusOK {
+		t.Fatalf("get risk config expected 200 got %d", getRiskResp.Code)
+	}
+
+	setRouteReq := httptest.NewRequest(http.MethodPost, "/developer/channel-routes", bytes.NewReader(mustJSONAny(t, map[string]any{
+		"merchantId": "m_route_x",
+		"mode":       "ASYNC",
+	})))
+	setRouteReq.Header.Set("Content-Type", "application/json")
+	setRouteReq.Header.Set("Authorization", "Bearer admin-token")
+	setRouteResp := httptest.NewRecorder()
+	handler.ServeHTTP(setRouteResp, setRouteReq)
+	if setRouteResp.Code != http.StatusOK {
+		t.Fatalf("set channel route expected 200 got %d", setRouteResp.Code)
+	}
+
+	listRouteReq := httptest.NewRequest(http.MethodGet, "/developer/channel-routes", nil)
+	listRouteReq.Header.Set("Authorization", "Bearer readonly-token")
+	listRouteResp := httptest.NewRecorder()
+	handler.ServeHTTP(listRouteResp, listRouteReq)
+	if listRouteResp.Code != http.StatusOK {
+		t.Fatalf("list channel routes expected 200 got %d", listRouteResp.Code)
 	}
 }
 

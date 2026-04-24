@@ -76,6 +76,9 @@ Go 实现的 MVP 后端，覆盖文档中第一阶段核心接口：
   - `GET /developer/webhook-deliveries`（支持 `status/event/webhookId/limit/offset`）
   - `GET /developer/webhook-deliveries/stats`（返回 `pending/retrying/sent/dead/total` 聚合）
   - `POST /developer/webhook-deliveries/replay`（按 `id` 重放）
+  - `GET /developer/audit-logs`（支持 `action/resource/limit/offset`）
+  - `GET /developer/risk-config`、`POST /developer/risk-config`
+  - `GET /developer/channel-routes`、`POST /developer/channel-routes`、`DELETE /developer/channel-routes`
 
 ## 资金页运营化（Phase 4）
 
@@ -117,6 +120,8 @@ DID 公钥字段由 `migrations/005_add_agent_did_pub_key.sql` 提供。
 开发者资源表（API Key / Webhook）由 `migrations/007_add_developer_resources.sql` 提供。
 Webhook 投递任务表（重试 + 死信）由 `migrations/008_add_webhook_delivery_task.sql` 提供。
 VA 自动充值配置与 VA 转账流水表由 `migrations/009_add_va_topup_and_transfer.sql` 提供。
+审计日志表由 `migrations/010_add_audit_log.sql` 提供。
+风控配置与渠道路由表由 `migrations/011_add_risk_and_channel_route.sql` 提供。
 默认 docker 映射端口为 `3307 -> 3306`，避免与本机已有 MySQL 冲突。
 
 如果你在本地已经初始化过数据库，请手动执行：
@@ -130,6 +135,8 @@ mysql -uroot -proot ai_pay < migrations/006_add_pay_order_hold_id.sql
 mysql -uroot -proot ai_pay < migrations/007_add_developer_resources.sql
 mysql -uroot -proot ai_pay < migrations/008_add_webhook_delivery_task.sql
 mysql -uroot -proot ai_pay < migrations/009_add_va_topup_and_transfer.sql
+mysql -uroot -proot ai_pay < migrations/010_add_audit_log.sql
+mysql -uroot -proot ai_pay < migrations/011_add_risk_and_channel_route.sql
 ```
 
 ## 运行

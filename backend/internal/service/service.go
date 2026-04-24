@@ -152,6 +152,30 @@ type VATransferRecord struct {
 	CreatedAt      time.Time `json:"createdAt"`
 }
 
+type AuditLog struct {
+	ID        int64           `json:"id"`
+	Actor     string          `json:"actor"`
+	Role      string          `json:"role"`
+	Action    string          `json:"action"`
+	Resource  string          `json:"resource"`
+	RequestID string          `json:"requestId"`
+	Detail    json.RawMessage `json:"detail"`
+	CreatedAt time.Time       `json:"createdAt"`
+}
+
+type RiskConfig struct {
+	Enabled           bool      `json:"enabled"`
+	SingleAmountLimit float64   `json:"singleAmountLimit"`
+	BlockedMerchants  []string  `json:"blockedMerchants"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+}
+
+type ChannelRoute struct {
+	MerchantID string    `json:"merchantId"`
+	Mode       string    `json:"mode"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+}
+
 type Service struct {
 	mu             sync.Mutex
 	agents         map[string]Agent
@@ -173,6 +197,10 @@ type Service struct {
 	accountCreated map[string]time.Time
 	topupConfig    map[string]VATopupConfig
 	vaTransfers    []VATransferRecord
+	auditLogs      []AuditLog
+	auditSeq       int64
+	riskConfig     RiskConfig
+	channelRoutes  map[string]ChannelRoute
 }
 
 type holdRecord struct {
@@ -218,6 +246,13 @@ type PaymentService interface {
 	GetVATopupConfig(accountID string) (VATopupConfig, error)
 	TransferVA(fromAccountID string, toAccountID string, amount string, idemKey string) error
 	ListVATransfers(accountID string, status string, startTime string, endTime string, limit int, offset int) []VATransferRecord
+	AppendAuditLog(actor string, role string, action string, resource string, requestID string, detail map[string]any) error
+	ListAuditLogs(action string, resource string, limit int, offset int) []AuditLog
+	GetRiskConfig() RiskConfig
+	SetRiskConfig(enabled bool, singleAmountLimit string, blockedMerchants []string) (RiskConfig, error)
+	ListChannelRoutes() []ChannelRoute
+	SetChannelRoute(merchantID string, mode string) (ChannelRoute, error)
+	DeleteChannelRoute(merchantID string) error
 }
 
 func New() *Service {
@@ -240,6 +275,17 @@ func New() *Service {
 		accountCreated: map[string]time.Time{},
 		topupConfig:    map[string]VATopupConfig{},
 		vaTransfers:    []VATransferRecord{},
+		auditLogs:      []AuditLog{},
+		riskConfig: RiskConfig{
+			Enabled:           true,
+			SingleAmountLimit: 1000,
+			BlockedMerchants:  []string{"m_risk_block"},
+			UpdatedAt:         time.Now().UTC(),
+		},
+		channelRoutes: map[string]ChannelRoute{
+			"m_fail":  {MerchantID: "m_fail", Mode: "FAIL", UpdatedAt: time.Now().UTC()},
+			"m_async": {MerchantID: "m_async", Mode: "ASYNC", UpdatedAt: time.Now().UTC()},
+		},
 	}
 }
 
@@ -474,6 +520,9 @@ func (s *Service) Pay(req PayRequest) (PayResponse, *APIError) {
 	if _, ok := rule.Whitelist[req.MerchantID]; !ok {
 		return PayResponse{}, &APIError{Code: "PAY-002", Message: "merchant not whitelisted"}
 	}
+	if riskErr := s.evaluateP2Risk(req.MerchantID, amount); riskErr != nil {
+		return PayResponse{}, riskErr
+	}
 
 	acc, ok := s.accounts[req.PayerDID]
 	if !ok {
@@ -483,12 +532,11 @@ func (s *Service) Pay(req PayRequest) (PayResponse, *APIError) {
 	if apiErr != nil {
 		return PayResponse{}, apiErr
 	}
-	// Simulate downstream timeout for compensation path verification.
-	if req.MerchantID == "m_fail" {
+	switch s.decideChannelPath(req.MerchantID) {
+	case channelFail:
 		_ = s.releaseHold(holdID)
 		return PayResponse{}, &APIError{Code: "PAY-007", Message: "channel timeout"}
-	}
-	if req.MerchantID == "m_async" {
+	case channelSettling:
 		txID := fmt.Sprintf("txn_%d", len(s.orders)+1)
 		tx := Transaction{
 			ID:        txID,
@@ -1144,6 +1192,132 @@ func (s *Service) ListVATransfers(accountID string, status string, startTime str
 		}
 	}
 	return out
+}
+
+func (s *Service) AppendAuditLog(actor string, role string, action string, resource string, requestID string, detail map[string]any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		return err
+	}
+	s.auditSeq++
+	s.auditLogs = append([]AuditLog{
+		{
+			ID:        s.auditSeq,
+			Actor:     strings.TrimSpace(actor),
+			Role:      strings.TrimSpace(role),
+			Action:    strings.TrimSpace(action),
+			Resource:  strings.TrimSpace(resource),
+			RequestID: strings.TrimSpace(requestID),
+			Detail:    json.RawMessage(raw),
+			CreatedAt: time.Now().UTC(),
+		},
+	}, s.auditLogs...)
+	return nil
+}
+
+func (s *Service) ListAuditLogs(action string, resource string, limit int, offset int) []AuditLog {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	action = strings.TrimSpace(action)
+	resource = strings.TrimSpace(resource)
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	out := make([]AuditLog, 0, limit)
+	skipped := 0
+	for _, item := range s.auditLogs {
+		if action != "" && item.Action != action {
+			continue
+		}
+		if resource != "" && item.Resource != resource {
+			continue
+		}
+		if skipped < offset {
+			skipped++
+			continue
+		}
+		out = append(out, item)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func (s *Service) GetRiskConfig() RiskConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.riskConfig
+	out.BlockedMerchants = append([]string{}, s.riskConfig.BlockedMerchants...)
+	return out
+}
+
+func (s *Service) SetRiskConfig(enabled bool, singleAmountLimit string, blockedMerchants []string) (RiskConfig, error) {
+	limit, err := parseAmount(singleAmountLimit)
+	if err != nil || limit <= 0 {
+		return RiskConfig{}, &APIError{Code: "PAY-010", Message: "invalid singleAmountLimit"}
+	}
+	trimmed := make([]string, 0, len(blockedMerchants))
+	seen := map[string]struct{}{}
+	for _, item := range blockedMerchants {
+		v := strings.TrimSpace(item)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		trimmed = append(trimmed, v)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.riskConfig = RiskConfig{
+		Enabled:           enabled,
+		SingleAmountLimit: limit,
+		BlockedMerchants:  trimmed,
+		UpdatedAt:         time.Now().UTC(),
+	}
+	return s.riskConfig, nil
+}
+
+func (s *Service) ListChannelRoutes() []ChannelRoute {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]ChannelRoute, 0, len(s.channelRoutes))
+	for _, item := range s.channelRoutes {
+		out = append(out, item)
+	}
+	return out
+}
+
+func (s *Service) SetChannelRoute(merchantID string, mode string) (ChannelRoute, error) {
+	merchantID = strings.TrimSpace(merchantID)
+	mode = strings.ToUpper(strings.TrimSpace(mode))
+	if merchantID == "" || !isValidChannelMode(mode) {
+		return ChannelRoute{}, &APIError{Code: "PAY-010", Message: "invalid channel route"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item := ChannelRoute{MerchantID: merchantID, Mode: mode, UpdatedAt: time.Now().UTC()}
+	s.channelRoutes[merchantID] = item
+	return item, nil
+}
+
+func (s *Service) DeleteChannelRoute(merchantID string) error {
+	merchantID = strings.TrimSpace(merchantID)
+	if merchantID == "" {
+		return &APIError{Code: "PAY-010", Message: "invalid merchantId"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.channelRoutes, merchantID)
+	return nil
 }
 
 func parseOptionalRFC3339(raw string) *time.Time {

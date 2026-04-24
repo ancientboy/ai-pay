@@ -426,6 +426,144 @@ WHERE 1=1`
 	return out
 }
 
+func (s *PersistentService) AppendAuditLog(actor string, role string, action string, resource string, requestID string, detail map[string]any) error {
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		return err
+	}
+	_, err = s.store.DB.Exec(`
+INSERT INTO audit_log (actor, role, action, resource, request_id, detail, created_at)
+VALUES (?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())`,
+		strings.TrimSpace(actor),
+		strings.TrimSpace(role),
+		strings.TrimSpace(action),
+		strings.TrimSpace(resource),
+		strings.TrimSpace(requestID),
+		string(raw),
+	)
+	return err
+}
+
+func (s *PersistentService) ListAuditLogs(action string, resource string, limit int, offset int) []AuditLog {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	query := `
+SELECT id, actor, role, action, resource, request_id, detail, created_at
+FROM audit_log
+WHERE 1=1`
+	args := make([]any, 0, 4)
+	if trimmed := strings.TrimSpace(action); trimmed != "" {
+		query += " AND action = ?"
+		args = append(args, trimmed)
+	}
+	if trimmed := strings.TrimSpace(resource); trimmed != "" {
+		query += " AND resource = ?"
+		args = append(args, trimmed)
+	}
+	query += " ORDER BY id DESC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
+	rows, err := s.store.DB.Query(query, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]AuditLog, 0, limit)
+	for rows.Next() {
+		var item AuditLog
+		var detail string
+		if err := rows.Scan(&item.ID, &item.Actor, &item.Role, &item.Action, &item.Resource, &item.RequestID, &detail, &item.CreatedAt); err != nil {
+			continue
+		}
+		item.Detail = json.RawMessage([]byte(detail))
+		out = append(out, item)
+	}
+	return out
+}
+
+func (s *PersistentService) GetRiskConfig() RiskConfig {
+	cfg, err := s.getRiskConfig()
+	if err != nil {
+		return RiskConfig{
+			Enabled:           true,
+			SingleAmountLimit: 1000,
+			BlockedMerchants:  []string{"m_risk_block"},
+			UpdatedAt:         time.Now().UTC(),
+		}
+	}
+	return cfg
+}
+
+func (s *PersistentService) SetRiskConfig(enabled bool, singleAmountLimit string, blockedMerchants []string) (RiskConfig, error) {
+	limit, err := parseAmount(singleAmountLimit)
+	if err != nil || limit <= 0 {
+		return RiskConfig{}, &APIError{Code: "PAY-010", Message: "invalid singleAmountLimit"}
+	}
+	trimmed := make([]string, 0, len(blockedMerchants))
+	seen := map[string]struct{}{}
+	for _, item := range blockedMerchants {
+		v := strings.TrimSpace(item)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		trimmed = append(trimmed, v)
+	}
+	raw, _ := json.Marshal(trimmed)
+	if _, err := s.store.DB.Exec(`
+INSERT INTO risk_config (id, enabled, single_amount_limit, blocked_merchants, updated_at)
+VALUES (1, ?, ?, ?, UTC_TIMESTAMP())
+ON DUPLICATE KEY UPDATE
+  enabled = VALUES(enabled),
+  single_amount_limit = VALUES(single_amount_limit),
+  blocked_merchants = VALUES(blocked_merchants),
+  updated_at = UTC_TIMESTAMP()`, enabled, limit, string(raw)); err != nil {
+		return RiskConfig{}, err
+	}
+	return s.getRiskConfig()
+}
+
+func (s *PersistentService) ListChannelRoutes() []ChannelRoute {
+	routes := s.loadChannelRoutes()
+	out := make([]ChannelRoute, 0, len(routes))
+	for _, item := range routes {
+		out = append(out, item)
+	}
+	return out
+}
+
+func (s *PersistentService) SetChannelRoute(merchantID string, mode string) (ChannelRoute, error) {
+	merchantID = strings.TrimSpace(merchantID)
+	mode = strings.ToUpper(strings.TrimSpace(mode))
+	if merchantID == "" || !isValidChannelMode(mode) {
+		return ChannelRoute{}, &APIError{Code: "PAY-010", Message: "invalid channel route"}
+	}
+	if _, err := s.store.DB.Exec(`
+INSERT INTO channel_route (merchant_id, mode, updated_at)
+VALUES (?, ?, UTC_TIMESTAMP())
+ON DUPLICATE KEY UPDATE
+  mode = VALUES(mode),
+  updated_at = UTC_TIMESTAMP()`, merchantID, mode); err != nil {
+		return ChannelRoute{}, err
+	}
+	return ChannelRoute{MerchantID: merchantID, Mode: mode, UpdatedAt: time.Now().UTC()}, nil
+}
+
+func (s *PersistentService) DeleteChannelRoute(merchantID string) error {
+	merchantID = strings.TrimSpace(merchantID)
+	if merchantID == "" {
+		return &APIError{Code: "PAY-010", Message: "invalid merchantId"}
+	}
+	_, err := s.store.DB.Exec(`DELETE FROM channel_route WHERE merchant_id = ?`, merchantID)
+	return err
+}
+
 func (s *PersistentService) Pay(req PayRequest) (PayResponse, *APIError) {
 	if req.Signature == "" {
 		return PayResponse{}, &APIError{Code: "PAY-001", Message: "signature required"}
@@ -479,6 +617,9 @@ WHERE agent_did = ?
 	if !merchantInWhitelist(whiteList, req.MerchantID) {
 		return PayResponse{}, &APIError{Code: "PAY-002", Message: "merchant not whitelisted"}
 	}
+	if riskErr := s.evaluateP2Risk(req.MerchantID, amount); riskErr != nil {
+		return PayResponse{}, riskErr
+	}
 
 	tx, err := s.store.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -495,7 +636,9 @@ WHERE agent_did = ?
 	if apiErr != nil {
 		return PayResponse{}, apiErr
 	}
-	if req.MerchantID == "m_fail" {
+	txnID := fmt.Sprintf("txn_%d", time.Now().UnixNano())
+	switch s.decideChannelPath(req.MerchantID) {
+	case channelFail:
 		if err := s.releaseHoldTx(tx, holdID); err != nil {
 			return PayResponse{}, &APIError{Code: "PAY-010", Message: "hold release failed"}
 		}
@@ -503,9 +646,7 @@ WHERE agent_did = ?
 			return PayResponse{}, &APIError{Code: "PAY-010", Message: "rollback commit failed"}
 		}
 		return PayResponse{}, &APIError{Code: "PAY-007", Message: "channel timeout"}
-	}
-	txnID := fmt.Sprintf("txn_%d", time.Now().UnixNano())
-	if req.MerchantID == "m_async" {
+	case channelSettling:
 		if _, err := tx.Exec(`INSERT INTO pay_order (order_id, agent_did, merchant_id, amount, fee, net_amount, hold_id, status, created_at) VALUES (?, ?, ?, ?, 0, 0, ?, 'SETTLING', UTC_TIMESTAMP())`,
 			txnID, req.PayerDID, req.MerchantID, amount, holdID); err != nil {
 			return PayResponse{}, &APIError{Code: "PAY-010", Message: "create settling order failed"}

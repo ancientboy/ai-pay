@@ -372,6 +372,30 @@ export type DeveloperWebhookDeliveryStats = {
   total: number;
 };
 
+export type RiskConfig = {
+  enabled: boolean;
+  singleAmountLimit: number;
+  blockedMerchants: string[];
+  updatedAt: string;
+};
+
+export type ChannelRoute = {
+  merchantId: string;
+  mode: "SETTLE" | "ASYNC" | "FAIL";
+  updatedAt: string;
+};
+
+export type AuditLog = {
+  id: number;
+  actor: string;
+  role: string;
+  action: string;
+  resource: string;
+  requestId: string;
+  detail: Record<string, unknown>;
+  createdAt: string;
+};
+
 export function listApiKeys() {
   return request<DeveloperAPIKey[]>("/developer/api-keys");
 }
@@ -436,6 +460,56 @@ export function replayWebhookDelivery(id: number) {
     method: "POST",
     body: JSON.stringify({ id }),
   });
+}
+
+export function getRiskConfig() {
+  return request<RiskConfig>("/developer/risk-config");
+}
+
+export function setRiskConfig(input: {
+  enabled: boolean;
+  singleAmountLimit: string;
+  blockedMerchants: string[];
+}) {
+  return request<RiskConfig>("/developer/risk-config", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function listChannelRoutes() {
+  return request<ChannelRoute[]>("/developer/channel-routes");
+}
+
+export function setChannelRoute(input: { merchantId: string; mode: "SETTLE" | "ASYNC" | "FAIL" }) {
+  return request<ChannelRoute>("/developer/channel-routes", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteChannelRoute(merchantId: string) {
+  return request(`/developer/channel-routes?merchantId=${encodeURIComponent(merchantId)}`, {
+    method: "DELETE",
+  });
+}
+
+export function listAuditLogs(input?: { action?: string; resource?: string; limit?: number; offset?: number }) {
+  const query = new URLSearchParams();
+  if (input?.action?.trim()) {
+    query.set("action", input.action.trim());
+  }
+  if (input?.resource?.trim()) {
+    query.set("resource", input.resource.trim());
+  }
+  if (input?.limit && Number.isFinite(input.limit) && input.limit > 0) {
+    query.set("limit", String(input.limit));
+  }
+  if (typeof input?.offset === "number" && Number.isFinite(input.offset) && input.offset >= 0) {
+    query.set("offset", String(input.offset));
+  }
+  const suffix = query.toString();
+  return request<AuditLog[]>(`/developer/audit-logs${suffix ? `?${suffix}` : ""}`);
 }
 
 // Backward-compatible aliases for pages using older names.

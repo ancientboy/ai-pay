@@ -37,13 +37,15 @@ test("recharge page supports week2 account flows", async ({ page, request }) => 
   });
   expect(recharge.ok()).toBeTruthy();
 
-  await page.goto("/login");
-  await page.locator('input[autocomplete="username"]').fill("admin");
-  await page.locator('input[autocomplete="current-password"]').fill("admin123");
-  await page.locator('input[autocomplete="current-password"]').press("Enter");
-  await page.waitForURL("**/dashboard");
+  const loginResp = await page.request.post("/api/auth/login", {
+    data: { username: "admin", password: "admin123" },
+  });
+  expect(loginResp.ok()).toBeTruthy();
+  const loginPayload = (await loginResp.json()) as { code?: string };
+  expect(loginPayload.code).toBe("0");
 
   await page.goto("/recharge");
+  await expect(page).toHaveURL(/\/recharge$/);
 
   await page.getByPlaceholder("查询账户").fill(fromVA);
   await page.getByRole("button", { name: "查询利息" }).click();
