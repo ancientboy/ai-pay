@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -693,6 +694,41 @@ func TestVATransferEndpointWithIdempotency(t *testing.T) {
 	}
 	if balB != 5 {
 		t.Fatalf("expected to balance 5 got %v", balB)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/account/va/transfer/list?accountId="+accA.VAAccountID+"&status=SETTLED&limit=10&offset=0", nil)
+	listResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(listResp, listReq)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("va transfer list expected 200 got %d", listResp.Code)
+	}
+	var payload map[string]any
+	_ = json.Unmarshal(listResp.Body.Bytes(), &payload)
+	items, ok := payload["data"].([]any)
+	if !ok || len(items) == 0 {
+		t.Fatalf("expected transfer list data")
+	}
+	first := items[0].(map[string]any)
+	createdAt, _ := first["createdAt"].(string)
+	if createdAt == "" {
+		t.Fatalf("expected createdAt in transfer list item")
+	}
+	windowStart := time.Now().UTC().Add(-5 * time.Minute).Format(time.RFC3339)
+	windowEnd := time.Now().UTC().Add(5 * time.Minute).Format(time.RFC3339)
+	timeReq := httptest.NewRequest(
+		http.MethodGet,
+		"/account/va/transfer/list?accountId="+accA.VAAccountID+"&status=SETTLED&startTime="+url.QueryEscape(windowStart)+"&endTime="+url.QueryEscape(windowEnd)+"&limit=10&offset=0",
+		nil,
+	)
+	timeResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(timeResp, timeReq)
+	if timeResp.Code != http.StatusOK {
+		t.Fatalf("va transfer list with time window expected 200 got %d", timeResp.Code)
+	}
+	_ = json.Unmarshal(timeResp.Body.Bytes(), &payload)
+	items, ok = payload["data"].([]any)
+	if !ok || len(items) == 0 {
+		t.Fatalf("expected transfer list data in time window")
 	}
 }
 

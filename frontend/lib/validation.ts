@@ -41,11 +41,35 @@ export function getValidationSchemas(locale: Locale) {
     },
   );
 
+  const topupConfigSchema = z.object({
+    accountId: z.string().trim().min(1, t(locale, "validation.vaRequired")),
+    thresholdAmount: z
+      .string()
+      .trim()
+      .regex(/^\d+(\.\d+)?$/, t(locale, "validation.amountFormat"))
+      .refine((v) => Number(v) >= 0, t(locale, "validation.amountNonNegative")),
+    targetAmount: amountSchema,
+  }).refine((input) => Number(input.targetAmount) >= Number(input.thresholdAmount), {
+    message: t(locale, "validation.targetAmountTooSmall"),
+    path: ["targetAmount"],
+  });
+
+  const vaTransferSchema = z.object({
+    fromAccountId: z.string().trim().min(1, t(locale, "validation.vaRequired")),
+    toAccountId: z.string().trim().min(1, t(locale, "validation.vaRequired")),
+    amount: amountSchema,
+  }).refine((input) => input.fromAccountId !== input.toAccountId, {
+    message: t(locale, "validation.transferSameAccount"),
+    path: ["toAccountId"],
+  });
+
   return {
     agentDidSchema,
     amountSchema,
     authorizeSchema,
     paySchema,
     rechargeSchema,
+    topupConfigSchema,
+    vaTransferSchema,
   };
 }

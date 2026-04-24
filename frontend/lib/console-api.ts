@@ -208,6 +208,100 @@ export function queryLedger(accountId: string) {
   >(`/account/ledger/query?accountId=${encodeURIComponent(accountId)}`);
 }
 
+export function queryInterest(accountId: string) {
+  return request<{
+    accountId: string;
+    annualRate: number;
+    accruedInterest: number;
+    asOf: string;
+  }>(`/account/interest/query?accountId=${encodeURIComponent(accountId)}`);
+}
+
+export function getVATopupConfig(accountId: string) {
+  return request<{
+    accountId: string;
+    autoTopupEnabled: boolean;
+    thresholdAmount: number;
+    targetAmount: number;
+    updatedAt: string;
+  }>(`/account/va/topup/config?accountId=${encodeURIComponent(accountId)}`);
+}
+
+export function setVATopupConfig(input: {
+  accountId: string;
+  autoTopupEnabled: boolean;
+  thresholdAmount: string;
+  targetAmount: string;
+}) {
+  return request<{
+    accountId: string;
+    autoTopupEnabled: boolean;
+    thresholdAmount: number;
+    targetAmount: number;
+    updatedAt: string;
+  }>("/account/va/topup/config", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function transferVA(input: {
+  fromAccountId: string;
+  toAccountId: string;
+  amount: string;
+}) {
+  return request("/account/va/transfer", {
+    method: "POST",
+    body: JSON.stringify(input),
+    idempotencyKey: `va-transfer-ui-${Date.now()}`,
+  });
+}
+
+export type VATransferRecord = {
+  transferId: string;
+  fromAccountId: string;
+  toAccountId: string;
+  amount: number;
+  status: string;
+  idempotencyKey: string;
+  createdAt: string;
+};
+
+export function listVATransfers(input?: {
+  accountId?: string;
+  status?: string;
+  startTime?: string;
+  endTime?: string;
+  limit?: number;
+  offset?: number;
+}) {
+  const query = new URLSearchParams();
+  if (input?.accountId?.trim()) {
+    query.set("accountId", input.accountId.trim());
+  }
+  if (input?.status?.trim()) {
+    query.set("status", input.status.trim());
+  }
+  if (input?.startTime?.trim()) {
+    query.set("startTime", input.startTime.trim());
+  }
+  if (input?.endTime?.trim()) {
+    query.set("endTime", input.endTime.trim());
+  }
+  if (input?.limit && Number.isFinite(input.limit) && input.limit > 0) {
+    query.set("limit", String(input.limit));
+  }
+  if (
+    typeof input?.offset === "number" &&
+    Number.isFinite(input.offset) &&
+    input.offset >= 0
+  ) {
+    query.set("offset", String(input.offset));
+  }
+  const suffix = query.toString();
+  return request<VATransferRecord[]>(`/account/va/transfer/list${suffix ? `?${suffix}` : ""}`);
+}
+
 export function listAgents() {
   return request<
     Array<{

@@ -142,6 +142,16 @@ type VATopupConfig struct {
 	UpdatedAt         time.Time `json:"updatedAt"`
 }
 
+type VATransferRecord struct {
+	TransferID     string    `json:"transferId"`
+	FromAccountID  string    `json:"fromAccountId"`
+	ToAccountID    string    `json:"toAccountId"`
+	Amount         float64   `json:"amount"`
+	Status         string    `json:"status"`
+	IdempotencyKey string    `json:"idempotencyKey"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
 type Service struct {
 	mu             sync.Mutex
 	agents         map[string]Agent
@@ -162,6 +172,7 @@ type Service struct {
 	webhookSeq     int64
 	accountCreated map[string]time.Time
 	topupConfig    map[string]VATopupConfig
+	vaTransfers    []VATransferRecord
 }
 
 type holdRecord struct {
@@ -206,6 +217,7 @@ type PaymentService interface {
 	SetVATopupConfig(accountID string, autoTopup bool, threshold string, target string) (VATopupConfig, error)
 	GetVATopupConfig(accountID string) (VATopupConfig, error)
 	TransferVA(fromAccountID string, toAccountID string, amount string, idemKey string) error
+	ListVATransfers(accountID string, status string, startTime string, endTime string, limit int, offset int) []VATransferRecord
 }
 
 func New() *Service {
@@ -227,6 +239,7 @@ func New() *Service {
 		webhookDeliver: []WebhookDelivery{},
 		accountCreated: map[string]time.Time{},
 		topupConfig:    map[string]VATopupConfig{},
+		vaTransfers:    []VATransferRecord{},
 	}
 }
 
@@ -1078,8 +1091,72 @@ func (s *Service) TransferVA(fromAccountID string, toAccountID string, amount st
 	}
 	from.Balance -= v
 	to.Balance += v
+	s.vaTransfers = append([]VATransferRecord{
+		{
+			TransferID:     fmt.Sprintf("vat_%d", time.Now().UnixNano()),
+			FromAccountID:  from.VAAccountID,
+			ToAccountID:    to.VAAccountID,
+			Amount:         v,
+			Status:         "SETTLED",
+			IdempotencyKey: strings.TrimSpace(idemKey),
+			CreatedAt:      time.Now().UTC(),
+		},
+	}, s.vaTransfers...)
 	s.actionIdem[key] = struct{}{}
 	return nil
+}
+
+func (s *Service) ListVATransfers(accountID string, status string, startTime string, endTime string, limit int, offset int) []VATransferRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	accountID = strings.TrimSpace(accountID)
+	status = strings.ToUpper(strings.TrimSpace(status))
+	startAt := parseOptionalRFC3339(startTime)
+	endAt := parseOptionalRFC3339(endTime)
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	out := make([]VATransferRecord, 0, limit)
+	skipped := 0
+	for _, item := range s.vaTransfers {
+		if accountID != "" && item.FromAccountID != accountID && item.ToAccountID != accountID {
+			continue
+		}
+		if status != "" && strings.ToUpper(item.Status) != status {
+			continue
+		}
+		if startAt != nil && item.CreatedAt.Before(*startAt) {
+			continue
+		}
+		if endAt != nil && item.CreatedAt.After(*endAt) {
+			continue
+		}
+		if skipped < offset {
+			skipped++
+			continue
+		}
+		out = append(out, item)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func parseOptionalRFC3339(raw string) *time.Time {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339, trimmed)
+	if err != nil {
+		return nil
+	}
+	v := t.UTC()
+	return &v
 }
 
 func (s *Service) enqueueWebhookDelivery(event, dedupeKey string, payload map[string]any) {

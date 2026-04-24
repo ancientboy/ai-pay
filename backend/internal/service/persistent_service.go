@@ -366,6 +366,66 @@ VALUES (?, ?, ?, ?, 'SETTLED', ?, UTC_TIMESTAMP())`, transferID, fromID, toID, a
 	return s.store.Redis.Set(ctx, idem, transferID, 24*time.Hour).Err()
 }
 
+func (s *PersistentService) ListVATransfers(accountID string, status string, startTime string, endTime string, limit int, offset int) []VATransferRecord {
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	query := `
+SELECT transfer_id, from_va_account_id, to_va_account_id, amount, status, idem_key, created_at
+FROM va_transfer_order
+WHERE 1=1`
+	args := make([]any, 0, 4)
+	accountID = strings.TrimSpace(accountID)
+	status = strings.ToUpper(strings.TrimSpace(status))
+	if accountID != "" {
+		query += " AND (from_va_account_id = ? OR to_va_account_id = ?)"
+		args = append(args, accountID, accountID)
+	}
+	if status != "" {
+		query += " AND status = ?"
+		args = append(args, status)
+	}
+	if trimmed := strings.TrimSpace(startTime); trimmed != "" {
+		if t, err := time.Parse(time.RFC3339, trimmed); err == nil {
+			query += " AND created_at >= ?"
+			args = append(args, t.UTC())
+		}
+	}
+	if trimmed := strings.TrimSpace(endTime); trimmed != "" {
+		if t, err := time.Parse(time.RFC3339, trimmed); err == nil {
+			query += " AND created_at <= ?"
+			args = append(args, t.UTC())
+		}
+	}
+	query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
+	rows, err := s.store.DB.Query(query, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]VATransferRecord, 0, limit)
+	for rows.Next() {
+		var item VATransferRecord
+		if err := rows.Scan(
+			&item.TransferID,
+			&item.FromAccountID,
+			&item.ToAccountID,
+			&item.Amount,
+			&item.Status,
+			&item.IdempotencyKey,
+			&item.CreatedAt,
+		); err != nil {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
 func (s *PersistentService) Pay(req PayRequest) (PayResponse, *APIError) {
 	if req.Signature == "" {
 		return PayResponse{}, &APIError{Code: "PAY-001", Message: "signature required"}

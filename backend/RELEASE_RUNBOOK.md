@@ -33,6 +33,8 @@
 - `GET /ready` 结果（持久化模式需稳定返回 `ready=true`）
 - Webhook 投递成功率与死信新增量（死信应保持低位，异常增长需立即排查）
 - 死信重放可用性（`POST /developer/webhook-deliveries/replay`）
+- VA 转账列表筛选正确性（`GET /account/va/transfer/list` 的 `status/startTime/endTime`）
+- 资金页分页与导出一致性（同一筛选条件下，列表结果与 CSV 一致）
 
 ## 回滚触发条件
 

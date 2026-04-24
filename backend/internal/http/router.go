@@ -108,6 +108,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /account/va/topup/config", s.handleVATopupConfigSet)
 	mux.HandleFunc("GET /account/va/topup/config", s.handleVATopupConfigGet)
 	mux.HandleFunc("POST /account/va/transfer", s.handleVATransfer)
+	mux.HandleFunc("GET /account/va/transfer/list", s.handleVATransferList)
 	mux.HandleFunc("GET /metrics/overview", s.handleOverviewMetrics)
 	mux.Handle("GET /developer/api-keys", s.withReadAuth(http.HandlerFunc(s.handleAPIKeyList)))
 	mux.Handle("POST /developer/api-keys", s.withAdminAuth(http.HandlerFunc(s.handleAPIKeyCreate)))
@@ -622,6 +623,27 @@ func (s *Server) handleVATransfer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
+}
+
+func (s *Server) handleVATransferList(w http.ResponseWriter, r *http.Request) {
+	accountID := strings.TrimSpace(r.URL.Query().Get("accountId"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	startTime := strings.TrimSpace(r.URL.Query().Get("startTime"))
+	endTime := strings.TrimSpace(r.URL.Query().Get("endTime"))
+	limit := 20
+	offset := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+	items := s.svc.ListVATransfers(accountID, status, startTime, endTime, limit, offset)
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": items})
 }
 
 func (s *Server) handleAPIKeyList(w http.ResponseWriter, r *http.Request) {

@@ -5,7 +5,16 @@ import { useEffect, useMemo, useState } from "react";
 import { DetailModal } from "@/components/detail-modal";
 import { useLocale } from "@/components/locale-provider";
 import { useToast } from "@/components/toast-provider";
-import { listRecharges, recharge } from "@/lib/console-api";
+import {
+  getVATopupConfig,
+  listAgents,
+  listRecharges,
+  listVATransfers,
+  queryInterest,
+  recharge,
+  setVATopupConfig,
+  transferVA,
+} from "@/lib/console-api";
 import { ApiClientError, toReadableError } from "@/lib/error-map";
 import { formatStatus } from "@/lib/i18n";
 import { getValidationSchemas } from "@/lib/validation";
@@ -44,9 +53,29 @@ function loadRechargeDraft(): RechargeDraft {
   }
 }
 
+function toISOTime(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    return undefined;
+  }
+  return parsed.toISOString();
+}
+
+function csvEscape(value: string | number): string {
+  const raw = String(value ?? "");
+  return `"${raw.replace(/"/g, "\"\"")}"`;
+}
+
 export default function RechargePage() {
   const { t, locale } = useLocale();
-  const { rechargeSchema } = useMemo(() => getValidationSchemas(locale), [locale]);
+  const { rechargeSchema, topupConfigSchema, vaTransferSchema } = useMemo(
+    () => getValidationSchemas(locale),
+    [locale],
+  );
   const { showToast } = useToast();
   const [draft] = useState<RechargeDraft>(() => loadRechargeDraft());
   const [vaAccountId, setVaAccountId] = useState(draft.vaAccountId);
@@ -54,6 +83,39 @@ export default function RechargePage() {
   const [amount, setAmount] = useState(draft.amount);
   const [message, setMessage] = useState("");
   const [errorDetails, setErrorDetails] = useState<RecoverableError | null>(null);
+  const [interestAccountId, setInterestAccountId] = useState("");
+  const [topupAccountId, setTopupAccountId] = useState("");
+  const [autoTopupEnabled, setAutoTopupEnabled] = useState(false);
+  const [thresholdAmount, setThresholdAmount] = useState("0");
+  const [targetAmount, setTargetAmount] = useState("100");
+  const [fromAccountId, setFromAccountId] = useState("");
+  const [toAccountId, setToAccountId] = useState("");
+  const [transferAmount, setTransferAmount] = useState("1");
+  const [timelineAccountId, setTimelineAccountId] = useState("");
+  const [transferStatusFilter, setTransferStatusFilter] = useState("");
+  const [transferStartAt, setTransferStartAt] = useState("");
+  const [transferEndAt, setTransferEndAt] = useState("");
+  const [transferPage, setTransferPage] = useState(1);
+  const transferPageSize = 10;
+  const [interestResult, setInterestResult] = useState<{
+    annualRate: number;
+    accruedInterest: number;
+    asOf: string;
+    accountId: string;
+  } | null>(null);
+  const [topupResult, setTopupResult] = useState<{
+    accountId: string;
+    autoTopupEnabled: boolean;
+    thresholdAmount: number;
+    targetAmount: number;
+    updatedAt: string;
+  } | null>(null);
+  const [transferResult, setTransferResult] = useState<{
+    fromAccountId: string;
+    toAccountId: string;
+    amount: string;
+    at: string;
+  } | null>(null);
   const [selected, setSelected] = useState<{
     rechargeId: string;
     vaAccountId: string;
@@ -65,6 +127,27 @@ export default function RechargePage() {
   const rechargesQuery = useQuery({
     queryKey: ["recharges", vaAccountId],
     queryFn: () => listRecharges(vaAccountId || undefined, 20),
+  });
+  const timelineRechargesQuery = useQuery({
+    queryKey: ["timeline-recharges", timelineAccountId],
+    queryFn: () => listRecharges(timelineAccountId || undefined, 50),
+  });
+  const agentsQuery = useQuery({
+    queryKey: ["agents-for-recharge"],
+    queryFn: () => listAgents(),
+  });
+  const transferOffset = (transferPage - 1) * transferPageSize;
+  const transferHistoryQuery = useQuery({
+    queryKey: ["va-transfers", timelineAccountId, transferStatusFilter, transferStartAt, transferEndAt, transferOffset],
+    queryFn: () =>
+      listVATransfers({
+        accountId: timelineAccountId || undefined,
+        status: transferStatusFilter || undefined,
+        startTime: toISOTime(transferStartAt),
+        endTime: toISOTime(transferEndAt),
+        limit: transferPageSize,
+        offset: transferOffset,
+      }),
   });
 
   useEffect(() => {
@@ -101,7 +184,135 @@ export default function RechargePage() {
     },
   });
 
+  const interestMutation = useMutation({
+    mutationFn: () => queryInterest(interestAccountId),
+    onSuccess: (data) => {
+      setInterestResult(data);
+      setMessage(
+        `${t("recharge.accruedInterest")}: ${data.accruedInterest.toFixed(6)} GUSD · ${t("recharge.annualRate")}: ${(
+          data.annualRate * 100
+        ).toFixed(2)}%`,
+      );
+      setErrorDetails(null);
+    },
+    onError: (err) => {
+      const msg = toReadableError(err, locale);
+      setMessage(msg);
+      setErrorDetails(err instanceof ApiClientError ? { message: msg, code: err.code, requestId: err.requestId } : { message: msg });
+      showToast("error", msg);
+    },
+  });
+
+  const topupConfigGetMutation = useMutation({
+    mutationFn: () => getVATopupConfig(topupAccountId),
+    onSuccess: (data) => {
+      setAutoTopupEnabled(data.autoTopupEnabled);
+      setThresholdAmount(String(data.thresholdAmount));
+      setTargetAmount(String(data.targetAmount));
+      setTopupResult(data);
+      setMessage(`${t("recharge.topupConfigTitle")} · ${t("common.success")}`);
+      setErrorDetails(null);
+    },
+    onError: (err) => {
+      const msg = toReadableError(err, locale);
+      setMessage(msg);
+      setErrorDetails(err instanceof ApiClientError ? { message: msg, code: err.code, requestId: err.requestId } : { message: msg });
+      showToast("error", msg);
+    },
+  });
+
+  const topupConfigSetMutation = useMutation({
+    mutationFn: () =>
+      setVATopupConfig({
+        accountId: topupAccountId,
+        autoTopupEnabled,
+        thresholdAmount,
+        targetAmount,
+      }),
+    onSuccess: () => {
+      setMessage(t("recharge.topupConfigSaved"));
+      setErrorDetails(null);
+      showToast("success", t("recharge.topupConfigSaved"));
+    },
+    onError: (err) => {
+      const msg = toReadableError(err, locale);
+      setMessage(msg);
+      setErrorDetails(err instanceof ApiClientError ? { message: msg, code: err.code, requestId: err.requestId } : { message: msg });
+      showToast("error", msg);
+    },
+  });
+
+  const transferMutation = useMutation({
+    mutationFn: () =>
+      transferVA({
+        fromAccountId,
+        toAccountId,
+        amount: transferAmount,
+      }),
+    onSuccess: () => {
+      setTransferResult({
+        fromAccountId,
+        toAccountId,
+        amount: transferAmount,
+        at: new Date().toISOString(),
+      });
+      setMessage(t("recharge.transferSuccess"));
+      setErrorDetails(null);
+      showToast("success", t("recharge.transferSuccess"));
+      rechargesQuery.refetch();
+      transferHistoryQuery.refetch();
+    },
+    onError: (err) => {
+      const msg = toReadableError(err, locale);
+      setMessage(msg);
+      setErrorDetails(err instanceof ApiClientError ? { message: msg, code: err.code, requestId: err.requestId } : { message: msg });
+      showToast("error", msg);
+    },
+  });
+
   const targetId = vaCardNo.trim() || vaAccountId.trim();
+  const timelineRows = useMemo(() => {
+    const startAt = toISOTime(transferStartAt);
+    const endAt = toISOTime(transferEndAt);
+    const rechargeRows = (timelineRechargesQuery.data ?? []).map((item) => ({
+      id: item.rechargeId,
+      type: "RECHARGE" as const,
+      accountId: item.vaAccountId,
+      amount: item.amount,
+      status: item.status,
+      createdAt: item.createdAt,
+      subtitle: item.vaAccountId,
+    }));
+    const transferRows = (transferHistoryQuery.data ?? []).map((item) => {
+      const isOut = timelineAccountId && item.fromAccountId === timelineAccountId;
+      return {
+        id: item.transferId,
+        type: isOut ? ("TRANSFER_OUT" as const) : ("TRANSFER_IN" as const),
+        accountId: isOut ? item.fromAccountId : item.toAccountId,
+        amount: item.amount,
+        status: item.status,
+        createdAt: item.createdAt,
+        subtitle: `${item.fromAccountId} -> ${item.toAccountId}`,
+      };
+    });
+    return [...rechargeRows, ...transferRows]
+      .filter((item) => {
+        if (transferStatusFilter && item.status.toUpperCase() !== transferStatusFilter) {
+          return false;
+        }
+        const created = new Date(item.createdAt).getTime();
+        if (startAt && created < new Date(startAt).getTime()) {
+          return false;
+        }
+        if (endAt && created > new Date(endAt).getTime()) {
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      });
+  }, [timelineRechargesQuery.data, timelineAccountId, transferEndAt, transferHistoryQuery.data, transferStartAt, transferStatusFilter]);
 
   async function copyErrorInfo() {
     if (!errorDetails) {
@@ -119,6 +330,48 @@ export default function RechargePage() {
     } catch {
       showToast("error", t("common.copyFailed"));
     }
+  }
+
+  function clearTransferFilters() {
+    setTransferStatusFilter("");
+    setTransferStartAt("");
+    setTransferEndAt("");
+    setTransferPage(1);
+    timelineRechargesQuery.refetch();
+    transferHistoryQuery.refetch();
+  }
+
+  async function exportTransferCsv() {
+    const rows = transferHistoryQuery.data ?? [];
+    if (rows.length === 0) {
+      showToast("error", t("recharge.noTimeline"));
+      return;
+    }
+    const header = ["transferId", "fromAccountId", "toAccountId", "amount", "status", "idempotencyKey", "createdAt"];
+    const csv = [
+      header.join(","),
+      ...rows.map((item) =>
+        [
+          item.transferId,
+          item.fromAccountId,
+          item.toAccountId,
+          item.amount,
+          item.status,
+          item.idempotencyKey,
+          item.createdAt,
+        ]
+          .map(csvEscape)
+          .join(","),
+      ),
+    ].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `va-transfer-${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast("success", t("common.success"));
   }
 
   return (
@@ -151,10 +404,18 @@ export default function RechargePage() {
           <label className="mt-4 block text-sm text-slate-300">
             {t("recharge.va")}
             <input
+              list="recharge-va-options"
               value={vaAccountId}
               onChange={(e) => setVaAccountId(e.target.value)}
               className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
             />
+            <datalist id="recharge-va-options">
+              {(agentsQuery.data ?? []).map((agent) => (
+                <option key={agent.vaAccountId} value={agent.vaAccountId}>
+                  {agent.agentDid}
+                </option>
+              ))}
+            </datalist>
           </label>
           <label className="mt-3 block text-sm text-slate-300">
             {t("recharge.vaCardNo")}
@@ -205,6 +466,199 @@ export default function RechargePage() {
 
         <div className="space-y-4">
           <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <h3 className="text-sm font-medium text-slate-200">{t("recharge.interestTitle")}</h3>
+            <div className="mt-2 flex gap-2">
+              <input
+                list="interest-va-options"
+                value={interestAccountId}
+                onChange={(e) => setInterestAccountId(e.target.value)}
+                placeholder={t("recharge.interestAccountId")}
+                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+              />
+              <datalist id="interest-va-options">
+                {(agentsQuery.data ?? []).map((agent) => (
+                  <option key={`i-${agent.vaAccountId}`} value={agent.vaAccountId}>
+                    {agent.agentDid}
+                  </option>
+                ))}
+              </datalist>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!interestAccountId.trim()) {
+                    showToast("error", t("validation.vaRequired"));
+                    return;
+                  }
+                  interestMutation.mutate();
+                }}
+                className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200"
+              >
+                {t("recharge.interestQuery")}
+              </button>
+            </div>
+            {interestResult ? (
+              <div className="mt-3 rounded-md border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-200">
+                <p>{t("recharge.interestAccountId")}: {interestResult.accountId}</p>
+                <p>{t("recharge.annualRate")}: {(interestResult.annualRate * 100).toFixed(2)}%</p>
+                <p>{t("recharge.accruedInterest")}: {interestResult.accruedInterest.toFixed(6)} GUSD</p>
+                <p>{t("recharge.asOf")}: {interestResult.asOf}</p>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <h3 className="text-sm font-medium text-slate-200">{t("recharge.topupConfigTitle")}</h3>
+            <div className="mt-2 space-y-2">
+              <input
+                list="topup-va-options"
+                value={topupAccountId}
+                onChange={(e) => setTopupAccountId(e.target.value)}
+                placeholder={t("recharge.interestAccountId")}
+                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+              />
+              <datalist id="topup-va-options">
+                {(agentsQuery.data ?? []).map((agent) => (
+                  <option key={`t-${agent.vaAccountId}`} value={agent.vaAccountId}>
+                    {agent.agentDid}
+                  </option>
+                ))}
+              </datalist>
+              <label className="flex items-center gap-2 text-sm text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={autoTopupEnabled}
+                  onChange={(e) => setAutoTopupEnabled(e.target.checked)}
+                />
+                {t("recharge.autoTopupEnabled")}
+              </label>
+              <input
+                value={thresholdAmount}
+                onChange={(e) => setThresholdAmount(e.target.value)}
+                placeholder={t("recharge.thresholdAmount")}
+                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+              />
+              <input
+                value={targetAmount}
+                onChange={(e) => setTargetAmount(e.target.value)}
+                placeholder={t("recharge.targetAmount")}
+                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+              />
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!topupAccountId.trim()) {
+                      showToast("error", t("validation.vaRequired"));
+                      return;
+                    }
+                    topupConfigGetMutation.mutate();
+                  }}
+                  className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200"
+                >
+                  {t("transactions.queryStatus")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const parsed = topupConfigSchema.safeParse({
+                      accountId: topupAccountId,
+                      thresholdAmount,
+                      targetAmount,
+                    });
+                    if (!parsed.success) {
+                      const msg = parsed.error.issues[0]?.message ?? t("common.failed");
+                      showToast("error", msg);
+                      setMessage(msg);
+                      return;
+                    }
+                    topupConfigSetMutation.mutate();
+                  }}
+                  className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white"
+                >
+                  {t("recharge.saveTopupConfig")}
+                </button>
+              </div>
+            </div>
+            {topupResult ? (
+              <div className="mt-3 rounded-md border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-200">
+                <p>{t("recharge.interestAccountId")}: {topupResult.accountId}</p>
+                <p>{t("recharge.autoTopupEnabled")}: {topupResult.autoTopupEnabled ? t("common.yes") : t("common.no")}</p>
+                <p>{t("recharge.thresholdAmount")}: {topupResult.thresholdAmount}</p>
+                <p>{t("recharge.targetAmount")}: {topupResult.targetAmount}</p>
+                <p>{t("common.createdAt")}: {topupResult.updatedAt}</p>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <h3 className="text-sm font-medium text-slate-200">{t("recharge.vaTransferTitle")}</h3>
+            <div className="mt-2 space-y-2">
+              <input
+                list="transfer-from-options"
+                value={fromAccountId}
+                onChange={(e) => setFromAccountId(e.target.value)}
+                placeholder={t("recharge.fromAccountId")}
+                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+              />
+              <datalist id="transfer-from-options">
+                {(agentsQuery.data ?? []).map((agent) => (
+                  <option key={`f-${agent.vaAccountId}`} value={agent.vaAccountId}>
+                    {agent.agentDid}
+                  </option>
+                ))}
+              </datalist>
+              <input
+                list="transfer-to-options"
+                value={toAccountId}
+                onChange={(e) => setToAccountId(e.target.value)}
+                placeholder={t("recharge.toAccountId")}
+                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+              />
+              <datalist id="transfer-to-options">
+                {(agentsQuery.data ?? []).map((agent) => (
+                  <option key={`to-${agent.vaAccountId}`} value={agent.vaAccountId}>
+                    {agent.agentDid}
+                  </option>
+                ))}
+              </datalist>
+              <input
+                value={transferAmount}
+                onChange={(e) => setTransferAmount(e.target.value)}
+                placeholder={t("recharge.transferAmount")}
+                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const parsed = vaTransferSchema.safeParse({
+                    fromAccountId,
+                    toAccountId,
+                    amount: transferAmount,
+                  });
+                  if (!parsed.success) {
+                    const msg = parsed.error.issues[0]?.message ?? t("common.failed");
+                    showToast("error", msg);
+                    setMessage(msg);
+                    return;
+                  }
+                  transferMutation.mutate();
+                }}
+                className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white"
+              >
+                {t("recharge.transferSubmit")}
+              </button>
+            </div>
+            {transferResult ? (
+              <div className="mt-3 rounded-md border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-200">
+                <p>{t("recharge.fromAccountId")}: {transferResult.fromAccountId}</p>
+                <p>{t("recharge.toAccountId")}: {transferResult.toAccountId}</p>
+                <p>{t("recharge.transferAmount")}: {transferResult.amount}</p>
+                <p>{t("common.createdAt")}: {transferResult.at}</p>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
             <h3 className="text-sm font-medium text-slate-200">{t("recharge.confirmTitle")}</h3>
             <p className="mt-2 text-xs text-slate-400">{t("recharge.confirmHint")}</p>
             <div className="mt-3 space-y-1 text-xs text-slate-300">
@@ -242,6 +696,149 @@ export default function RechargePage() {
               ))}
               {(rechargesQuery.data ?? []).length === 0 ? (
                 <li className="text-slate-500">{t("recharge.noRecords")}</li>
+              ) : null}
+            </ul>
+          </div>
+
+          <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <h3 className="text-sm font-medium text-slate-200">{t("recharge.transferHistory")}</h3>
+            <div className="mt-2 grid gap-2 md:grid-cols-2">
+              <select
+                value={transferStatusFilter}
+                onChange={(e) => setTransferStatusFilter(e.target.value)}
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+              >
+                <option value="">{t("recharge.transferFilterAllStatus")}</option>
+                <option value="SETTLED">{formatStatus(locale, "SETTLED")}</option>
+                <option value="FAILED">{formatStatus(locale, "FAILED")}</option>
+              </select>
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  type="datetime-local"
+                  value={transferStartAt}
+                  onChange={(e) => setTransferStartAt(e.target.value)}
+                  title={t("recharge.transferFilterStart")}
+                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                />
+                <input
+                  type="datetime-local"
+                  value={transferEndAt}
+                  onChange={(e) => setTransferEndAt(e.target.value)}
+                  title={t("recharge.transferFilterEnd")}
+                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                />
+              </div>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setTransferPage(1);
+                  timelineRechargesQuery.refetch();
+                  transferHistoryQuery.refetch();
+                }}
+                className="rounded-md border border-slate-700 px-3 py-2 text-xs text-slate-200"
+              >
+                {t("recharge.transferApplyFilters")}
+              </button>
+              <button
+                type="button"
+                onClick={clearTransferFilters}
+                className="rounded-md border border-slate-700 px-3 py-2 text-xs text-slate-200"
+              >
+                {t("recharge.transferClearFilters")}
+              </button>
+              <button
+                type="button"
+                onClick={exportTransferCsv}
+                className="rounded-md border border-slate-700 px-3 py-2 text-xs text-slate-200"
+              >
+                {t("recharge.transferExportCsv")}
+              </button>
+            </div>
+            <ul className="mt-3 space-y-2 text-sm text-slate-300">
+              {(transferHistoryQuery.data ?? []).map((item) => (
+                <li key={item.transferId} className="rounded border border-slate-800 p-2">
+                  <p className="font-mono text-xs">{item.transferId}</p>
+                  <p>{item.amount} GUSD · {formatStatus(locale, item.status)}</p>
+                  <p className="text-xs text-slate-500">{item.fromAccountId} -&gt; {item.toAccountId}</p>
+                  <p className="text-xs text-slate-500">{item.createdAt}</p>
+                </li>
+              ))}
+              {(transferHistoryQuery.data ?? []).length === 0 ? (
+                <li className="text-slate-500">{t("recharge.noTimeline")}</li>
+              ) : null}
+            </ul>
+            <div className="mt-3 flex items-center justify-between text-xs text-slate-400">
+              <span>{t("recharge.transferPageInfo")}: {transferPage}</span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={transferPage <= 1}
+                  onClick={() => setTransferPage((v) => Math.max(1, v - 1))}
+                  className="rounded border border-slate-700 px-2 py-1 disabled:opacity-50"
+                >
+                  {t("transactions.prev")}
+                </button>
+                <button
+                  type="button"
+                  disabled={(transferHistoryQuery.data ?? []).length < transferPageSize}
+                  onClick={() => setTransferPage((v) => v + 1)}
+                  className="rounded border border-slate-700 px-2 py-1 disabled:opacity-50"
+                >
+                  {t("transactions.next")}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <h3 className="text-sm font-medium text-slate-200">{t("recharge.timelineTitle")}</h3>
+            <div className="mt-2 flex gap-2">
+              <input
+                list="timeline-va-options"
+                value={timelineAccountId}
+                onChange={(e) => setTimelineAccountId(e.target.value)}
+                placeholder={t("recharge.timelineAccountId")}
+                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+              />
+              <datalist id="timeline-va-options">
+                {(agentsQuery.data ?? []).map((agent) => (
+                  <option key={`timeline-${agent.vaAccountId}`} value={agent.vaAccountId}>
+                    {agent.agentDid}
+                  </option>
+                ))}
+              </datalist>
+              <button
+                type="button"
+                onClick={() => {
+                  timelineRechargesQuery.refetch();
+                  rechargesQuery.refetch();
+                  transferHistoryQuery.refetch();
+                }}
+                className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200"
+              >
+                {t("developer.refresh")}
+              </button>
+            </div>
+            <ul className="mt-3 space-y-2 text-sm text-slate-300">
+              {timelineRows.map((item) => (
+                <li key={`${item.type}-${item.id}`} className="rounded border border-slate-800 p-2">
+                  <p className="text-xs text-slate-400">
+                    {item.type === "RECHARGE"
+                      ? t("recharge.timelineTypeRecharge")
+                      : item.type === "TRANSFER_OUT"
+                        ? t("recharge.timelineTypeTransferOut")
+                        : t("recharge.timelineTypeTransferIn")}
+                  </p>
+                  <p className="font-mono text-xs">{item.id}</p>
+                  <p>{item.amount} GUSD · {formatStatus(locale, item.status)}</p>
+                  <p className="text-xs text-slate-500">{item.subtitle}</p>
+                  <p className="text-xs text-slate-500">{item.createdAt}</p>
+                </li>
+              ))}
+              {timelineRows.length === 0 ? (
+                <li className="text-slate-500">{t("recharge.noTimeline")}</li>
               ) : null}
             </ul>
           </div>

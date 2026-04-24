@@ -131,4 +131,8 @@ func TestPersistentVATopupAndTransfer(t *testing.T) {
 	if toBal > 3.0000001 || toBal < 2.9999999 {
 		t.Fatalf("expected to balance about 3 got %v", toBal)
 	}
+	items := svc.ListVATransfers(fromAcc.VAAccountID, "SETTLED", "", "", 10, 0)
+	if len(items) == 0 {
+		t.Fatalf("expected transfer history records")
+	}
 }

@@ -24,6 +24,7 @@ Go 实现的 MVP 后端，覆盖文档中第一阶段核心接口：
 - `POST /account/va/topup/config`
 - `GET /account/va/topup/config`
 - `POST /account/va/transfer`
+- `GET /account/va/transfer/list`
 - `GET /metrics/overview`
 
 ## 安全基线（M2）
@@ -75,6 +76,17 @@ Go 实现的 MVP 后端，覆盖文档中第一阶段核心接口：
   - `GET /developer/webhook-deliveries`（支持 `status/event/webhookId/limit/offset`）
   - `GET /developer/webhook-deliveries/stats`（返回 `pending/retrying/sent/dead/total` 聚合）
   - `POST /developer/webhook-deliveries/replay`（按 `id` 重放）
+
+## 资金页运营化（Phase 4）
+
+- `GET /account/va/transfer/list` 支持以下查询参数：
+  - `accountId`：按账户过滤（转入或转出任一命中）
+  - `status`：按状态过滤（`SETTLED` / `FAILED`）
+  - `startTime` / `endTime`：按创建时间窗口过滤（RFC3339）
+  - `limit` / `offset`：分页
+- 推荐前端查询模式：
+  - 列表页使用 `limit=10~20` + `offset` 做翻页
+  - 导出 CSV 时沿用同一筛选参数，确保“所见即所得”
 
 ## 联调与发布（M4）
 

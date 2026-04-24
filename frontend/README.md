@@ -54,3 +54,8 @@ to avoid blocked dev resources when opening the app from `http://127.0.0.1:3000`
 - Core forms validated with zod before API request.
 - Added route guard middleware and login flow for console pages.
 - Added detail modal interactions for agent/recharge/transaction rows.
+- Recharge page Phase 4 operational capabilities:
+  - VA transfer history supports status + time range filtering.
+  - VA transfer history supports pagination (`prev` / `next`).
+  - CSV export for current transfer history filter result.
+  - Funds timeline reuses the same status/time filters.
