@@ -111,6 +111,32 @@ export function setAuthorizeRule(input: {
   });
 }
 
+export function updateAuthorizeRule(input: {
+  agentDid: string;
+  singleLimit: string;
+  dailyLimit: string;
+  whitelist: string[];
+}) {
+  return request("/authorize/payment/update", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function freezeAuthorizeRule(agentDid: string) {
+  return request("/authorize/freeze", {
+    method: "POST",
+    body: JSON.stringify({ agentDid }),
+  });
+}
+
+export function activateAuthorizeRule(agentDid: string) {
+  return request("/authorize/activate", {
+    method: "POST",
+    body: JSON.stringify({ agentDid }),
+  });
+}
+
 export function recharge(input: { vaAccountId?: string; vaCardNo?: string; amount: string }) {
   return request("/fund/recharge", {
     method: "POST",

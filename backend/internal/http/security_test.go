@@ -8,6 +8,7 @@ import (
 func TestFixedWindowLimiterGCRemovesExpiredCounters(t *testing.T) {
 	limiter := newFixedWindowLimiter(2, time.Second)
 	base := time.Date(2026, 4, 23, 12, 0, 0, 0, time.UTC)
+	limiter.lastGC = base
 
 	if !limiter.allow("k1", base) || !limiter.allow("k2", base) {
 		t.Fatalf("expected initial allows")

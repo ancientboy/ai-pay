@@ -57,6 +57,44 @@ paths:
                 $ref: "#/components/schemas/AgentRegisterResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+  /agent/did/verify:
+    post:
+      tags: [agent]
+      summary: Verify DID signature with registered public key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyAgentRequest"
+      responses:
+        "200":
+          description: Signature verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyAgentResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /agent/did/update:
+    post:
+      tags: [agent]
+      summary: Rotate DID public key with proof signature
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAgentRequest"
+      responses:
+        "200":
+          description: DID public key updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
   /account/create:
     post:
       tags: [account]
@@ -144,6 +182,63 @@ paths:
       responses:
         "200":
           description: Rule set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /authorize/payment/update:
+    post:
+      tags: [authorize]
+      summary: Update payment authorize rule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthorizeRequest"
+      responses:
+        "200":
+          description: Rule updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /authorize/freeze:
+    post:
+      tags: [authorize]
+      summary: Freeze payment authorize rule for an agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FreezeAuthorizeRequest"
+      responses:
+        "200":
+          description: Rule frozen
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /authorize/activate:
+    post:
+      tags: [authorize]
+      summary: Activate payment authorize rule for an agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FreezeAuthorizeRequest"
+      responses:
+        "200":
+          description: Rule activated
           content:
             application/json:
               schema:
@@ -321,6 +416,83 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LedgerResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /account/interest/query:
+    get:
+      tags: [account]
+      summary: Query estimated account interest
+      parameters:
+        - in: query
+          name: accountId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Interest quote
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InterestResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /account/va/topup/config:
+    get:
+      tags: [account]
+      summary: Query VA auto topup config
+      parameters:
+        - in: query
+          name: accountId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Topup config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VATopupConfigResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+    post:
+      tags: [account]
+      summary: Set VA auto topup config
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VATopupConfigRequest"
+      responses:
+        "200":
+          description: Topup config updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VATopupConfigResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /account/va/transfer:
+    post:
+      tags: [account]
+      summary: Transfer amount between VA accounts
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VATransferRequest"
+      responses:
+        "200":
+          description: Transfer accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
   /metrics/overview:
@@ -716,6 +888,41 @@ components:
           type: string
         didPubKey:
           type: string
+    VerifyAgentRequest:
+      type: object
+      required: [agentDid, message, signature]
+      properties:
+        agentDid:
+          type: string
+        message:
+          type: string
+        signature:
+          type: string
+    VerifyAgentResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          type: object
+          required: [verified]
+          properties:
+            verified:
+              type: boolean
+    UpdateAgentRequest:
+      type: object
+      required: [agentDid, newDidPubKey, signTimestamp, proofSignature]
+      properties:
+        agentDid:
+          type: string
+        newDidPubKey:
+          type: string
+        signTimestamp:
+          type: string
+          format: date-time
+        proofSignature:
+          type: string
     Agent:
       type: object
       additionalProperties: true
@@ -800,6 +1007,12 @@ components:
           type: array
           items:
             type: string
+    FreezeAuthorizeRequest:
+      type: object
+      required: [agentDid]
+      properties:
+        agentDid:
+          type: string
     PayRequest:
       type: object
       required: [payerDid, merchantId, amount, signature]
@@ -872,6 +1085,70 @@ components:
           items:
             type: object
             additionalProperties: true
+    InterestQuote:
+      type: object
+      properties:
+        accountId:
+          type: string
+        annualRate:
+          type: number
+        accruedInterest:
+          type: number
+        asOf:
+          type: string
+          format: date-time
+    InterestResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          $ref: "#/components/schemas/InterestQuote"
+    VATopupConfigRequest:
+      type: object
+      required: [accountId, autoTopupEnabled, thresholdAmount, targetAmount]
+      properties:
+        accountId:
+          type: string
+        autoTopupEnabled:
+          type: boolean
+        thresholdAmount:
+          type: string
+        targetAmount:
+          type: string
+    VATopupConfig:
+      type: object
+      properties:
+        accountId:
+          type: string
+        autoTopupEnabled:
+          type: boolean
+        thresholdAmount:
+          type: number
+        targetAmount:
+          type: number
+        updatedAt:
+          type: string
+          format: date-time
+    VATopupConfigResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          $ref: "#/components/schemas/VATopupConfig"
+    VATransferRequest:
+      type: object
+      required: [fromAccountId, toAccountId, amount]
+      properties:
+        fromAccountId:
+          type: string
+        toAccountId:
+          type: string
+        amount:
+          type: string
     MetricsResponse:
       type: object
       required: [code, data]

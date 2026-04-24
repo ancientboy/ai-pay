@@ -33,6 +33,7 @@ migrate:
 	mysql -uroot -proot ai_pay < migrations/006_add_pay_order_hold_id.sql
 	mysql -uroot -proot ai_pay < migrations/007_add_developer_resources.sql
 	mysql -uroot -proot ai_pay < migrations/008_add_webhook_delivery_task.sql
+	mysql -uroot -proot ai_pay < migrations/009_add_va_topup_and_transfer.sql
 
 health:
 	curl -s http://127.0.0.1:8080/health

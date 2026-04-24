@@ -3,11 +3,16 @@
 Go 实现的 MVP 后端，覆盖文档中第一阶段核心接口：
 
 - `POST /agent/did/register`
+- `POST /agent/did/verify`
+- `POST /agent/did/update`
 - `POST /account/create`
 - `GET /agent/list`
 - `POST /fund/recharge`（支持 `vaAccountId` 或 `vaCardNo`）
 - `GET /fund/recharge/list`
 - `POST /authorize/payment/set`
+- `POST /authorize/payment/update`
+- `POST /authorize/freeze`
+- `POST /authorize/activate`
 - `POST /payment/x402/pay`
 - `POST /payment/status/callback`
 - `POST /payment/unfreeze`
@@ -15,6 +20,10 @@ Go 实现的 MVP 后端，覆盖文档中第一阶段核心接口：
 - `GET /payment/status/query`
 - `GET /account/balance/query`
 - `GET /account/ledger/query`
+- `GET /account/interest/query`
+- `POST /account/va/topup/config`
+- `GET /account/va/topup/config`
+- `POST /account/va/transfer`
 - `GET /metrics/overview`
 
 ## 安全基线（M2）
@@ -95,6 +104,7 @@ DID 公钥字段由 `migrations/005_add_agent_did_pub_key.sql` 提供。
 订单冻结关联字段（`pay_order.hold_id`）由 `migrations/006_add_pay_order_hold_id.sql` 提供。  
 开发者资源表（API Key / Webhook）由 `migrations/007_add_developer_resources.sql` 提供。
 Webhook 投递任务表（重试 + 死信）由 `migrations/008_add_webhook_delivery_task.sql` 提供。
+VA 自动充值配置与 VA 转账流水表由 `migrations/009_add_va_topup_and_transfer.sql` 提供。
 默认 docker 映射端口为 `3307 -> 3306`，避免与本机已有 MySQL 冲突。
 
 如果你在本地已经初始化过数据库，请手动执行：
@@ -107,6 +117,7 @@ mysql -uroot -proot ai_pay < migrations/005_add_agent_did_pub_key.sql
 mysql -uroot -proot ai_pay < migrations/006_add_pay_order_hold_id.sql
 mysql -uroot -proot ai_pay < migrations/007_add_developer_resources.sql
 mysql -uroot -proot ai_pay < migrations/008_add_webhook_delivery_task.sql
+mysql -uroot -proot ai_pay < migrations/009_add_va_topup_and_transfer.sql
 ```
 
 ## 运行

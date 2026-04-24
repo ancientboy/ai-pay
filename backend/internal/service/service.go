@@ -1,6 +1,8 @@
 package service
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +37,7 @@ type AuthorizeRule struct {
 	SingleLimit float64
 	DailyLimit  float64
 	Whitelist   map[string]struct{}
+	Status      string
 }
 
 type Transaction struct {
@@ -124,6 +127,21 @@ type WebhookDeliveryStats struct {
 	Total    int `json:"total"`
 }
 
+type InterestQuote struct {
+	AccountID       string    `json:"accountId"`
+	AnnualRate      float64   `json:"annualRate"`
+	AccruedInterest float64   `json:"accruedInterest"`
+	AsOf            time.Time `json:"asOf"`
+}
+
+type VATopupConfig struct {
+	AccountID         string    `json:"accountId"`
+	AutoTopupEnabled  bool      `json:"autoTopupEnabled"`
+	ThresholdAmount   float64   `json:"thresholdAmount"`
+	TargetAmount      float64   `json:"targetAmount"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+}
+
 type Service struct {
 	mu             sync.Mutex
 	agents         map[string]Agent
@@ -142,6 +160,8 @@ type Service struct {
 	webhooks       []DeveloperWebhook
 	webhookDeliver []WebhookDelivery
 	webhookSeq     int64
+	accountCreated map[string]time.Time
+	topupConfig    map[string]VATopupConfig
 }
 
 type holdRecord struct {
@@ -155,9 +175,14 @@ type PaymentService interface {
 	RegisterAgent(did string) Agent
 	SetAgentPublicKey(did string, pubKey string) error
 	AgentPublicKey(did string) (string, error)
+	VerifyAgentSignature(did string, message string, signature string) error
+	UpdateAgentPublicKey(did string, newPubKey string, proofMessage string, proofSignature string) error
 	CreateAccount(agentDID string) Account
 	Recharge(va string, amount string, idemKey string) error
 	SetAuthorizeRule(agentDID string, single string, daily string, merchants []string) error
+	UpdateAuthorizeRule(agentDID string, single string, daily string, merchants []string) error
+	FreezeAuthorizeRule(agentDID string) error
+	ActivateAuthorizeRule(agentDID string) error
 	Pay(req PayRequest) (PayResponse, *APIError)
 	ResolveSettling(transactionID string, success bool) error
 	Unfreeze(transactionID string, idemKey string) error
@@ -177,6 +202,10 @@ type PaymentService interface {
 	ListWebhookDeliveries(status string, event string, webhookID string, limit int, offset int) ([]WebhookDelivery, error)
 	ReplayWebhookDelivery(id int64) error
 	WebhookDeliveryStats() (WebhookDeliveryStats, error)
+	QueryInterest(accountID string) (InterestQuote, error)
+	SetVATopupConfig(accountID string, autoTopup bool, threshold string, target string) (VATopupConfig, error)
+	GetVATopupConfig(accountID string) (VATopupConfig, error)
+	TransferVA(fromAccountID string, toAccountID string, amount string, idemKey string) error
 }
 
 func New() *Service {
@@ -196,6 +225,8 @@ func New() *Service {
 		apiKeys:        []DeveloperAPIKey{},
 		webhooks:       []DeveloperWebhook{},
 		webhookDeliver: []WebhookDelivery{},
+		accountCreated: map[string]time.Time{},
+		topupConfig:    map[string]VATopupConfig{},
 	}
 }
 
@@ -229,6 +260,45 @@ func (s *Service) AgentPublicKey(did string) (string, error) {
 	return agent.DIDPubKey, nil
 }
 
+func (s *Service) VerifyAgentSignature(did string, message string, signature string) error {
+	pubKey, err := s.AgentPublicKey(did)
+	if err != nil {
+		return errors.New("agent not found")
+	}
+	if strings.TrimSpace(pubKey) == "" {
+		return errors.New("did public key missing")
+	}
+	if !verifySignature(pubKey, signature, []byte(message)) {
+		return errors.New("invalid signature")
+	}
+	return nil
+}
+
+func (s *Service) UpdateAgentPublicKey(did string, newPubKey string, proofMessage string, proofSignature string) error {
+	if strings.TrimSpace(did) == "" || strings.TrimSpace(newPubKey) == "" {
+		return errors.New("invalid request")
+	}
+	if err := s.VerifyAgentSignature(did, proofMessage, proofSignature); err != nil {
+		return err
+	}
+	if err := s.SetAgentPublicKey(did, newPubKey); err != nil {
+		return err
+	}
+	return nil
+}
+
+func verifySignature(pubKeyBase64, signatureBase64 string, payload []byte) bool {
+	pubKeyBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(pubKeyBase64))
+	if err != nil || len(pubKeyBytes) != ed25519.PublicKeySize {
+		return false
+	}
+	sigBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(signatureBase64))
+	if err != nil || len(sigBytes) != ed25519.SignatureSize {
+		return false
+	}
+	return ed25519.Verify(ed25519.PublicKey(pubKeyBytes), payload, sigBytes)
+}
+
 func (s *Service) CreateAccount(agentDID string) Account {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -243,6 +313,7 @@ func (s *Service) CreateAccount(agentDID string) Account {
 	s.accounts[agentDID] = a
 	s.accountsByVA[a.VAAccountID] = a
 	s.accountsByCard[a.VACardNo] = a
+	s.accountCreated[a.VAAccountID] = time.Now().UTC()
 	return *a
 }
 
@@ -299,7 +370,61 @@ func (s *Service) SetAuthorizeRule(agentDID string, single string, daily string,
 		SingleLimit: singleV,
 		DailyLimit:  dailyV,
 		Whitelist:   white,
+		Status:      "ACTIVE",
 	}
+	return nil
+}
+
+func (s *Service) UpdateAuthorizeRule(agentDID string, single string, daily string, merchants []string) error {
+	singleV, err := parseAmount(single)
+	if err != nil {
+		return err
+	}
+	dailyV, err := parseAmount(daily)
+	if err != nil {
+		return err
+	}
+	white := make(map[string]struct{}, len(merchants))
+	for _, m := range merchants {
+		white[m] = struct{}{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.rules[agentDID]
+	if !ok {
+		return &APIError{Code: "PAY-002", Message: "missing authorization rule"}
+	}
+	existing.SingleLimit = singleV
+	existing.DailyLimit = dailyV
+	existing.Whitelist = white
+	if existing.Status == "" {
+		existing.Status = "ACTIVE"
+	}
+	s.rules[agentDID] = existing
+	return nil
+}
+
+func (s *Service) FreezeAuthorizeRule(agentDID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.rules[agentDID]
+	if !ok {
+		return &APIError{Code: "PAY-002", Message: "missing authorization rule"}
+	}
+	existing.Status = "FROZEN"
+	s.rules[agentDID] = existing
+	return nil
+}
+
+func (s *Service) ActivateAuthorizeRule(agentDID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.rules[agentDID]
+	if !ok {
+		return &APIError{Code: "PAY-002", Message: "missing authorization rule"}
+	}
+	existing.Status = "ACTIVE"
+	s.rules[agentDID] = existing
 	return nil
 }
 
@@ -322,6 +447,9 @@ func (s *Service) Pay(req PayRequest) (PayResponse, *APIError) {
 	rule, ok := s.rules[req.PayerDID]
 	if !ok {
 		return PayResponse{}, &APIError{Code: "PAY-002", Message: "missing authorization rule"}
+	}
+	if strings.ToUpper(strings.TrimSpace(rule.Status)) != "ACTIVE" {
+		return PayResponse{}, &APIError{Code: "PAY-002", Message: "authorization rule inactive"}
 	}
 	if amount > rule.SingleLimit {
 		return PayResponse{}, &APIError{Code: "PAY-002", Message: "single limit exceeded"}
@@ -849,6 +977,109 @@ func (s *Service) WebhookDeliveryStats() (WebhookDeliveryStats, error) {
 		stats.Total++
 	}
 	return stats, nil
+}
+
+func (s *Service) QueryInterest(accountID string) (InterestQuote, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	accountID = strings.TrimSpace(accountID)
+	acc, ok := s.accountsByVA[accountID]
+	if !ok {
+		return InterestQuote{}, errors.New("account not found")
+	}
+	createdAt := s.accountCreated[accountID]
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	now := time.Now().UTC()
+	days := now.Sub(createdAt).Hours() / 24
+	if days < 0 {
+		days = 0
+	}
+	const annualRate = 0.03
+	accrued := acc.Balance * annualRate * (days / 365.0)
+	return InterestQuote{
+		AccountID:       accountID,
+		AnnualRate:      annualRate,
+		AccruedInterest: accrued,
+		AsOf:            now,
+	}, nil
+}
+
+func (s *Service) SetVATopupConfig(accountID string, autoTopup bool, threshold string, target string) (VATopupConfig, error) {
+	thresholdV, err := parseAmount(threshold)
+	if err != nil || thresholdV < 0 {
+		return VATopupConfig{}, &APIError{Code: "PAY-010", Message: "invalid threshold amount"}
+	}
+	targetV, err := parseAmount(target)
+	if err != nil || targetV <= 0 || targetV < thresholdV {
+		return VATopupConfig{}, &APIError{Code: "PAY-010", Message: "invalid target amount"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	accountID = strings.TrimSpace(accountID)
+	if _, ok := s.accountsByVA[accountID]; !ok {
+		return VATopupConfig{}, &APIError{Code: "PAY-010", Message: "account not found"}
+	}
+	item := VATopupConfig{
+		AccountID:        accountID,
+		AutoTopupEnabled: autoTopup,
+		ThresholdAmount:  thresholdV,
+		TargetAmount:     targetV,
+		UpdatedAt:        time.Now().UTC(),
+	}
+	s.topupConfig[accountID] = item
+	return item, nil
+}
+
+func (s *Service) GetVATopupConfig(accountID string) (VATopupConfig, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	accountID = strings.TrimSpace(accountID)
+	if item, ok := s.topupConfig[accountID]; ok {
+		return item, nil
+	}
+	if _, ok := s.accountsByVA[accountID]; !ok {
+		return VATopupConfig{}, &APIError{Code: "PAY-010", Message: "account not found"}
+	}
+	return VATopupConfig{
+		AccountID:        accountID,
+		AutoTopupEnabled: false,
+		ThresholdAmount:  0,
+		TargetAmount:     0,
+		UpdatedAt:        time.Now().UTC(),
+	}, nil
+}
+
+func (s *Service) TransferVA(fromAccountID string, toAccountID string, amount string, idemKey string) error {
+	v, err := parseAmount(amount)
+	if err != nil || v <= 0 {
+		return &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	if strings.TrimSpace(idemKey) == "" {
+		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := "va_transfer:" + idemKey
+	if _, ok := s.actionIdem[key]; ok {
+		return nil
+	}
+	from := s.accountsByVA[strings.TrimSpace(fromAccountID)]
+	to := s.accountsByVA[strings.TrimSpace(toAccountID)]
+	if from == nil || to == nil {
+		return &APIError{Code: "PAY-010", Message: "account not found"}
+	}
+	if from.VAAccountID == to.VAAccountID {
+		return &APIError{Code: "PAY-010", Message: "cannot transfer to same account"}
+	}
+	if from.Balance < v {
+		return &APIError{Code: "PAY-003", Message: "agent va insufficient balance"}
+	}
+	from.Balance -= v
+	to.Balance += v
+	s.actionIdem[key] = struct{}{}
+	return nil
 }
 
 func (s *Service) enqueueWebhookDelivery(event, dedupeKey string, payload map[string]any) {

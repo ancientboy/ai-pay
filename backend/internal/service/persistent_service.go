@@ -45,6 +45,30 @@ func (s *PersistentService) AgentPublicKey(did string) (string, error) {
 	return pub, nil
 }
 
+func (s *PersistentService) VerifyAgentSignature(did string, message string, signature string) error {
+	pub, err := s.AgentPublicKey(did)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(pub) == "" {
+		return fmt.Errorf("did public key missing")
+	}
+	if !verifySignature(pub, signature, []byte(message)) {
+		return fmt.Errorf("invalid signature")
+	}
+	return nil
+}
+
+func (s *PersistentService) UpdateAgentPublicKey(did string, newPubKey string, proofMessage string, proofSignature string) error {
+	if strings.TrimSpace(did) == "" || strings.TrimSpace(newPubKey) == "" {
+		return fmt.Errorf("invalid request")
+	}
+	if err := s.VerifyAgentSignature(did, proofMessage, proofSignature); err != nil {
+		return err
+	}
+	return s.SetAgentPublicKey(did, newPubKey)
+}
+
 func (s *PersistentService) CreateAccount(agentDID string) Account {
 	wallet := fmt.Sprintf("0xwallet_%d", time.Now().UnixNano())
 	va := fmt.Sprintf("va_%d", time.Now().UnixNano())
@@ -127,6 +151,219 @@ ON DUPLICATE KEY UPDATE single_limit = VALUES(single_limit), daily_limit = VALUE
 		return &APIError{Code: "PAY-010", Message: "set authorize failed"}
 	}
 	return nil
+}
+
+func (s *PersistentService) UpdateAuthorizeRule(agentDID string, single string, daily string, merchants []string) error {
+	singleV, err := parseAmount(single)
+	if err != nil {
+		return err
+	}
+	dailyV, err := parseAmount(daily)
+	if err != nil {
+		return err
+	}
+	white := ""
+	for i, m := range merchants {
+		if i > 0 {
+			white += ","
+		}
+		white += m
+	}
+	result, err := s.store.DB.Exec(`
+UPDATE pay_authorize_rule
+SET single_limit = ?, daily_limit = ?, whitelist = ?, updated_at = UTC_TIMESTAMP()
+WHERE agent_did = ?`, singleV, dailyV, white, agentDID)
+	if err != nil {
+		return &APIError{Code: "PAY-010", Message: "update authorize failed"}
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		var exists int
+		if err := s.store.DB.QueryRow(`SELECT COUNT(1) FROM pay_authorize_rule WHERE agent_did = ?`, agentDID).Scan(&exists); err != nil {
+			return &APIError{Code: "PAY-010", Message: "update authorize failed"}
+		}
+		if exists == 0 {
+			return &APIError{Code: "PAY-002", Message: "missing authorization rule"}
+		}
+	}
+	return nil
+}
+
+func (s *PersistentService) FreezeAuthorizeRule(agentDID string) error {
+	result, err := s.store.DB.Exec(`
+UPDATE pay_authorize_rule
+SET status = 'FROZEN', updated_at = UTC_TIMESTAMP()
+WHERE agent_did = ?`, agentDID)
+	if err != nil {
+		return &APIError{Code: "PAY-010", Message: "freeze authorize failed"}
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return &APIError{Code: "PAY-002", Message: "missing authorization rule"}
+	}
+	return nil
+}
+
+func (s *PersistentService) ActivateAuthorizeRule(agentDID string) error {
+	result, err := s.store.DB.Exec(`
+UPDATE pay_authorize_rule
+SET status = 'ACTIVE', updated_at = UTC_TIMESTAMP()
+WHERE agent_did = ?`, agentDID)
+	if err != nil {
+		return &APIError{Code: "PAY-010", Message: "activate authorize failed"}
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return &APIError{Code: "PAY-002", Message: "missing authorization rule"}
+	}
+	return nil
+}
+
+func (s *PersistentService) QueryInterest(accountID string) (InterestQuote, error) {
+	accountID = strings.TrimSpace(accountID)
+	var balance float64
+	var createdAt time.Time
+	if err := s.store.DB.QueryRow(`
+SELECT balance, created_at
+FROM asset_va_account
+WHERE va_account_id = ?`, accountID).Scan(&balance, &createdAt); err != nil {
+		return InterestQuote{}, err
+	}
+	now := time.Now().UTC()
+	days := now.Sub(createdAt.UTC()).Hours() / 24
+	if days < 0 {
+		days = 0
+	}
+	const annualRate = 0.03
+	accrued := balance * annualRate * (days / 365.0)
+	return InterestQuote{
+		AccountID:       accountID,
+		AnnualRate:      annualRate,
+		AccruedInterest: accrued,
+		AsOf:            now,
+	}, nil
+}
+
+func (s *PersistentService) SetVATopupConfig(accountID string, autoTopup bool, threshold string, target string) (VATopupConfig, error) {
+	thresholdV, err := parseAmount(threshold)
+	if err != nil || thresholdV < 0 {
+		return VATopupConfig{}, &APIError{Code: "PAY-010", Message: "invalid threshold amount"}
+	}
+	targetV, err := parseAmount(target)
+	if err != nil || targetV <= 0 || targetV < thresholdV {
+		return VATopupConfig{}, &APIError{Code: "PAY-010", Message: "invalid target amount"}
+	}
+	accountID = strings.TrimSpace(accountID)
+	exists := 0
+	if err := s.store.DB.QueryRow(`SELECT COUNT(1) FROM asset_va_account WHERE va_account_id = ?`, accountID).Scan(&exists); err != nil {
+		return VATopupConfig{}, err
+	}
+	if exists == 0 {
+		return VATopupConfig{}, &APIError{Code: "PAY-010", Message: "account not found"}
+	}
+	if _, err := s.store.DB.Exec(`
+INSERT INTO va_topup_config (va_account_id, auto_topup_enabled, threshold_amount, target_amount, updated_at)
+VALUES (?, ?, ?, ?, UTC_TIMESTAMP())
+ON DUPLICATE KEY UPDATE
+  auto_topup_enabled = VALUES(auto_topup_enabled),
+  threshold_amount = VALUES(threshold_amount),
+  target_amount = VALUES(target_amount),
+  updated_at = UTC_TIMESTAMP()`, accountID, autoTopup, thresholdV, targetV); err != nil {
+		return VATopupConfig{}, err
+	}
+	return s.GetVATopupConfig(accountID)
+}
+
+func (s *PersistentService) GetVATopupConfig(accountID string) (VATopupConfig, error) {
+	accountID = strings.TrimSpace(accountID)
+	var item VATopupConfig
+	if err := s.store.DB.QueryRow(`
+SELECT va_account_id, auto_topup_enabled, threshold_amount, target_amount, updated_at
+FROM va_topup_config
+WHERE va_account_id = ?`, accountID).Scan(
+		&item.AccountID,
+		&item.AutoTopupEnabled,
+		&item.ThresholdAmount,
+		&item.TargetAmount,
+		&item.UpdatedAt,
+	); err == nil {
+		return item, nil
+	} else if err != sql.ErrNoRows {
+		return VATopupConfig{}, err
+	}
+	exists := 0
+	if err := s.store.DB.QueryRow(`SELECT COUNT(1) FROM asset_va_account WHERE va_account_id = ?`, accountID).Scan(&exists); err != nil {
+		return VATopupConfig{}, err
+	}
+	if exists == 0 {
+		return VATopupConfig{}, &APIError{Code: "PAY-010", Message: "account not found"}
+	}
+	return VATopupConfig{
+		AccountID:        accountID,
+		AutoTopupEnabled: false,
+		ThresholdAmount:  0,
+		TargetAmount:     0,
+		UpdatedAt:        time.Now().UTC(),
+	}, nil
+}
+
+func (s *PersistentService) TransferVA(fromAccountID string, toAccountID string, amount string, idemKey string) error {
+	if strings.TrimSpace(idemKey) == "" {
+		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
+	amountV, err := parseAmount(amount)
+	if err != nil || amountV <= 0 {
+		return &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	fromID := strings.TrimSpace(fromAccountID)
+	toID := strings.TrimSpace(toAccountID)
+	if fromID == "" || toID == "" || fromID == toID {
+		return &APIError{Code: "PAY-010", Message: "invalid account id"}
+	}
+	ctx := context.Background()
+	idem := "idem:va_transfer:" + idemKey
+	if found, err := s.store.Redis.Get(ctx, idem).Result(); err == nil && found != "" {
+		return nil
+	} else if err != nil && err != redis.Nil {
+		return err
+	}
+	tx, err := s.store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`
+UPDATE asset_va_account
+SET balance = balance - ?
+WHERE va_account_id = ? AND balance >= ?`, amountV, fromID, amountV)
+	if err != nil {
+		return err
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return &APIError{Code: "PAY-003", Message: "agent va insufficient balance"}
+	}
+	res, err = tx.Exec(`
+UPDATE asset_va_account
+SET balance = balance + ?
+WHERE va_account_id = ?`, amountV, toID)
+	if err != nil {
+		return err
+	}
+	affected, _ = res.RowsAffected()
+	if affected == 0 {
+		return &APIError{Code: "PAY-010", Message: "account not found"}
+	}
+	transferID := fmt.Sprintf("vat_%d", time.Now().UnixNano())
+	if _, err := tx.Exec(`
+INSERT INTO va_transfer_order (transfer_id, from_va_account_id, to_va_account_id, amount, status, idem_key, created_at)
+VALUES (?, ?, ?, ?, 'SETTLED', ?, UTC_TIMESTAMP())`, transferID, fromID, toID, amountV, idemKey); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return s.store.Redis.Set(ctx, idem, transferID, 24*time.Hour).Err()
 }
 
 func (s *PersistentService) Pay(req PayRequest) (PayResponse, *APIError) {

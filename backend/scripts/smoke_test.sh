@@ -10,12 +10,13 @@ trap 'rm -rf "${tmp_dir}"' EXIT
 openssl genpkey -algorithm Ed25519 -out "${tmp_dir}/agent_priv.pem" >/dev/null 2>&1
 openssl pkey -in "${tmp_dir}/agent_priv.pem" -pubout -outform DER -out "${tmp_dir}/agent_pub.der" >/dev/null 2>&1
 agent_pub_b64="$(tail -c 32 "${tmp_dir}/agent_pub.der" | base64 | tr -d '\n')"
+agent_priv_key="${tmp_dir}/agent_priv.pem"
 
 sign_payload() {
   local payload="$1"
   local payload_file="${tmp_dir}/payload_$(date +%s%N).txt"
   printf '%s' "$payload" > "${payload_file}"
-  openssl pkeyutl -sign -inkey "${tmp_dir}/agent_priv.pem" -rawin -in "${payload_file}" | base64 | tr -d '\n'
+  openssl pkeyutl -sign -inkey "${agent_priv_key}" -rawin -in "${payload_file}" | base64 | tr -d '\n'
 }
 
 json_get() {
@@ -82,11 +83,49 @@ register_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/agent/did/re
   -d "{\"agentDid\":\"${agent}\",\"didPubKey\":\"${agent_pub_b64}\"}")"
 assert_eq "$(json_get "$register_resp" "code")" "0" "注册 Agent 成功"
 
+verify_msg="did-verify-${run_id}"
+verify_sig="$(sign_payload "${verify_msg}")"
+verify_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/agent/did/verify" \
+  -H 'content-type: application/json' \
+  -d "{\"agentDid\":\"${agent}\",\"message\":\"${verify_msg}\",\"signature\":\"${verify_sig}\"}")"
+assert_eq "$(json_get "$verify_resp" "code")" "0" "DID 验签接口可用"
+
+openssl genpkey -algorithm Ed25519 -out "${tmp_dir}/agent_priv_new.pem" >/dev/null 2>&1
+openssl pkey -in "${tmp_dir}/agent_priv_new.pem" -pubout -outform DER -out "${tmp_dir}/agent_pub_new.der" >/dev/null 2>&1
+agent_pub_new_b64="$(tail -c 32 "${tmp_dir}/agent_pub_new.der" | base64 | tr -d '\n')"
+update_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+update_proof_payload="${agent}|${agent_pub_new_b64}|${update_ts}"
+update_proof_sig="$(sign_payload "${update_proof_payload}")"
+update_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/agent/did/update" \
+  -H 'content-type: application/json' \
+  -d "{\"agentDid\":\"${agent}\",\"newDidPubKey\":\"${agent_pub_new_b64}\",\"signTimestamp\":\"${update_ts}\",\"proofSignature\":\"${update_proof_sig}\"}")"
+assert_eq "$(json_get "$update_resp" "code")" "0" "DID 公钥更新成功"
+agent_priv_key="${tmp_dir}/agent_priv_new.pem"
+
+openssl pkeyutl -sign -inkey "${tmp_dir}/agent_priv_new.pem" -rawin -in <(printf '%s' "${verify_msg}") | base64 | tr -d '\n' > "${tmp_dir}/verify_new_sig.txt"
+verify_new_sig="$(cat "${tmp_dir}/verify_new_sig.txt")"
+verify_after_update_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/agent/did/verify" \
+  -H 'content-type: application/json' \
+  -d "{\"agentDid\":\"${agent}\",\"message\":\"${verify_msg}\",\"signature\":\"${verify_new_sig}\"}")"
+assert_eq "$(json_get "$verify_after_update_resp" "code")" "0" "更新后新公钥可验签"
+
 create_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/account/create" \
   -H 'content-type: application/json' \
   -d "{\"agentDid\":\"${agent}\"}")"
 assert_eq "$(json_get "$create_resp" "code")" "0" "开户成功"
 va_account_id="$(json_get "$create_resp" "data.VAAccountID")"
+
+agent_to="did:gusd:agent:smoke_to_$(date +%s)"
+register_to_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/agent/did/register" \
+  -H 'content-type: application/json' \
+  -d "{\"agentDid\":\"${agent_to}\",\"didPubKey\":\"${agent_pub_b64}\"}")"
+assert_eq "$(json_get "$register_to_resp" "code")" "0" "转入 Agent 注册成功"
+
+create_to_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/account/create" \
+  -H 'content-type: application/json' \
+  -d "{\"agentDid\":\"${agent_to}\"}")"
+assert_eq "$(json_get "$create_to_resp" "code")" "0" "转入账户开户成功"
+va_to_account_id="$(json_get "$create_to_resp" "data.VAAccountID")"
 
 recharge_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/fund/recharge" \
   -H 'content-type: application/json' \
@@ -98,6 +137,11 @@ authorize_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/authorize/p
   -H 'content-type: application/json' \
   -d "{\"agentDid\":\"${agent}\",\"singleLimit\":\"50\",\"dailyLimit\":\"100\",\"whitelist\":[\"m1\"]}")"
 assert_eq "$(json_get "$authorize_resp" "code")" "0" "授权规则设置成功"
+
+authorize_update_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/authorize/payment/update" \
+  -H 'content-type: application/json' \
+  -d "{\"agentDid\":\"${agent}\",\"singleLimit\":\"50\",\"dailyLimit\":\"100\",\"whitelist\":[\"m1\"]}")"
+assert_eq "$(json_get "$authorize_update_resp" "code")" "0" "授权规则更新成功"
 
 expired_pay_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/payment/x402/pay" \
   -H 'content-type: application/json' \
@@ -147,6 +191,64 @@ daily_3="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/payment/x402/pay" 
   -H "X-Sign-Timestamp: ${ts}" \
   -d "{\"payerDid\":\"${agent}\",\"merchantId\":\"m1\",\"amount\":\"1\",\"signature\":\"$(sign_payload "${agent}|m1|1|idem-smoke-daily-3-${run_id}|${ts}")\"}")"
 assert_eq "$(json_get "$daily_3" "code")" "PAY-002" "日限额超限被拦截"
+
+freeze_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/authorize/freeze" \
+  -H 'content-type: application/json' \
+  -d "{\"agentDid\":\"${agent}\"}")"
+assert_eq "$(json_get "$freeze_resp" "code")" "0" "授权规则冻结成功"
+
+blocked_after_freeze="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/payment/x402/pay" \
+  -H 'content-type: application/json' \
+  -H "Idempotency-Key: idem-smoke-freeze-block-${run_id}" \
+  -H "X-Sign-Timestamp: ${ts}" \
+  -d "{\"payerDid\":\"${agent}\",\"merchantId\":\"m1\",\"amount\":\"1\",\"signature\":\"$(sign_payload "${agent}|m1|1|idem-smoke-freeze-block-${run_id}|${ts}")\"}")"
+assert_eq "$(json_get "$blocked_after_freeze" "code")" "PAY-002" "冻结后支付被拦截"
+
+activate_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/authorize/activate" \
+  -H 'content-type: application/json' \
+  -d "{\"agentDid\":\"${agent}\"}")"
+assert_eq "$(json_get "$activate_resp" "code")" "0" "授权规则恢复成功"
+
+post_activate_update="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/authorize/payment/update" \
+  -H 'content-type: application/json' \
+  -d "{\"agentDid\":\"${agent}\",\"singleLimit\":\"50\",\"dailyLimit\":\"1000\",\"whitelist\":[\"m1\"]}")"
+assert_eq "$(json_get "$post_activate_update" "code")" "0" "恢复后授权规则可更新"
+
+recharge_after_activate="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/fund/recharge" \
+  -H 'content-type: application/json' \
+  -H "Idempotency-Key: rch-smoke-reactivate-${run_id}" \
+  -d "{\"vaAccountId\":\"${va_account_id}\",\"amount\":\"10\"}")"
+assert_eq "$(json_get "$recharge_after_activate" "code")" "0" "恢复后补充余额成功"
+
+interest_resp="$(curl -sS "${FRONTEND_BASE_URL}/api/backend/account/interest/query?accountId=${va_account_id}")"
+assert_eq "$(json_get "$interest_resp" "code")" "0" "利息查询接口可用"
+
+topup_cfg_set_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/account/va/topup/config" \
+  -H 'content-type: application/json' \
+  -d "{\"accountId\":\"${va_account_id}\",\"autoTopupEnabled\":true,\"thresholdAmount\":\"20\",\"targetAmount\":\"100\"}")"
+assert_eq "$(json_get "$topup_cfg_set_resp" "code")" "0" "VA 自动充值配置设置成功"
+
+topup_cfg_get_resp="$(curl -sS "${FRONTEND_BASE_URL}/api/backend/account/va/topup/config?accountId=${va_account_id}")"
+assert_eq "$(json_get "$topup_cfg_get_resp" "code")" "0" "VA 自动充值配置查询成功"
+
+transfer_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/account/va/transfer" \
+  -H 'content-type: application/json' \
+  -H "Idempotency-Key: idem-va-transfer-${run_id}" \
+  -d "{\"fromAccountId\":\"${va_account_id}\",\"toAccountId\":\"${va_to_account_id}\",\"amount\":\"5\"}")"
+assert_eq "$(json_get "$transfer_resp" "code")" "0" "VA 转账成功"
+
+transfer_idem_retry_resp="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/account/va/transfer" \
+  -H 'content-type: application/json' \
+  -H "Idempotency-Key: idem-va-transfer-${run_id}" \
+  -d "{\"fromAccountId\":\"${va_account_id}\",\"toAccountId\":\"${va_to_account_id}\",\"amount\":\"5\"}")"
+assert_eq "$(json_get "$transfer_idem_retry_resp" "code")" "0" "VA 转账幂等重试成功"
+
+pay_after_activate="$(curl -sS -X POST "${FRONTEND_BASE_URL}/api/backend/payment/x402/pay" \
+  -H 'content-type: application/json' \
+  -H "Idempotency-Key: idem-smoke-activate-pass-${run_id}" \
+  -H "X-Sign-Timestamp: ${ts}" \
+  -d "{\"payerDid\":\"${agent}\",\"merchantId\":\"m1\",\"amount\":\"1\",\"signature\":\"$(sign_payload "${agent}|m1|1|idem-smoke-activate-pass-${run_id}|${ts}")\"}")"
+assert_eq "$(json_get "$pay_after_activate" "code")" "0" "恢复后支付成功"
 
 overview_resp="$(curl -sS "${FRONTEND_BASE_URL}/api/backend/metrics/overview")"
 assert_eq "$(json_get "$overview_resp" "code")" "0" "概览指标接口可用"

@@ -42,6 +42,96 @@ func TestPayRejectsExpiredSignatureTimestamp(t *testing.T) {
 	}
 }
 
+func TestVerifyAgentSignatureEndpoint(t *testing.T) {
+	svc := service.New()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	agent := "did:gusd:agent:verify-http"
+	_ = svc.RegisterAgent(agent)
+	_ = svc.SetAgentPublicKey(agent, base64.StdEncoding.EncodeToString(pub))
+	server := NewServerForTest(svc, time.Now, 100, 100)
+	msg := "verify-me"
+	sig := base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(msg)))
+
+	okReq := httptest.NewRequest(
+		http.MethodPost,
+		"/agent/did/verify",
+		bytes.NewReader(mustJSONMap(t, map[string]string{
+			"agentDid":  agent,
+			"message":   msg,
+			"signature": sig,
+		})),
+	)
+	okReq.Header.Set("Content-Type", "application/json")
+	okResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(okResp, okReq)
+	if okResp.Code != http.StatusOK {
+		t.Fatalf("verify expected 200 got %d", okResp.Code)
+	}
+
+	badReq := httptest.NewRequest(
+		http.MethodPost,
+		"/agent/did/verify",
+		bytes.NewReader(mustJSONMap(t, map[string]string{
+			"agentDid":  agent,
+			"message":   msg + "-tampered",
+			"signature": sig,
+		})),
+	)
+	badReq.Header.Set("Content-Type", "application/json")
+	badResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(badResp, badReq)
+	if badResp.Code != http.StatusBadRequest {
+		t.Fatalf("verify expected 400 for bad signature got %d", badResp.Code)
+	}
+}
+
+func TestUpdateAgentPublicKeyEndpoint(t *testing.T) {
+	svc := service.New()
+	oldPub, oldPriv, _ := ed25519.GenerateKey(rand.Reader)
+	newPub, _, _ := ed25519.GenerateKey(rand.Reader)
+	agent := "did:gusd:agent:update-http"
+	_ = svc.RegisterAgent(agent)
+	_ = svc.SetAgentPublicKey(agent, base64.StdEncoding.EncodeToString(oldPub))
+	server := NewServerForTest(svc, time.Now, 100, 100)
+	ts := time.Now().UTC().Format(time.RFC3339)
+	proofMsg := buildUpdateKeyProofPayload(agent, base64.StdEncoding.EncodeToString(newPub), ts)
+	proofSig := base64.StdEncoding.EncodeToString(ed25519.Sign(oldPriv, []byte(proofMsg)))
+
+	okReq := httptest.NewRequest(
+		http.MethodPost,
+		"/agent/did/update",
+		bytes.NewReader(mustJSONMap(t, map[string]string{
+			"agentDid":       agent,
+			"newDidPubKey":   base64.StdEncoding.EncodeToString(newPub),
+			"signTimestamp":  ts,
+			"proofSignature": proofSig,
+		})),
+	)
+	okReq.Header.Set("Content-Type", "application/json")
+	okResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(okResp, okReq)
+	if okResp.Code != http.StatusOK {
+		t.Fatalf("update expected 200 got %d", okResp.Code)
+	}
+
+	verifiedSig := base64.StdEncoding.EncodeToString(ed25519.Sign(ed25519.PrivateKey(oldPriv), []byte("check")))
+	verifyReq := httptest.NewRequest(
+		http.MethodPost,
+		"/agent/did/verify",
+		bytes.NewReader(mustJSONMap(t, map[string]string{
+			"agentDid":  agent,
+			"message":   "check",
+			"signature": verifiedSig,
+		})),
+	)
+	verifyReq.Header.Set("Content-Type", "application/json")
+	verifyResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(verifyResp, verifyReq)
+	if verifyResp.Code == http.StatusOK {
+		t.Fatalf("old key should be invalid after update")
+	}
+}
+
 func TestPayRejectsRateLimit(t *testing.T) {
 	svc := seedServiceForPay()
 	now := time.Date(2026, 4, 22, 9, 0, 0, 0, time.UTC)
@@ -125,6 +215,90 @@ func TestAuthorizeSetValidatesFields(t *testing.T) {
 	server.Routes().ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 got %d", rr.Code)
+	}
+}
+
+func TestAuthorizeUpdateAndFreeze(t *testing.T) {
+	svc := service.New()
+	agent := "did:gusd:agent:auth-update"
+	_ = svc.RegisterAgent(agent)
+	acc := svc.CreateAccount(agent)
+	_ = svc.Recharge(acc.VAAccountID, "100", "rch-auth-update-1")
+	_ = svc.SetAuthorizeRule(agent, "20", "100", []string{"m1"})
+	server := NewServerForTest(svc, time.Now, 100, 100)
+
+	updateBody := map[string]any{
+		"agentDid":    agent,
+		"singleLimit": "10",
+		"dailyLimit":  "50",
+		"whitelist":   []string{"m1"},
+	}
+	updateReq := httptest.NewRequest(http.MethodPost, "/authorize/payment/update", bytes.NewReader(mustJSONAny(t, updateBody)))
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(updateResp, updateReq)
+	if updateResp.Code != http.StatusOK {
+		t.Fatalf("authorize update expected 200 got %d", updateResp.Code)
+	}
+
+	freezeReq := httptest.NewRequest(http.MethodPost, "/authorize/freeze", bytes.NewReader(mustJSONMap(t, map[string]string{
+		"agentDid": agent,
+	})))
+	freezeReq.Header.Set("Content-Type", "application/json")
+	freezeResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(freezeResp, freezeReq)
+	if freezeResp.Code != http.StatusOK {
+		t.Fatalf("authorize freeze expected 200 got %d", freezeResp.Code)
+	}
+
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	_ = svc.SetAgentPublicKey(agent, base64.StdEncoding.EncodeToString(pub))
+	idem := "idem-auth-frozen-1"
+	ts := time.Now().UTC().Format(time.RFC3339)
+	signPayload := buildPaySignaturePayload(agent, "m1", "1", idem, ts)
+	payBody := map[string]string{
+		"payerDid":   agent,
+		"merchantId": "m1",
+		"amount":     "1",
+		"signature":  base64.StdEncoding.EncodeToString(ed25519.Sign(priv, signPayload)),
+	}
+	payReq := httptest.NewRequest(http.MethodPost, "/payment/x402/pay", bytes.NewReader(mustJSONMap(t, payBody)))
+	payReq.Header.Set("Content-Type", "application/json")
+	payReq.Header.Set("Idempotency-Key", idem)
+	payReq.Header.Set("X-Sign-Timestamp", ts)
+	payResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(payResp, payReq)
+	if payResp.Code != http.StatusBadRequest {
+		t.Fatalf("pay should be blocked after freeze, got %d", payResp.Code)
+	}
+
+	activateReq := httptest.NewRequest(http.MethodPost, "/authorize/activate", bytes.NewReader(mustJSONMap(t, map[string]string{
+		"agentDid": agent,
+	})))
+	activateReq.Header.Set("Content-Type", "application/json")
+	activateResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(activateResp, activateReq)
+	if activateResp.Code != http.StatusOK {
+		t.Fatalf("authorize activate expected 200 got %d", activateResp.Code)
+	}
+
+	idem2 := "idem-auth-active-2"
+	ts2 := time.Now().UTC().Format(time.RFC3339)
+	signPayload2 := buildPaySignaturePayload(agent, "m1", "1", idem2, ts2)
+	payBody2 := map[string]string{
+		"payerDid":   agent,
+		"merchantId": "m1",
+		"amount":     "1",
+		"signature":  base64.StdEncoding.EncodeToString(ed25519.Sign(priv, signPayload2)),
+	}
+	payReq2 := httptest.NewRequest(http.MethodPost, "/payment/x402/pay", bytes.NewReader(mustJSONMap(t, payBody2)))
+	payReq2.Header.Set("Content-Type", "application/json")
+	payReq2.Header.Set("Idempotency-Key", idem2)
+	payReq2.Header.Set("X-Sign-Timestamp", ts2)
+	payResp2 := httptest.NewRecorder()
+	server.Routes().ServeHTTP(payResp2, payReq2)
+	if payResp2.Code != http.StatusOK {
+		t.Fatalf("pay should succeed after activate, got %d", payResp2.Code)
 	}
 }
 
@@ -441,6 +615,84 @@ func TestRefundEndpoint(t *testing.T) {
 	server.Routes().ServeHTTP(refundResp, refundReq)
 	if refundResp.Code != http.StatusOK {
 		t.Fatalf("refund expected 200 got %d", refundResp.Code)
+	}
+}
+
+func TestVAInterestAndTopupConfigEndpoints(t *testing.T) {
+	svc := service.New()
+	_ = svc.RegisterAgent("did:gusd:agent:week2-interest")
+	acc := svc.CreateAccount("did:gusd:agent:week2-interest")
+	_ = svc.Recharge(acc.VAAccountID, "100", "rch-http-week2-1")
+	server := NewServerForTest(svc, time.Now, 100, 100)
+
+	interestReq := httptest.NewRequest(http.MethodGet, "/account/interest/query?accountId="+acc.VAAccountID, nil)
+	interestResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(interestResp, interestReq)
+	if interestResp.Code != http.StatusOK {
+		t.Fatalf("interest query expected 200 got %d", interestResp.Code)
+	}
+
+	setBody := map[string]any{
+		"accountId":        acc.VAAccountID,
+		"autoTopupEnabled": true,
+		"thresholdAmount":  "10",
+		"targetAmount":     "50",
+	}
+	setReq := httptest.NewRequest(http.MethodPost, "/account/va/topup/config", bytes.NewReader(mustJSONAny(t, setBody)))
+	setReq.Header.Set("Content-Type", "application/json")
+	setResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(setResp, setReq)
+	if setResp.Code != http.StatusOK {
+		t.Fatalf("set topup config expected 200 got %d", setResp.Code)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/account/va/topup/config?accountId="+acc.VAAccountID, nil)
+	getResp := httptest.NewRecorder()
+	server.Routes().ServeHTTP(getResp, getReq)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("get topup config expected 200 got %d", getResp.Code)
+	}
+}
+
+func TestVATransferEndpointWithIdempotency(t *testing.T) {
+	svc := service.New()
+	_ = svc.RegisterAgent("did:gusd:agent:week2-transfer-a")
+	_ = svc.RegisterAgent("did:gusd:agent:week2-transfer-b")
+	accA := svc.CreateAccount("did:gusd:agent:week2-transfer-a")
+	accB := svc.CreateAccount("did:gusd:agent:week2-transfer-b")
+	_ = svc.Recharge(accA.VAAccountID, "20", "rch-http-week2-transfer-1")
+	server := NewServerForTest(svc, time.Now, 100, 100)
+
+	transferBody := map[string]string{
+		"fromAccountId": accA.VAAccountID,
+		"toAccountId":   accB.VAAccountID,
+		"amount":        "5",
+	}
+	req1 := httptest.NewRequest(http.MethodPost, "/account/va/transfer", bytes.NewReader(mustJSONMap(t, transferBody)))
+	req1.Header.Set("Content-Type", "application/json")
+	req1.Header.Set("Idempotency-Key", "idem-http-week2-transfer-1")
+	resp1 := httptest.NewRecorder()
+	server.Routes().ServeHTTP(resp1, req1)
+	if resp1.Code != http.StatusOK {
+		t.Fatalf("va transfer expected 200 got %d", resp1.Code)
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/account/va/transfer", bytes.NewReader(mustJSONMap(t, transferBody)))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Idempotency-Key", "idem-http-week2-transfer-1")
+	resp2 := httptest.NewRecorder()
+	server.Routes().ServeHTTP(resp2, req2)
+	if resp2.Code != http.StatusOK {
+		t.Fatalf("va transfer idempotent retry expected 200 got %d", resp2.Code)
+	}
+
+	balA, _ := svc.BalanceByVA(accA.VAAccountID)
+	balB, _ := svc.BalanceByVA(accB.VAAccountID)
+	if balA != 15 {
+		t.Fatalf("expected from balance 15 got %v", balA)
+	}
+	if balB != 5 {
+		t.Fatalf("expected to balance 5 got %v", balB)
 	}
 }
 
@@ -885,6 +1137,15 @@ func performPay(server *Server, idem string) int {
 }
 
 func mustJSONMap(t *testing.T, body map[string]string) []byte {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body failed: %v", err)
+	}
+	return b
+}
+
+func mustJSONAny(t *testing.T, body any) []byte {
 	t.Helper()
 	b, err := json.Marshal(body)
 	if err != nil {

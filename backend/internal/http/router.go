@@ -87,11 +87,16 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /ready", s.handleReady)
 	mux.HandleFunc("POST /agent/did/register", s.handleRegisterAgent)
+	mux.HandleFunc("POST /agent/did/verify", s.handleVerifyAgent)
+	mux.HandleFunc("POST /agent/did/update", s.handleUpdateAgent)
 	mux.HandleFunc("POST /account/create", s.handleCreateAccount)
 	mux.HandleFunc("GET /agent/list", s.handleAgentList)
 	mux.HandleFunc("POST /fund/recharge", s.handleRecharge)
 	mux.HandleFunc("GET /fund/recharge/list", s.handleRechargeList)
 	mux.HandleFunc("POST /authorize/payment/set", s.handleAuthorizeSet)
+	mux.HandleFunc("POST /authorize/payment/update", s.handleAuthorizeUpdate)
+	mux.HandleFunc("POST /authorize/freeze", s.handleAuthorizeFreeze)
+	mux.HandleFunc("POST /authorize/activate", s.handleAuthorizeActivate)
 	mux.HandleFunc("POST /payment/x402/pay", s.handlePay)
 	mux.Handle("POST /payment/status/callback", s.withCallbackToken(http.HandlerFunc(s.handleStatusCallback)))
 	mux.Handle("POST /payment/unfreeze", s.withAdminAuth(http.HandlerFunc(s.handleUnfreeze)))
@@ -99,6 +104,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /payment/status/query", s.handleStatus)
 	mux.HandleFunc("GET /account/balance/query", s.handleBalance)
 	mux.HandleFunc("GET /account/ledger/query", s.handleLedger)
+	mux.HandleFunc("GET /account/interest/query", s.handleInterest)
+	mux.HandleFunc("POST /account/va/topup/config", s.handleVATopupConfigSet)
+	mux.HandleFunc("GET /account/va/topup/config", s.handleVATopupConfigGet)
+	mux.HandleFunc("POST /account/va/transfer", s.handleVATransfer)
 	mux.HandleFunc("GET /metrics/overview", s.handleOverviewMetrics)
 	mux.Handle("GET /developer/api-keys", s.withReadAuth(http.HandlerFunc(s.handleAPIKeyList)))
 	mux.Handle("POST /developer/api-keys", s.withAdminAuth(http.HandlerFunc(s.handleAPIKeyCreate)))
@@ -161,6 +170,19 @@ type createAccountReq struct {
 	AgentDID string `json:"agentDid"`
 }
 
+type verifyAgentReq struct {
+	AgentDID  string `json:"agentDid"`
+	Message   string `json:"message"`
+	Signature string `json:"signature"`
+}
+
+type updateAgentReq struct {
+	AgentDID       string `json:"agentDid"`
+	NewDIDPubKey   string `json:"newDidPubKey"`
+	SignTimestamp  string `json:"signTimestamp"`
+	ProofSignature string `json:"proofSignature"`
+}
+
 func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	var req createAccountReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AgentDID == "" {
@@ -169,6 +191,48 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	acc := s.svc.CreateAccount(req.AgentDID)
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": acc})
+}
+
+func (s *Server) handleVerifyAgent(w http.ResponseWriter, r *http.Request) {
+	var req verifyAgentReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+		strings.TrimSpace(req.AgentDID) == "" ||
+		strings.TrimSpace(req.Message) == "" ||
+		strings.TrimSpace(req.Signature) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if err := s.svc.VerifyAgentSignature(req.AgentDID, req.Message, req.Signature); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid did signature"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"verified": true}})
+}
+
+func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
+	var req updateAgentReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+		strings.TrimSpace(req.AgentDID) == "" ||
+		strings.TrimSpace(req.NewDIDPubKey) == "" ||
+		strings.TrimSpace(req.SignTimestamp) == "" ||
+		strings.TrimSpace(req.ProofSignature) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !isBase64Ed25519PubKey(req.NewDIDPubKey) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid did pub key"})
+		return
+	}
+	if !s.validateSignatureTimestamp(req.SignTimestamp) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid or expired signature timestamp"})
+		return
+	}
+	proofMessage := buildUpdateKeyProofPayload(req.AgentDID, req.NewDIDPubKey, req.SignTimestamp)
+	if err := s.svc.UpdateAgentPublicKey(req.AgentDID, req.NewDIDPubKey, proofMessage, req.ProofSignature); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid did signature"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
 }
 
 func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
@@ -231,6 +295,10 @@ type authorizeReq struct {
 	Whitelist   []string `json:"whitelist"`
 }
 
+type freezeAuthorizeReq struct {
+	AgentDID string `json:"agentDid"`
+}
+
 func (s *Server) handleAuthorizeSet(w http.ResponseWriter, r *http.Request) {
 	var req authorizeReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AgentDID == "" || !isPositiveDecimal(req.SingleLimit) || !isPositiveDecimal(req.DailyLimit) || len(req.Whitelist) == 0 {
@@ -239,6 +307,57 @@ func (s *Server) handleAuthorizeSet(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.svc.SetAuthorizeRule(req.AgentDID, req.SingleLimit, req.DailyLimit, req.Whitelist); err != nil {
 		writeInternalError(w, r, "set authorize rule", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
+}
+
+func (s *Server) handleAuthorizeUpdate(w http.ResponseWriter, r *http.Request) {
+	var req authorizeReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AgentDID == "" || !isPositiveDecimal(req.SingleLimit) || !isPositiveDecimal(req.DailyLimit) || len(req.Whitelist) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if err := s.svc.UpdateAuthorizeRule(req.AgentDID, req.SingleLimit, req.DailyLimit, req.Whitelist); err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "update authorize rule", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
+}
+
+func (s *Server) handleAuthorizeFreeze(w http.ResponseWriter, r *http.Request) {
+	var req freezeAuthorizeReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.AgentDID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if err := s.svc.FreezeAuthorizeRule(req.AgentDID); err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "freeze authorize rule", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
+}
+
+func (s *Server) handleAuthorizeActivate(w http.ResponseWriter, r *http.Request) {
+	var req freezeAuthorizeReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.AgentDID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if err := s.svc.ActivateAuthorizeRule(req.AgentDID); err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "activate authorize rule", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
@@ -258,6 +377,19 @@ type statusCallbackReq struct {
 
 type txActionReq struct {
 	TransactionID string `json:"transactionId"`
+}
+
+type vaTopupConfigReq struct {
+	AccountID        string `json:"accountId"`
+	AutoTopupEnabled bool   `json:"autoTopupEnabled"`
+	ThresholdAmount  string `json:"thresholdAmount"`
+	TargetAmount     string `json:"targetAmount"`
+}
+
+type vaTransferReq struct {
+	FromAccountID string `json:"fromAccountId"`
+	ToAccountID   string `json:"toAccountId"`
+	Amount        string `json:"amount"`
 }
 
 func (s *Server) handlePay(w http.ResponseWriter, r *http.Request) {
@@ -412,6 +544,84 @@ func (s *Server) handleOverviewMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": metrics})
+}
+
+func (s *Server) handleInterest(w http.ResponseWriter, r *http.Request) {
+	accountID := strings.TrimSpace(r.URL.Query().Get("accountId"))
+	if accountID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	quote, err := s.svc.QueryInterest(accountID)
+	if err != nil {
+		writeInternalError(w, r, "query interest", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": quote})
+}
+
+func (s *Server) handleVATopupConfigSet(w http.ResponseWriter, r *http.Request) {
+	var req vaTopupConfigReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+		strings.TrimSpace(req.AccountID) == "" ||
+		!isNonNegativeDecimal(req.ThresholdAmount) ||
+		!isPositiveDecimal(req.TargetAmount) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	item, err := s.svc.SetVATopupConfig(req.AccountID, req.AutoTopupEnabled, req.ThresholdAmount, req.TargetAmount)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "set va topup config", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handleVATopupConfigGet(w http.ResponseWriter, r *http.Request) {
+	accountID := strings.TrimSpace(r.URL.Query().Get("accountId"))
+	if accountID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	item, err := s.svc.GetVATopupConfig(accountID)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "query va topup config", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handleVATransfer(w http.ResponseWriter, r *http.Request) {
+	var req vaTransferReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+		strings.TrimSpace(req.FromAccountID) == "" ||
+		strings.TrimSpace(req.ToAccountID) == "" ||
+		!isPositiveDecimal(req.Amount) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idem == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
+		return
+	}
+	if err := s.svc.TransferVA(req.FromAccountID, req.ToAccountID, req.Amount, idem); err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "va transfer", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
 }
 
 func (s *Server) handleAPIKeyList(w http.ResponseWriter, r *http.Request) {
@@ -608,6 +818,14 @@ func isPositiveDecimal(v string) bool {
 	return err == nil && n > 0
 }
 
+func isNonNegativeDecimal(v string) bool {
+	if strings.TrimSpace(v) == "" {
+		return false
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	return err == nil && n >= 0
+}
+
 func (s *Server) validateSignatureTimestamp(raw string) bool {
 	if raw == "" {
 		return false
@@ -665,6 +883,10 @@ func isBase64Ed25519PubKey(raw string) bool {
 
 func buildPaySignaturePayload(payerDID, merchantID, amount, idemKey, ts string) []byte {
 	return []byte(payerDID + "|" + merchantID + "|" + amount + "|" + idemKey + "|" + ts)
+}
+
+func buildUpdateKeyProofPayload(agentDID, newPubKey, ts string) string {
+	return strings.TrimSpace(agentDID) + "|" + strings.TrimSpace(newPubKey) + "|" + strings.TrimSpace(ts)
 }
 
 func verifyDIDSignature(pubKeyBase64, signatureBase64 string, payload []byte) bool {

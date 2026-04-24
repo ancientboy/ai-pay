@@ -87,3 +87,48 @@ func TestPersistentPayAndQueryStatus(t *testing.T) {
 		t.Fatalf("expected non-empty status")
 	}
 }
+
+func TestPersistentVATopupAndTransfer(t *testing.T) {
+	svc, store := newPersistentForIT(t)
+	defer store.Close()
+
+	didFrom := fmt.Sprintf("did:gusd:agent:it_vat_from_%d", time.Now().UnixNano())
+	didTo := fmt.Sprintf("did:gusd:agent:it_vat_to_%d", time.Now().UnixNano())
+	_ = svc.RegisterAgent(didFrom)
+	_ = svc.RegisterAgent(didTo)
+	fromAcc := svc.CreateAccount(didFrom)
+	toAcc := svc.CreateAccount(didTo)
+	if err := svc.Recharge(fromAcc.VAAccountID, "20", fmt.Sprintf("rch-it-vat-%d", time.Now().UnixNano())); err != nil {
+		t.Fatalf("recharge failed: %v", err)
+	}
+
+	cfg, err := svc.SetVATopupConfig(fromAcc.VAAccountID, true, "5", "30")
+	if err != nil {
+		t.Fatalf("set topup config failed: %v", err)
+	}
+	if !cfg.AutoTopupEnabled {
+		t.Fatalf("expected auto topup enabled")
+	}
+
+	idem := fmt.Sprintf("idem-it-vat-transfer-%d", time.Now().UnixNano())
+	if err := svc.TransferVA(fromAcc.VAAccountID, toAcc.VAAccountID, "3", idem); err != nil {
+		t.Fatalf("transfer failed: %v", err)
+	}
+	if err := svc.TransferVA(fromAcc.VAAccountID, toAcc.VAAccountID, "3", idem); err != nil {
+		t.Fatalf("idempotent transfer retry failed: %v", err)
+	}
+	fromBal, err := svc.BalanceByVA(fromAcc.VAAccountID)
+	if err != nil {
+		t.Fatalf("query from balance failed: %v", err)
+	}
+	toBal, err := svc.BalanceByVA(toAcc.VAAccountID)
+	if err != nil {
+		t.Fatalf("query to balance failed: %v", err)
+	}
+	if fromBal > 17.0000001 || fromBal < 16.9999999 {
+		t.Fatalf("expected from balance about 17 got %v", fromBal)
+	}
+	if toBal > 3.0000001 || toBal < 2.9999999 {
+		t.Fatalf("expected to balance about 3 got %v", toBal)
+	}
+}

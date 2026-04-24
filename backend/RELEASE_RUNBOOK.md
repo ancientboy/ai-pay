@@ -14,7 +14,7 @@
      - `X-Callback-Idempotency-Key`
      - `X-Callback-Signature-Version`、`X-Callback-Signature`（启用 `CALLBACK_SIGNING_SECRET` 时必填）
 2. **数据库迁移**
-   - 顺序执行：`001_init.sql` -> `002_add_fee_and_recharge_log.sql` -> `003_add_va_card_no.sql` -> `004_add_account_hold.sql` -> `005_add_agent_did_pub_key.sql` -> `006_add_pay_order_hold_id.sql` -> `007_add_developer_resources.sql` -> `008_add_webhook_delivery_task.sql`
+   - 顺序执行：`001_init.sql` -> `002_add_fee_and_recharge_log.sql` -> `003_add_va_card_no.sql` -> `004_add_account_hold.sql` -> `005_add_agent_did_pub_key.sql` -> `006_add_pay_order_hold_id.sql` -> `007_add_developer_resources.sql` -> `008_add_webhook_delivery_task.sql` -> `009_add_va_topup_and_transfer.sql`
    - 校验表结构与索引是否创建成功
 3. **小流量灰度**
    - 先仅开放 10% Agent DID 到新版本
