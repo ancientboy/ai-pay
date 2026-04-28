@@ -4,8 +4,8 @@ info:
   version: 1.0.0
   description: |
     OpenAPI contract for backend endpoints.
-    Milestone M6 (`/fund/transfer`, `/fund/withdraw`, `/payment/debit/preview`, `/payment/x402/check`, `/payment/x402/transfer`, `/payment/refund/apply`)
-    requires environment variable FEATURE_M6_FUNDS=true (or 1). When disabled, those routes return 404 with code PAY-011.
+    Milestone M6 (`/fund/transfer`, ...) requires `FEATURE_M6_FUNDS=true`.
+    Milestone M7 (`/payment/card/*`, `/risk/*`) requires `FEATURE_M7_CARD_RISK=true`.
 servers:
   - url: http://127.0.0.1:8080
     description: Local backend server
@@ -17,6 +17,7 @@ tags:
   - name: funds
   - name: authorize
   - name: payment
+  - name: risk
   - name: metrics
   - name: developer
 paths:
@@ -561,6 +562,207 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "404":
           description: M6 disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /payment/card/apply:
+    post:
+      tags: [payment]
+      summary: Issue sandbox virtual card (M7)
+      description: Requires FEATURE_M7_CARD_RISK and admin token. Sandbox only — no production card network.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/AdminAuthorization"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CardApplyRequest"
+      responses:
+        "200":
+          description: Card issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VirtualCardResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: M7 disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /payment/card/pay:
+    post:
+      tags: [payment]
+      summary: Pay with sandbox virtual card (M7)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/SignTimestamp"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CardPayRequest"
+      responses:
+        "200":
+          description: Debit recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardPayResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: M7 disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /payment/card/manage:
+    put:
+      tags: [payment]
+      summary: Freeze/unfreeze/adjust sandbox card limit (M7)
+      parameters:
+        - $ref: "#/components/parameters/AdminAuthorization"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CardManageRequest"
+      responses:
+        "200":
+          description: Card updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VirtualCardResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: M7 disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /risk/transaction/check:
+    post:
+      tags: [risk]
+      summary: Rule-based transaction risk check (M7)
+      parameters:
+        - $ref: "#/components/parameters/DeveloperReadAuthorization"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RiskTransactionCheckRequest"
+      responses:
+        "200":
+          description: Decision
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RiskTransactionCheckResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: M7 disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /risk/kyc/verify:
+    post:
+      tags: [risk]
+      summary: Party KYC sandbox verification by Agent DID (M7)
+      description: >
+        Verifies the human/legal funding party bound to agentDid (not an AI runtime).
+        Production integrations should replace sandbox stub with regulated identity vendors.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/SignTimestamp"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RiskKYCVerifyRequest"
+      responses:
+        "200":
+          description: KYC status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PartyKYCResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: M7 disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /risk/audit/query:
+    get:
+      tags: [risk]
+      summary: Query risk audit entries (M7)
+      parameters:
+        - $ref: "#/components/parameters/DeveloperReadAuthorization"
+        - in: query
+          name: agentDid
+          schema:
+            type: string
+        - in: query
+          name: merchantId
+          schema:
+            type: string
+        - in: query
+          name: limit
+          schema:
+            type: integer
+        - in: query
+          name: offset
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Audit rows
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RiskAuditListResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: M7 disabled
           content:
             application/json:
               schema:
@@ -1968,3 +2170,169 @@ components:
         signature:
           type: string
           description: Base64 Ed25519 signature over UTF-8 string refund_apply|transactionId|Idempotency-Key|X-Sign-Timestamp
+    CardApplyRequest:
+      type: object
+      required: [agentDid, vaAccountId, creditLimit]
+      properties:
+        agentDid:
+          type: string
+        vaAccountId:
+          type: string
+        creditLimit:
+          type: string
+    VirtualCard:
+      type: object
+      properties:
+        cardId:
+          type: string
+        agentDid:
+          type: string
+        vaAccountId:
+          type: string
+        maskedPan:
+          type: string
+        status:
+          type: string
+        creditLimit:
+          type: number
+        sandboxReference:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    VirtualCardResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          $ref: "#/components/schemas/VirtualCard"
+    CardPayRequest:
+      type: object
+      required: [agentDid, cardId, merchantId, amount, signature]
+      properties:
+        agentDid:
+          type: string
+        cardId:
+          type: string
+        merchantId:
+          type: string
+        amount:
+          type: string
+        signature:
+          type: string
+          description: Base64 Ed25519 over UTF-8 card_pay|agentDid|cardId|merchantId|amount|Idempotency-Key|X-Sign-Timestamp
+    CardPayResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          type: object
+          required: [transactionId]
+          properties:
+            transactionId:
+              type: string
+    CardManageRequest:
+      type: object
+      required: [cardId, operation]
+      properties:
+        cardId:
+          type: string
+        operation:
+          type: string
+          enum: [FREEZE, UNFREEZE, ACTIVATE, ADJUST_LIMIT]
+        adjustAmount:
+          type: string
+    RiskTransactionCheckRequest:
+      type: object
+      required: [agentDid, merchantId, amount]
+      properties:
+        agentDid:
+          type: string
+        merchantId:
+          type: string
+        amount:
+          type: string
+        transactionId:
+          type: string
+    RiskTransactionCheckResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
+    RiskKYCVerifyRequest:
+      type: object
+      required: [agentDid, signature]
+      properties:
+        agentDid:
+          type: string
+        documentReference:
+          type: string
+        signature:
+          type: string
+          description: Base64 Ed25519 over UTF-8 kyc_verify|agentDid|Idempotency-Key|X-Sign-Timestamp
+    PartyKYC:
+      type: object
+      properties:
+        agentDid:
+          type: string
+        status:
+          type: string
+        tier:
+          type: string
+        externalReference:
+          type: string
+        verifiedAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    PartyKYCResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          $ref: "#/components/schemas/PartyKYC"
+    RiskAuditEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        category:
+          type: string
+        agentDid:
+          type: string
+        merchantId:
+          type: string
+        transactionId:
+          type: string
+        detail:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+    RiskAuditListResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/RiskAuditEntry"

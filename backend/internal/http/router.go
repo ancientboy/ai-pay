@@ -132,6 +132,12 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /payment/x402/check", s.withM6Funds(http.HandlerFunc(s.handleX402Check)))
 	mux.Handle("POST /payment/x402/transfer", s.withM6Funds(s.withAdminAuth(http.HandlerFunc(s.handleX402Transfer))))
 	mux.Handle("POST /payment/refund/apply", s.withM6Funds(http.HandlerFunc(s.handleRefundApply)))
+	mux.Handle("POST /payment/card/apply", s.withM7CardRisk(s.withAdminAuth(http.HandlerFunc(s.handleCardApply))))
+	mux.Handle("POST /payment/card/pay", s.withM7CardRisk(http.HandlerFunc(s.handleCardPay)))
+	mux.Handle("PUT /payment/card/manage", s.withM7CardRisk(s.withAdminAuth(http.HandlerFunc(s.handleCardManage))))
+	mux.Handle("POST /risk/transaction/check", s.withM7CardRisk(s.withReadAuth(http.HandlerFunc(s.handleRiskTransactionCheck))))
+	mux.Handle("POST /risk/kyc/verify", s.withM7CardRisk(http.HandlerFunc(s.handleRiskKYCVerify)))
+	mux.Handle("GET /risk/audit/query", s.withM7CardRisk(s.withReadAuth(http.HandlerFunc(s.handleRiskAuditQuery))))
 	return s.withRequestID(mux)
 }
 
@@ -903,6 +909,207 @@ func (s *Server) handleRefundApply(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
 }
 
+type cardApplyReq struct {
+	AgentDID    string `json:"agentDid"`
+	VAAccountID string `json:"vaAccountId"`
+	CreditLimit string `json:"creditLimit"`
+}
+
+func (s *Server) handleCardApply(w http.ResponseWriter, r *http.Request) {
+	var req cardApplyReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+		strings.TrimSpace(req.AgentDID) == "" ||
+		strings.TrimSpace(req.VAAccountID) == "" ||
+		!isPositiveDecimal(req.CreditLimit) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idem == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
+		return
+	}
+	rec, err := s.svc.ApplyVirtualCard(req.AgentDID, req.VAAccountID, req.CreditLimit, idem)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "card apply", err)
+		return
+	}
+	log.Printf("requestId=%s card_apply id=%s", getRequestID(r.Context()), rec.CardID)
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": rec})
+}
+
+type cardPayReq struct {
+	AgentDID   string `json:"agentDid"`
+	CardID     string `json:"cardId"`
+	MerchantID string `json:"merchantId"`
+	Amount     string `json:"amount"`
+	Signature  string `json:"signature"`
+}
+
+func (s *Server) handleCardPay(w http.ResponseWriter, r *http.Request) {
+	var req cardPayReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+		strings.TrimSpace(req.AgentDID) == "" ||
+		strings.TrimSpace(req.CardID) == "" ||
+		strings.TrimSpace(req.MerchantID) == "" ||
+		!isPositiveDecimal(req.Amount) ||
+		strings.TrimSpace(req.Signature) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid or expired signature timestamp"})
+		return
+	}
+	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idem == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
+		return
+	}
+	pubKey, err := s.svc.AgentPublicKey(strings.TrimSpace(req.AgentDID))
+	if err != nil || strings.TrimSpace(pubKey) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "missing did public key"})
+		return
+	}
+	payload := []byte("card_pay|" + req.AgentDID + "|" + req.CardID + "|" + req.MerchantID + "|" + req.Amount + "|" + idem + "|" + r.Header.Get("X-Sign-Timestamp"))
+	if !verifyDIDSignature(pubKey, req.Signature, payload) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid did signature"})
+		return
+	}
+	txID, err := s.svc.PayVirtualCard(req.AgentDID, req.CardID, req.MerchantID, req.Amount, idem)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "card pay", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"transactionId": txID}})
+}
+
+type cardManageReq struct {
+	CardID       string `json:"cardId"`
+	Operation    string `json:"operation"`
+	AdjustAmount string `json:"adjustAmount"`
+}
+
+func (s *Server) handleCardManage(w http.ResponseWriter, r *http.Request) {
+	var req cardManageReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+		strings.TrimSpace(req.CardID) == "" ||
+		strings.TrimSpace(req.Operation) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	rec, err := s.svc.ManageVirtualCard(req.CardID, req.Operation, req.AdjustAmount)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "card manage", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": rec})
+}
+
+type riskTxnCheckReq struct {
+	AgentDID      string `json:"agentDid"`
+	MerchantID    string `json:"merchantId"`
+	Amount        string `json:"amount"`
+	TransactionID string `json:"transactionId"`
+}
+
+func (s *Server) handleRiskTransactionCheck(w http.ResponseWriter, r *http.Request) {
+	var req riskTxnCheckReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+		strings.TrimSpace(req.AgentDID) == "" ||
+		strings.TrimSpace(req.MerchantID) == "" ||
+		!isPositiveDecimal(req.Amount) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	out, err := s.svc.RiskTransactionCheck(req.AgentDID, req.MerchantID, req.Amount, strings.TrimSpace(req.TransactionID))
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "risk transaction check", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": out})
+}
+
+type riskKYCReq struct {
+	AgentDID           string `json:"agentDid"`
+	DocumentReference  string `json:"documentReference"`
+	Signature          string `json:"signature"`
+}
+
+func (s *Server) handleRiskKYCVerify(w http.ResponseWriter, r *http.Request) {
+	var req riskKYCReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+		strings.TrimSpace(req.AgentDID) == "" ||
+		strings.TrimSpace(req.Signature) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idem == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
+		return
+	}
+	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid or expired signature timestamp"})
+		return
+	}
+	pubKey, err := s.svc.AgentPublicKey(strings.TrimSpace(req.AgentDID))
+	if err != nil || strings.TrimSpace(pubKey) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "missing did public key"})
+		return
+	}
+	payload := []byte("kyc_verify|" + strings.TrimSpace(req.AgentDID) + "|" + idem + "|" + r.Header.Get("X-Sign-Timestamp"))
+	if !verifyDIDSignature(pubKey, req.Signature, payload) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid did signature"})
+		return
+	}
+	st, err := s.svc.RiskKYCVerify(req.AgentDID, strings.TrimSpace(req.DocumentReference), idem)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "risk kyc verify", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": st})
+}
+
+func (s *Server) handleRiskAuditQuery(w http.ResponseWriter, r *http.Request) {
+	agentDID := strings.TrimSpace(r.URL.Query().Get("agentDid"))
+	merchantID := strings.TrimSpace(r.URL.Query().Get("merchantId"))
+	limit := 50
+	offset := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			limit = v
+		}
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v >= 0 {
+			offset = v
+		}
+	}
+	items := s.svc.RiskAuditQuery(agentDID, merchantID, limit, offset)
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": items})
+}
+
 func (s *Server) handleAPIKeyList(w http.ResponseWriter, r *http.Request) {
 	keys := s.svc.ListAPIKeys()
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": keys})
@@ -1263,6 +1470,21 @@ func (s *Server) withM6Funds(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !m6FundsEnabled() {
 			writeJSON(w, http.StatusNotFound, map[string]any{"code": "PAY-011", "message": "feature disabled"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func m7CardRiskEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("FEATURE_M7_CARD_RISK"))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
+func (s *Server) withM7CardRisk(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !m7CardRiskEnabled() {
+			writeJSON(w, http.StatusNotFound, map[string]any{"code": "PAY-012", "message": "feature disabled"})
 			return
 		}
 		next.ServeHTTP(w, r)

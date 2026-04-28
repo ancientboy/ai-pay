@@ -226,6 +226,40 @@ type X402OutboundTransfer struct {
 	CreatedAt              time.Time `json:"createdAt"`
 }
 
+// VirtualCardRecord is a sandbox-only virtual card issued to an Agent DID (human/legal party).
+type VirtualCardRecord struct {
+	CardID           string    `json:"cardId"`
+	AgentDID         string    `json:"agentDid"`
+	VAAccountID      string    `json:"vaAccountId"`
+	MaskedPAN        string    `json:"maskedPan"`
+	Status           string    `json:"status"`
+	CreditLimit      float64   `json:"creditLimit"`
+	SandboxReference string    `json:"sandboxReference"`
+	CreatedAt        time.Time `json:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+}
+
+// PartyKYCStatus is verification status for the funding party identified by Agent DID (not an AI runtime).
+type PartyKYCStatus struct {
+	AgentDID          string    `json:"agentDid"`
+	Status            string    `json:"status"`
+	Tier              string    `json:"tier"`
+	ExternalReference string    `json:"externalReference,omitempty"`
+	VerifiedAt        time.Time `json:"verifiedAt,omitempty"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+}
+
+// RiskAuditEntry supports compliance-oriented audit queries separate from developer audit_log.
+type RiskAuditEntry struct {
+	ID            int64           `json:"id"`
+	Category      string          `json:"category"`
+	AgentDID      string          `json:"agentDid,omitempty"`
+	MerchantID    string          `json:"merchantId,omitempty"`
+	TransactionID string          `json:"transactionId,omitempty"`
+	Detail        json.RawMessage `json:"detail,omitempty"`
+	CreatedAt     time.Time       `json:"createdAt"`
+}
+
 type Service struct {
 	mu             sync.Mutex
 	agents         map[string]Agent
@@ -255,6 +289,11 @@ type Service struct {
 	fundWithdraws  []WithdrawRecord
 	debitPreviews  map[string]DebitPreview
 	x402Outbound   []X402OutboundTransfer
+	virtualCards   []VirtualCardRecord
+	cardPayIdem    map[string]string
+	kycByAgent     map[string]PartyKYCStatus
+	riskAuditEntries []RiskAuditEntry
+	riskAuditSeq     int64
 }
 
 type holdRecord struct {
@@ -314,6 +353,13 @@ type PaymentService interface {
 	TransferX402Outbound(vaAccountID string, toAddress string, amount string, referenceTransactionID string, idemKey string) error
 	CheckX402Settlement(transactionID string) (map[string]any, error)
 	RefundApply(transactionID string, reason string, idemKey string) error
+	// M7 card + risk + party KYC (gated by FEATURE_M7_CARD_RISK at HTTP layer).
+	ApplyVirtualCard(agentDID string, vaAccountID string, requestedLimit string, idemKey string) (VirtualCardRecord, error)
+	PayVirtualCard(agentDID string, cardID string, merchantID string, amount string, idemKey string) (string, error)
+	ManageVirtualCard(cardID string, operation string, adjustAmount string) (VirtualCardRecord, error)
+	RiskTransactionCheck(agentDID string, merchantID string, amount string, transactionID string) (map[string]any, error)
+	RiskKYCVerify(agentDID string, documentReference string, idemKey string) (PartyKYCStatus, error)
+	RiskAuditQuery(agentDID string, merchantID string, limit int, offset int) []RiskAuditEntry
 }
 
 func New() *Service {
@@ -347,7 +393,9 @@ func New() *Service {
 			"m_fail":  {MerchantID: "m_fail", Mode: "FAIL", UpdatedAt: time.Now().UTC()},
 			"m_async": {MerchantID: "m_async", Mode: "ASYNC", UpdatedAt: time.Now().UTC()},
 		},
-		debitPreviews: map[string]DebitPreview{},
+		debitPreviews:    map[string]DebitPreview{},
+		cardPayIdem:      map[string]string{},
+		kycByAgent:       map[string]PartyKYCStatus{},
 	}
 }
 
