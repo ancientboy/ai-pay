@@ -2636,7 +2636,11 @@ func (s *PersistentService) BridgeEnsureCustomer(agentDID string) (BridgeCustome
 		_, _ = s.store.DB.Exec(`INSERT INTO bridge_customer_map (agent_did, bridge_customer_id, kyc_status, last_error, updated_at) VALUES (?, '', 'error', ?, UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE kyc_status='error', last_error=VALUES(last_error), updated_at=UTC_TIMESTAMP()`, a, err.Error())
 		return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "bridge ensure customer failed"}
 	}
-	_, _ = s.store.DB.Exec(`INSERT INTO bridge_customer_map (agent_did, bridge_customer_id, kyc_status, last_error, updated_at) VALUES (?, ?, 'pending', '', UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE bridge_customer_id=VALUES(bridge_customer_id), updated_at=UTC_TIMESTAMP()`, a, customerID)
+	kycStatus := "pending"
+	if status, statusErr := provider.GetCustomerKYCStatus(customerID); statusErr == nil && strings.TrimSpace(status) != "" {
+		kycStatus = strings.ToLower(strings.TrimSpace(status))
+	}
+	_, _ = s.store.DB.Exec(`INSERT INTO bridge_customer_map (agent_did, bridge_customer_id, kyc_status, last_error, updated_at) VALUES (?, ?, ?, '', UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE bridge_customer_id=VALUES(bridge_customer_id), kyc_status=VALUES(kyc_status), last_error='', updated_at=UTC_TIMESTAMP()`, a, customerID, kycStatus)
 	return s.BridgeGetCustomerStatus(a)
 }
 
@@ -2652,6 +2656,18 @@ func (s *PersistentService) BridgeGetCustomerStatus(agentDID string) (BridgeCust
 		}
 		return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "bridge customer query failed"}
 	}
+	if strings.TrimSpace(out.BridgeCustomerID) != "" {
+		provider := NewBridgeWalletProviderFromEnv()
+		if latestStatus, err := provider.GetCustomerKYCStatus(out.BridgeCustomerID); err == nil && strings.TrimSpace(latestStatus) != "" {
+			latestStatus = strings.ToLower(strings.TrimSpace(latestStatus))
+			if latestStatus != strings.ToLower(strings.TrimSpace(out.KYCStatus)) {
+				out.KYCStatus = latestStatus
+				out.LastError = ""
+				out.UpdatedAt = time.Now().UTC()
+				_, _ = s.store.DB.Exec(`UPDATE bridge_customer_map SET kyc_status = ?, last_error = '', updated_at = UTC_TIMESTAMP() WHERE agent_did = ?`, out.KYCStatus, a)
+			}
+		}
+	}
 	return out, nil
 }
 
@@ -2659,6 +2675,19 @@ func (s *PersistentService) BridgeHandleWebhook(rawBody []byte, signatureHeader 
 	provider := NewBridgeWalletProviderFromEnv()
 	if err := provider.VerifyWebhookSignature(rawBody, signatureHeader); err != nil {
 		return &APIError{Code: "PAY-010", Message: "bridge webhook signature invalid"}
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rawBody, &payload); err == nil {
+		eventType, _ := payload["type"].(string)
+		eventID, _ := payload["id"].(string)
+		if strings.TrimSpace(eventID) == "" {
+			eventID = fmt.Sprintf("bridge_evt_%d", time.Now().UnixNano())
+		}
+		_, _ = s.store.DB.Exec(`
+INSERT INTO bridge_webhook_event (event_id, event_type, payload, created_at)
+VALUES (?, ?, ?, UTC_TIMESTAMP())
+ON DUPLICATE KEY UPDATE payload = VALUES(payload), event_type = VALUES(event_type), created_at = UTC_TIMESTAMP()`,
+			eventID, strings.TrimSpace(eventType), string(rawBody))
 	}
 	return nil
 }

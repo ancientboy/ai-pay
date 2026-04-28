@@ -104,15 +104,25 @@ func (b *BridgeWalletProvider) CreateAddress(agentDID string, currency string, c
 }
 
 func (b *BridgeWalletProvider) ensureCustomer(agentDID string) (string, error) {
+	if existingID, err := b.findCustomerByExternalID(agentDID); err == nil && existingID != "" {
+		return existingID, nil
+	}
+	email := bridgeSyntheticEmail(agentDID)
 	payload := map[string]any{
 		"external_id": agentDID,
-		"type":       "individual",
+		"type":        "individual",
 		"first_name": "Agent",
 		"last_name":  "User",
-		"email":      fmt.Sprintf("%s@example.local", strings.ReplaceAll(agentDID, ":", "_")),
+		"email":      email,
 	}
 	resp, err := b.call("POST", "/customers", payload)
 	if err != nil {
+		// For duplicate/create-conflict cases, fallback to lookup instead of hard failing.
+		if strings.Contains(strings.ToLower(err.Error()), "already exists") {
+			if existingID, lookupErr := b.findCustomerByEmail(email); lookupErr == nil && existingID != "" {
+				return existingID, nil
+			}
+		}
 		return "", err
 	}
 	if id, ok := resp["id"].(string); ok && strings.TrimSpace(id) != "" {
@@ -122,13 +132,11 @@ func (b *BridgeWalletProvider) ensureCustomer(agentDID string) (string, error) {
 }
 
 func (b *BridgeWalletProvider) createVirtualAccount(customerID string, currency string, paymentRail string) (string, string, error) {
-	dummyAddress := "0x0000000000000000000000000000000000000001"
 	payload := map[string]any{
 		"source": map[string]any{"currency": "usd"},
 		"destination": map[string]any{
 			"currency":     currency,
 			"payment_rail": paymentRail,
-			"address":      dummyAddress,
 		},
 	}
 	path := fmt.Sprintf("/customers/%s/virtual_accounts", customerID)
@@ -137,16 +145,122 @@ func (b *BridgeWalletProvider) createVirtualAccount(customerID string, currency 
 		return "", "", err
 	}
 	vaID, _ := resp["id"].(string)
-	addr := ""
-	if sdi, ok := resp["source_deposit_instructions"].(map[string]any); ok {
-		if iban, ok := sdi["iban"].(string); ok {
-			addr = iban
-		}
-		if acct, ok := sdi["bank_account_number"].(string); ok && strings.TrimSpace(addr) == "" {
-			addr = acct
-		}
+	addr := extractBridgeAddress(resp)
+	if strings.TrimSpace(addr) == "" {
+		addr = extractBridgeAddress(resp["destination"])
+	}
+	if strings.TrimSpace(addr) == "" {
+		addr = extractBridgeAddress(resp["source_deposit_instructions"])
 	}
 	return strings.TrimSpace(vaID), strings.TrimSpace(addr), nil
+}
+
+func bridgeSyntheticEmail(agentDID string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(agentDID))
+	trimmed = strings.ReplaceAll(trimmed, ":", "_")
+	return fmt.Sprintf("%s@example.local", trimmed)
+}
+
+func (b *BridgeWalletProvider) findCustomerByExternalID(agentDID string) (string, error) {
+	externalID := strings.TrimSpace(agentDID)
+	if externalID == "" {
+		return "", nil
+	}
+	resp, err := b.call("GET", "/customers?external_id="+externalID, nil)
+	if err != nil {
+		return "", err
+	}
+	return extractBridgeCustomerIDFromList(resp), nil
+}
+
+func (b *BridgeWalletProvider) findCustomerByEmail(email string) (string, error) {
+	e := strings.TrimSpace(email)
+	if e == "" {
+		return "", nil
+	}
+	resp, err := b.call("GET", "/customers?email="+e, nil)
+	if err != nil {
+		return "", err
+	}
+	return extractBridgeCustomerIDFromList(resp), nil
+}
+
+func (b *BridgeWalletProvider) GetCustomerKYCStatus(customerID string) (string, error) {
+	id := strings.TrimSpace(customerID)
+	if id == "" {
+		return "", fmt.Errorf("bridge customer id missing")
+	}
+	resp, err := b.call("GET", "/customers/"+id, nil)
+	if err != nil {
+		return "", err
+	}
+	if kyc, ok := resp["kyc_status"].(string); ok && strings.TrimSpace(kyc) != "" {
+		return strings.ToLower(strings.TrimSpace(kyc)), nil
+	}
+	if endorsements, ok := resp["endorsements"].([]any); ok {
+		for _, item := range endorsements {
+			entry, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, _ := entry["name"].(string)
+			if strings.EqualFold(name, "base") {
+				if status, ok := entry["status"].(string); ok && strings.TrimSpace(status) != "" {
+					return strings.ToLower(strings.TrimSpace(status)), nil
+				}
+			}
+		}
+	}
+	return "pending", nil
+}
+
+func extractBridgeCustomerIDFromList(resp map[string]any) string {
+	if id, ok := resp["id"].(string); ok && strings.TrimSpace(id) != "" {
+		return strings.TrimSpace(id)
+	}
+	list, ok := resp["data"].([]any)
+	if !ok {
+		list, _ = resp["customers"].([]any)
+	}
+	if len(list) == 0 {
+		return ""
+	}
+	first, ok := list[0].(map[string]any)
+	if !ok {
+		return ""
+	}
+	if id, ok := first["id"].(string); ok {
+		return strings.TrimSpace(id)
+	}
+	return ""
+}
+
+func extractBridgeAddress(raw any) string {
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return ""
+	}
+	candidates := []string{
+		"address",
+		"wallet_address",
+		"account_number",
+		"bank_account_number",
+		"iban",
+		"virtual_account_number",
+	}
+	for _, k := range candidates {
+		if v, ok := obj[k].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	for _, nested := range []string{"destination", "source", "source_deposit_instructions", "payment_details", "instructions"} {
+		if nestedRaw, ok := obj[nested]; ok {
+			if v := extractBridgeAddress(nestedRaw); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
 }
 
 func (b *BridgeWalletProvider) VerifyWebhookSignature(payload []byte, signatureHeader string) error {
@@ -202,14 +316,20 @@ func (b *BridgeWalletProvider) VerifyWebhookSignature(payload []byte, signatureH
 }
 
 func (b *BridgeWalletProvider) call(method, path string, body any) (map[string]any, error) {
-	raw, _ := json.Marshal(body)
-	req, err := http.NewRequest(method, strings.TrimRight(b.BaseURL, "/")+path, bytes.NewReader(raw))
+	var reader io.Reader
+	if body != nil {
+		raw, _ := json.Marshal(body)
+		reader = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequest(method, strings.TrimRight(b.BaseURL, "/")+path, reader)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Api-Key", b.APIKey)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Idempotency-Key", fmt.Sprintf("bridge-%d", time.Now().UnixNano()))
+	if body != nil {
+		req.Header.Set("Idempotency-Key", fmt.Sprintf("bridge-%d", time.Now().UnixNano()))
+	}
 	resp, err := b.Client.Do(req)
 	if err != nil {
 		return nil, err

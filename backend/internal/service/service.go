@@ -2181,7 +2181,11 @@ func (s *Service) BridgeEnsureCustomer(agentDID string) (BridgeCustomerStatus, e
 		s.mu.Lock(); s.bridgeCustomers[a] = out; s.mu.Unlock()
 		return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "bridge ensure customer failed"}
 	}
-	out := BridgeCustomerStatus{AgentDID: a, BridgeCustomerID: customerID, KYCStatus: "pending", UpdatedAt: now}
+	kycStatus := "pending"
+	if status, statusErr := provider.GetCustomerKYCStatus(customerID); statusErr == nil && strings.TrimSpace(status) != "" {
+		kycStatus = strings.ToLower(strings.TrimSpace(status))
+	}
+	out := BridgeCustomerStatus{AgentDID: a, BridgeCustomerID: customerID, KYCStatus: kycStatus, UpdatedAt: now}
 	s.mu.Lock(); s.bridgeCustomers[a] = out; s.mu.Unlock()
 	return out, nil
 }
