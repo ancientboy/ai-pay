@@ -929,6 +929,7 @@ export type BridgeCustomerStatus = {
   agentDid: string;
   bridgeCustomerId: string;
   kycStatus: string;
+  hostedKycUrl?: string;
   lastError?: string;
   updatedAt: string;
 };
@@ -942,4 +943,20 @@ export function syncBridgeCustomer(agentDid: string) {
 
 export function getBridgeCustomerStatus(agentDid: string) {
   return request<BridgeCustomerStatus>(`/bridge/customer/status?agentDid=${encodeURIComponent(agentDid)}`);
+}
+
+export function getBridgeCustomerKycLink(input: {
+  agentDid: string;
+  endorsement?: string;
+  redirectUri?: string;
+}) {
+  const query = new URLSearchParams();
+  query.set("agentDid", input.agentDid);
+  if (input.endorsement?.trim()) {
+    query.set("endorsement", input.endorsement.trim());
+  }
+  if (input.redirectUri?.trim()) {
+    query.set("redirectUri", input.redirectUri.trim());
+  }
+  return request<{ url: string }>(`/bridge/customer/kyc-link?${query.toString()}`);
 }

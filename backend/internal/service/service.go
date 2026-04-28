@@ -221,6 +221,7 @@ type BridgeCustomerStatus struct {
 	AgentDID         string    `json:"agentDid"`
 	BridgeCustomerID string    `json:"bridgeCustomerId"`
 	KYCStatus        string    `json:"kycStatus"`
+	KYCLink          string    `json:"kycLink,omitempty"`
 	LastError        string    `json:"lastError,omitempty"`
 	UpdatedAt        time.Time `json:"updatedAt"`
 }
@@ -455,6 +456,7 @@ type PaymentService interface {
 	CheckWalletProvider(provider string) error
 	BridgeEnsureCustomer(agentDID string) (BridgeCustomerStatus, error)
 	BridgeGetCustomerStatus(agentDID string) (BridgeCustomerStatus, error)
+	BridgeGetCustomerKYCLink(agentDID string, endorsement string, redirectURI string) (string, error)
 	BridgeHandleWebhook(rawBody []byte, signatureHeader string) error
 	// M6 funds & payment extensions (gated by FEATURE_M6_FUNDS at HTTP layer).
 	TransferFunds(fromAccountID string, toAccountID string, currency string, amount string, idemKey string) error
@@ -2200,6 +2202,25 @@ func (s *Service) BridgeGetCustomerStatus(agentDID string) (BridgeCustomerStatus
 		return st, nil
 	}
 	return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "bridge customer not found"}
+}
+
+func (s *Service) BridgeGetCustomerKYCLink(agentDID string, endorsement string, redirectURI string) (string, error) {
+	a := strings.TrimSpace(agentDID)
+	if a == "" {
+		return "", &APIError{Code: "PAY-010", Message: "invalid agent did"}
+	}
+	s.mu.Lock()
+	st, ok := s.bridgeCustomers[a]
+	s.mu.Unlock()
+	if !ok || strings.TrimSpace(st.BridgeCustomerID) == "" {
+		return "", &APIError{Code: "PAY-010", Message: "bridge customer not found"}
+	}
+	provider := NewBridgeWalletProviderFromEnv()
+	link, err := provider.GetCustomerKYCLink(st.BridgeCustomerID, endorsement, redirectURI)
+	if err != nil {
+		return "", &APIError{Code: "PAY-010", Message: "bridge kyc link fetch failed"}
+	}
+	return strings.TrimSpace(link), nil
 }
 
 func (s *Service) BridgeHandleWebhook(rawBody []byte, signatureHeader string) error {

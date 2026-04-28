@@ -4,7 +4,12 @@ import { useMutation } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useLocale } from "@/components/locale-provider";
 import { useToast } from "@/components/toast-provider";
-import { getBridgeCustomerStatus, listAgents, syncBridgeCustomer } from "@/lib/console-api";
+import {
+  getBridgeCustomerStatus,
+  getBridgeHostedKycLink,
+  listAgents,
+  syncBridgeCustomer,
+} from "@/lib/console-api";
 import { toReadableError } from "@/lib/error-map";
 import { useQuery } from "@tanstack/react-query";
 
@@ -26,9 +31,11 @@ export default function KycPage() {
     agentDid: string;
     bridgeCustomerId: string;
     kycStatus: string;
+    hostedKycUrl?: string;
     lastError?: string;
     updatedAt: string;
   } | null>(null);
+  const [endorsement, setEndorsement] = useState("");
 
   const agentsQuery = useQuery({
     queryKey: ["agents-for-kyc"],
@@ -55,6 +62,20 @@ export default function KycPage() {
     onError: (err) => showToast("error", toReadableError(err, locale)),
   });
 
+  const hostedKycMutation = useMutation({
+    mutationFn: () => getBridgeHostedKycLink(agentDid.trim(), endorsement.trim() || undefined),
+    onSuccess: (data) => {
+      if (data.url) {
+        setStatus((prev) => (prev ? { ...prev, hostedKycUrl: data.url } : prev));
+        window.open(data.url, "_blank", "noopener,noreferrer");
+        showToast("success", t("kyc.hostedLinkOpened"));
+      } else {
+        showToast("error", t("kyc.hostedLinkMissing"));
+      }
+    },
+    onError: (err) => showToast("error", toReadableError(err, locale)),
+  });
+
   return (
     <section className="space-y-6">
       <div>
@@ -64,7 +85,7 @@ export default function KycPage() {
 
       <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
         <h3 className="text-sm font-medium text-slate-200">{t("kyc.agentBinding")}</h3>
-        <div className="mt-3 grid gap-2 md:grid-cols-[1fr_auto_auto]">
+        <div className="mt-3 grid gap-2 md:grid-cols-[1fr_220px_auto_auto_auto]">
           <input
             list="kyc-agent-options"
             value={agentDid}
@@ -79,6 +100,12 @@ export default function KycPage() {
               </option>
             ))}
           </datalist>
+          <input
+            value={endorsement}
+            onChange={(e) => setEndorsement(e.target.value)}
+            placeholder={t("kyc.endorsementPlaceholder")}
+            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+          />
           <button
             type="button"
             onClick={() => {
@@ -105,6 +132,19 @@ export default function KycPage() {
           >
             {t("kyc.query")}
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (!agentDid.trim()) {
+                showToast("error", t("kyc.agentRequired"));
+                return;
+              }
+              hostedKycMutation.mutate();
+            }}
+            className="rounded-md border border-blue-600/60 px-3 py-2 text-sm text-blue-300"
+          >
+            {t("kyc.openHostedLink")}
+          </button>
         </div>
       </div>
 
@@ -115,6 +155,11 @@ export default function KycPage() {
             <p>Agent: {status.agentDid}</p>
             <p>Bridge Customer: {status.bridgeCustomerId || "N/A"}</p>
             <p>KYC: {status.kycStatus}</p>
+            {status.hostedKycUrl ? (
+              <p className="mt-1 break-all text-sky-300">
+                Hosted KYC URL: {status.hostedKycUrl}
+              </p>
+            ) : null}
             <p className="mt-2 text-slate-300">{formatKycHint(status.kycStatus, t)}</p>
             {status.lastError ? <p className="mt-2 text-rose-300">Error: {status.lastError}</p> : null}
             <p className="mt-2 text-slate-400">Updated: {status.updatedAt}</p>

@@ -139,6 +139,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /developer/stablecoin-provider/health", s.withReadAuth(http.HandlerFunc(s.handleStablecoinProviderHealth)))
 	mux.Handle("POST /bridge/customer/sync", s.withReadAuth(http.HandlerFunc(s.handleBridgeCustomerSync)))
 	mux.Handle("GET /bridge/customer/status", s.withReadAuth(http.HandlerFunc(s.handleBridgeCustomerStatus)))
+	mux.Handle("GET /bridge/customer/kyc-link", s.withReadAuth(http.HandlerFunc(s.handleBridgeCustomerKYCLink)))
 	mux.Handle("POST /bridge/webhook", http.HandlerFunc(s.handleBridgeWebhook))
 	mux.Handle("GET /fund/recharge/confirm", s.withReadAuth(http.HandlerFunc(s.handleRechargeConfirmQuery)))
 	mux.Handle("POST /fund/transfer", s.withM6Funds(s.withAdminAuth(http.HandlerFunc(s.handleFundTransfer))))
@@ -2596,6 +2597,29 @@ func (s *Server) handleBridgeCustomerStatus(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handleBridgeCustomerKYCLink(w http.ResponseWriter, r *http.Request) {
+	agentDID := strings.TrimSpace(r.URL.Query().Get("agentDid"))
+	endorsement := strings.TrimSpace(r.URL.Query().Get("endorsement"))
+	redirectURI := strings.TrimSpace(r.URL.Query().Get("redirectUri"))
+	if agentDID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, agentDID) {
+		return
+	}
+	link, err := s.svc.BridgeGetCustomerKYCLink(agentDID, endorsement, redirectURI)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "bridge customer kyc link", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"url": link}})
 }
 
 func (s *Server) handleBridgeWebhook(w http.ResponseWriter, r *http.Request) {

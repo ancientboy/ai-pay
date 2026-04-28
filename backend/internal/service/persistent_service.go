@@ -2671,6 +2671,28 @@ func (s *PersistentService) BridgeGetCustomerStatus(agentDID string) (BridgeCust
 	return out, nil
 }
 
+func (s *PersistentService) BridgeGetCustomerKYCLink(agentDID string, endorsement string, redirectURI string) (string, error) {
+	a := strings.TrimSpace(agentDID)
+	if a == "" {
+		return "", &APIError{Code: "PAY-010", Message: "invalid agent did"}
+	}
+	status, err := s.BridgeGetCustomerStatus(a)
+	if err != nil {
+		return "", err
+	}
+	customerID := strings.TrimSpace(status.BridgeCustomerID)
+	if customerID == "" {
+		return "", &APIError{Code: "PAY-010", Message: "bridge customer not found"}
+	}
+	provider := NewBridgeWalletProviderFromEnv()
+	link, linkErr := provider.GetCustomerKYCLink(customerID, endorsement, redirectURI)
+	if linkErr != nil {
+		_, _ = s.store.DB.Exec(`UPDATE bridge_customer_map SET last_error = ?, updated_at = UTC_TIMESTAMP() WHERE agent_did = ?`, linkErr.Error(), a)
+		return "", &APIError{Code: "PAY-010", Message: "bridge hosted kyc link fetch failed"}
+	}
+	return link, nil
+}
+
 func (s *PersistentService) BridgeHandleWebhook(rawBody []byte, signatureHeader string) error {
 	provider := NewBridgeWalletProviderFromEnv()
 	if err := provider.VerifyWebhookSignature(rawBody, signatureHeader); err != nil {

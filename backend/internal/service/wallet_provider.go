@@ -214,6 +214,34 @@ func (b *BridgeWalletProvider) GetCustomerKYCStatus(customerID string) (string, 
 	return "pending", nil
 }
 
+func (b *BridgeWalletProvider) GetCustomerKYCLink(customerID string, endorsement string, redirectURI string) (string, error) {
+	id := strings.TrimSpace(customerID)
+	if id == "" {
+		return "", fmt.Errorf("bridge customer id missing")
+	}
+	query := make([]string, 0, 2)
+	end := strings.ToLower(strings.TrimSpace(endorsement))
+	if end != "" {
+		query = append(query, "endorsement="+end)
+	}
+	redir := strings.TrimSpace(redirectURI)
+	if redir != "" {
+		query = append(query, "redirect_uri="+redir)
+	}
+	path := fmt.Sprintf("/customers/%s/kyc_link", id)
+	if len(query) > 0 {
+		path += "?" + strings.Join(query, "&")
+	}
+	resp, err := b.call("GET", path, nil)
+	if err != nil {
+		return "", err
+	}
+	if url, ok := resp["url"].(string); ok && strings.TrimSpace(url) != "" {
+		return strings.TrimSpace(url), nil
+	}
+	return "", fmt.Errorf("bridge kyc link missing")
+}
+
 func extractBridgeCustomerIDFromList(resp map[string]any) string {
 	if id, ok := resp["id"].(string); ok && strings.TrimSpace(id) != "" {
 		return strings.TrimSpace(id)
