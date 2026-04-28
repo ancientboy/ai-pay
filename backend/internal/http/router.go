@@ -35,11 +35,14 @@ type Server struct {
 	signatureMaxSkew time.Duration
 	ipRateLimiter    rateLimiter
 	agentRateLimiter rateLimiter
+	agentOwnersMu    sync.RWMutex
+	agentOwners      map[string]string
 }
 
 type contextKey string
 
 const requestIDKey contextKey = "requestId"
+const userIDHeader = "X-User-Id"
 
 func NewServer(svc service.PaymentService) *Server {
 	return &Server{
@@ -50,6 +53,7 @@ func NewServer(svc service.PaymentService) *Server {
 		callbackDedupe:   newCallbackDedupeStore(10 * time.Minute),
 		ipRateLimiter:    newFixedWindowLimiter(120, time.Minute),
 		agentRateLimiter: newFixedWindowLimiter(60, time.Minute),
+		agentOwners:      map[string]string{},
 	}
 }
 
@@ -184,6 +188,7 @@ func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agent := s.svc.RegisterAgent(req.AgentDID)
+	s.bindAgentOwner(req.AgentDID, s.requestUserID(r))
 	if err := s.svc.SetAgentPublicKey(req.AgentDID, req.DIDPubKey); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "save did pub key failed"})
 		return
@@ -213,6 +218,9 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	var req createAccountReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AgentDID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
 		return
 	}
 	acc := s.svc.CreateAccount(req.AgentDID)
@@ -262,7 +270,8 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
-	list := s.svc.ListAgents()
+	userID := s.requestUserID(r)
+	list := s.filterAgentsByOwner(s.svc.ListAgents(), userID)
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": list})
 }
 
@@ -331,6 +340,9 @@ func (s *Server) handleAuthorizeSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
+		return
+	}
 	if err := s.svc.SetAuthorizeRule(req.AgentDID, req.SingleLimit, req.DailyLimit, req.Whitelist); err != nil {
 		writeInternalError(w, r, "set authorize rule", err)
 		return
@@ -343,6 +355,9 @@ func (s *Server) handleAuthorizeUpdate(w http.ResponseWriter, r *http.Request) {
 	var req authorizeReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AgentDID == "" || !isPositiveDecimal(req.SingleLimit) || !isPositiveDecimal(req.DailyLimit) || len(req.Whitelist) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
 		return
 	}
 	if err := s.svc.UpdateAuthorizeRule(req.AgentDID, req.SingleLimit, req.DailyLimit, req.Whitelist); err != nil {
@@ -363,6 +378,9 @@ func (s *Server) handleAuthorizeFreeze(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
+		return
+	}
 	if err := s.svc.FreezeAuthorizeRule(req.AgentDID); err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
 			writeAPIError(w, apiErr)
@@ -379,6 +397,9 @@ func (s *Server) handleAuthorizeActivate(w http.ResponseWriter, r *http.Request)
 	var req freezeAuthorizeReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.AgentDID) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
 		return
 	}
 	if err := s.svc.ActivateAuthorizeRule(req.AgentDID); err != nil {
@@ -430,6 +451,9 @@ func (s *Server) handlePay(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.PayerDID == "" || req.MerchantID == "" || req.Signature == "" || !isPositiveDecimal(req.Amount) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, req.PayerDID) {
 		return
 	}
 	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
@@ -935,6 +959,9 @@ func (s *Server) handleCardApply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
+		return
+	}
 	rec, err := s.svc.ApplyVirtualCard(req.AgentDID, req.VAAccountID, req.CreditLimit, idem)
 	if err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
@@ -969,6 +996,9 @@ func (s *Server) handleCardPay(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid or expired signature timestamp"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
 		return
 	}
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
@@ -1040,6 +1070,9 @@ func (s *Server) handleRiskTransactionCheck(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
+		return
+	}
 	out, err := s.svc.RiskTransactionCheck(req.AgentDID, req.MerchantID, req.Amount, strings.TrimSpace(req.TransactionID))
 	if err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
@@ -1069,6 +1102,9 @@ func (s *Server) handleRiskKYCVerify(w http.ResponseWriter, r *http.Request) {
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if idem == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
 		return
 	}
 	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
@@ -1137,6 +1173,9 @@ func (s *Server) handleWalletBind(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
+		return
+	}
 	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid or expired signature timestamp"})
 		return
@@ -1180,6 +1219,9 @@ func (s *Server) handleWalletUnbind(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
+		return
+	}
 	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid or expired signature timestamp"})
 		return
@@ -1218,6 +1260,9 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if idem == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
 		return
 	}
 	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
@@ -1266,6 +1311,9 @@ func (s *Server) handleSessionRevoke(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
+		return
+	}
 	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid or expired signature timestamp"})
 		return
@@ -1312,6 +1360,9 @@ func (s *Server) handlePaymentSignRequest(w http.ResponseWriter, r *http.Request
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if idem == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
 		return
 	}
 	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
@@ -1364,6 +1415,9 @@ func (s *Server) handlePaymentSignSubmit(w http.ResponseWriter, r *http.Request)
 	}
 	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid or expired signature timestamp"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, req.PayerDID) {
 		return
 	}
 	pubKey, err := s.svc.AgentPublicKey(strings.TrimSpace(req.PayerDID))
@@ -1919,6 +1973,74 @@ func secureEqual(a, b string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+func (s *Server) requestUserID(r *http.Request) string {
+	userID := strings.TrimSpace(r.Header.Get(userIDHeader))
+	if userID != "" {
+		return userID
+	}
+	// Backward-compatible fallback for direct backend calls/tests.
+	return "system"
+}
+
+func (s *Server) bindAgentOwner(agentDID, userID string) {
+	agent := strings.TrimSpace(agentDID)
+	user := strings.TrimSpace(userID)
+	if agent == "" || user == "" {
+		return
+	}
+	s.agentOwnersMu.Lock()
+	s.agentOwners[agent] = user
+	s.agentOwnersMu.Unlock()
+}
+
+func (s *Server) ensureAgentOwned(w http.ResponseWriter, r *http.Request, agentDID string) bool {
+	userID := s.requestUserID(r)
+	agent := strings.TrimSpace(agentDID)
+	if agent == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return false
+	}
+	if userID == "" {
+		// Backward compatibility for legacy callers/tests without user header.
+		s.agentOwnersMu.RLock()
+		_, hasAnyOwner := s.agentOwners[agent]
+		s.agentOwnersMu.RUnlock()
+		if !hasAnyOwner {
+			return true
+		}
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": "PAY-010", "message": "unauthorized"})
+		return false
+	}
+	s.agentOwnersMu.RLock()
+	owner, ok := s.agentOwners[agent]
+	s.agentOwnersMu.RUnlock()
+	if !ok {
+		// Compatibility path: bind unowned pre-existing agents to current user.
+		s.bindAgentOwner(agent, userID)
+		return true
+	}
+	if owner != userID {
+		writeJSON(w, http.StatusForbidden, map[string]any{"code": "PAY-010", "message": "forbidden"})
+		return false
+	}
+	return true
+}
+
+func (s *Server) filterAgentsByOwner(items []service.AgentSummary, userID string) []service.AgentSummary {
+	if strings.TrimSpace(userID) == "" {
+		return []service.AgentSummary{}
+	}
+	out := make([]service.AgentSummary, 0, len(items))
+	s.agentOwnersMu.RLock()
+	defer s.agentOwnersMu.RUnlock()
+	for _, item := range items {
+		if s.agentOwners[strings.TrimSpace(item.AgentDID)] == userID {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func (s *Server) appendAuditLog(r *http.Request, action string, resource string, detail map[string]any) {
