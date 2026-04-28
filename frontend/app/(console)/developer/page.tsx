@@ -598,7 +598,7 @@ export default function DeveloperPage() {
           <select value={scCurrency} onChange={(e)=>setScCurrency(e.target.value as "GUSD" | "USDC" | "USDT")} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm">
             <option value="GUSD">GUSD</option><option value="USDC">USDC</option><option value="USDT">USDT</option>
           </select>
-          <input value={scProvider} onChange={(e)=>setScProvider(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="provider (mock/fireblocks/cobo)" />
+          <input value={scProvider} onChange={(e)=>setScProvider(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="provider (mock/bridge/stripe)" />
           <input value={scChainId} onChange={(e)=>setScChainId(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="chainId" />
           <input value={scRpcUrl} onChange={(e)=>setScRpcUrl(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="rpcUrl" />
           <input value={scTokenContract} onChange={(e)=>setScTokenContract(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="tokenContract" />
