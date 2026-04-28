@@ -267,6 +267,29 @@ export type VATransferRecord = {
   createdAt: string;
 };
 
+export type VirtualCard = {
+  cardId: string;
+  agentDid: string;
+  vaAccountId: string;
+  maskedPan: string;
+  status: string;
+  creditLimit: number;
+  sandboxReference: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function buildCardPaySignPayload(
+  agentDid: string,
+  cardId: string,
+  merchantId: string,
+  amount: string,
+  idempotencyKey: string,
+  signTimestamp: string,
+): string {
+  return `card_pay|${agentDid}|${cardId}|${merchantId}|${amount}|${idempotencyKey}|${signTimestamp}`;
+}
+
 export function listVATransfers(input?: {
   accountId?: string;
   status?: string;
@@ -300,6 +323,63 @@ export function listVATransfers(input?: {
   }
   const suffix = query.toString();
   return request<VATransferRecord[]>(`/account/va/transfer/list${suffix ? `?${suffix}` : ""}`);
+}
+
+export function applyVirtualCard(input: {
+  agentDid: string;
+  vaAccountId: string;
+  creditLimit: string;
+}) {
+  return request<VirtualCard>("/payment/card/apply", {
+    method: "POST",
+    body: JSON.stringify(input),
+    idempotencyKey: `card-apply-ui-${Date.now()}`,
+  });
+}
+
+export function manageVirtualCard(input: {
+  cardId: string;
+  operation: "FREEZE" | "UNFREEZE" | "ACTIVATE" | "ADJUST_LIMIT";
+  adjustAmount?: string;
+}) {
+  return request<VirtualCard>("/payment/card/manage", {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+export function payVirtualCard(input: {
+  agentDid: string;
+  cardId: string;
+  merchantId: string;
+  amount: string;
+}) {
+  const idempotencyKey = `card-pay-ui-${Date.now()}`;
+  const signTimestamp = new Date().toISOString();
+  return (async () => {
+    let signature = "sig";
+    try {
+      signature = await signAgentPayload(
+        input.agentDid,
+        buildCardPaySignPayload(
+          input.agentDid,
+          input.cardId,
+          input.merchantId,
+          input.amount,
+          idempotencyKey,
+          signTimestamp,
+        ),
+      );
+    } catch {
+      // Compatibility fallback for legacy agents without DID key pair.
+    }
+    return request<{ transactionId: string }>("/payment/card/pay", {
+      method: "POST",
+      body: JSON.stringify({ ...input, signature }),
+      idempotencyKey,
+      signTimestamp,
+    });
+  })();
 }
 
 export function listAgents() {
