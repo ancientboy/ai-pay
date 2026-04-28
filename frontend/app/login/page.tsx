@@ -6,5 +6,5 @@ export default async function LoginPage({
   searchParams: Promise<{ next?: string }>;
 }) {
   const params = await searchParams;
-  return <LoginForm next={params.next || "/dashboard"} />;
+  return <LoginForm next={params.next || "/console"} />;
 }

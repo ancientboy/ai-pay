@@ -10,7 +10,7 @@ import {
   requestPaymentSign,
   revokeAuthSession,
   submitPaymentSign,
-  unbindWallet,
+  walletUnbind,
   type AuthSessionRecord,
   type PaymentSignRequestRecord,
 } from "@/lib/console-api";
@@ -42,7 +42,7 @@ export default function SelfHostedPage() {
   });
 
   const unbindMutation = useMutation({
-    mutationFn: () => unbindWallet(agentDid.trim()),
+    mutationFn: () => walletUnbind(agentDid.trim()),
     onSuccess: () => showToast("success", t("selfHosted.walletUnbound")),
     onError: (err) => showToast("error", toReadableError(err, locale)),
   });
