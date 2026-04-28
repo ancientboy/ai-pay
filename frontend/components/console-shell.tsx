@@ -19,6 +19,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
     { href: "/authorize", label: t("nav.authorize") },
     { href: "/recharge", label: t("nav.recharge") },
     { href: "/transactions", label: t("nav.transactions") },
+    { href: "/self-hosted", label: t("nav.selfHosted") },
     ...(canManageDeveloper ? [{ href: "/developer", label: t("nav.developer") }] : []),
     { href: "/settings", label: t("nav.settings") },
   ];
