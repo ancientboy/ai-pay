@@ -68,7 +68,7 @@ func TestMVP8EndpointsFlow(t *testing.T) {
 	}
 
 	// 5) pay
-	signaturePayload := buildPaySignaturePayload(agentDid, "m1", "10", "idem-e2e-1", now.Format(time.RFC3339))
+	signaturePayload := buildPaySignaturePayload(agentDid, "m1", "GUSD", "10", "idem-e2e-1", now.Format(time.RFC3339))
 	payBody := mustJSON(t, map[string]any{
 		"payerDid":   agentDid,
 		"merchantId": "m1",

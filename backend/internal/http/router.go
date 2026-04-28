@@ -286,6 +286,7 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 type rechargeReq struct {
 	VAAccountID string `json:"vaAccountId"`
 	VACardNo    string `json:"vaCardNo"`
+	Currency    string `json:"currency"`
 	Amount      string `json:"amount"`
 }
 
@@ -311,7 +312,7 @@ func (s *Server) handleRecharge(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
-	if err := s.svc.Recharge(accountRef, req.Amount, idem); err != nil {
+	if err := s.svc.Recharge(accountRef, req.Currency, req.Amount, idem); err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
 			writeAPIError(w, apiErr)
 			return
@@ -434,6 +435,7 @@ func (s *Server) handleAuthorizeActivate(w http.ResponseWriter, r *http.Request)
 type payReq struct {
 	PayerDID   string `json:"payerDid"`
 	MerchantID string `json:"merchantId"`
+	Currency   string `json:"currency"`
 	Amount     string `json:"amount"`
 	Signature  string `json:"signature"`
 }
@@ -457,6 +459,7 @@ type vaTopupConfigReq struct {
 type vaTransferReq struct {
 	FromAccountID string `json:"fromAccountId"`
 	ToAccountID   string `json:"toAccountId"`
+	Currency      string `json:"currency"`
 	Amount        string `json:"amount"`
 }
 
@@ -466,7 +469,7 @@ func (s *Server) handlePay(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
-	if req.PayerDID == "" || req.MerchantID == "" || req.Signature == "" || !isPositiveDecimal(req.Amount) {
+	if req.PayerDID == "" || req.MerchantID == "" || req.Signature == "" || service.NormalizeCurrency(req.Currency) == "" || !isPositiveDecimal(req.Amount) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
@@ -494,7 +497,7 @@ func (s *Server) handlePay(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "missing did public key"})
 		return
 	}
-	signPayload := buildPaySignaturePayload(req.PayerDID, req.MerchantID, req.Amount, idem, r.Header.Get("X-Sign-Timestamp"))
+	signPayload := buildPaySignaturePayload(req.PayerDID, req.MerchantID, req.Currency, req.Amount, idem, r.Header.Get("X-Sign-Timestamp"))
 	if !verifyDIDSignature(pubKey, req.Signature, signPayload) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid did signature"})
 		return
@@ -503,6 +506,7 @@ func (s *Server) handlePay(w http.ResponseWriter, r *http.Request) {
 	resp, apiErr := s.svc.Pay(service.PayRequest{
 		PayerDID:       req.PayerDID,
 		MerchantID:     req.MerchantID,
+		Currency:       req.Currency,
 		Amount:         req.Amount,
 		IdempotencyKey: idem,
 		Signature:      req.Signature,
@@ -598,12 +602,13 @@ func (s *Server) handleBalance(w http.ResponseWriter, r *http.Request) {
 	if !s.ensureAccountOwnedByRef(w, r, va) {
 		return
 	}
-	balance, err := s.svc.BalanceByVA(va)
+	currency := strings.TrimSpace(r.URL.Query().Get("currency"))
+	balance, err := s.svc.BalanceByVA(va, currency)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"code": "PAY-010", "message": "not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"balance": balance}})
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"balance": balance, "currency": service.NormalizeCurrency(currency)}})
 }
 
 func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request) {
@@ -615,7 +620,8 @@ func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request) {
 	if !s.ensureAccountOwnedByRef(w, r, va) {
 		return
 	}
-	ledger := s.svc.LedgerByVA(va)
+	currency := strings.TrimSpace(r.URL.Query().Get("currency"))
+	ledger := s.svc.LedgerByVA(va, currency)
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": ledger})
 }
 
@@ -712,7 +718,7 @@ func (s *Server) handleVATransfer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
-	if err := s.svc.TransferVA(req.FromAccountID, req.ToAccountID, req.Amount, idem); err != nil {
+	if err := s.svc.TransferVA(req.FromAccountID, req.ToAccountID, req.Currency, req.Amount, idem); err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
 			writeAPIError(w, apiErr)
 			return
@@ -766,6 +772,7 @@ func (s *Server) handleVATransferList(w http.ResponseWriter, r *http.Request) {
 type fundTransferReq struct {
 	FromAccountID string `json:"fromAccountId"`
 	ToAccountID   string `json:"toAccountId"`
+	Currency      string `json:"currency"`
 	Amount        string `json:"amount"`
 }
 
@@ -786,7 +793,7 @@ func (s *Server) handleFundTransfer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
-	if err := s.svc.TransferFunds(req.FromAccountID, req.ToAccountID, req.Amount, idem); err != nil {
+	if err := s.svc.TransferFunds(req.FromAccountID, req.ToAccountID, req.Currency, req.Amount, idem); err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
 			writeAPIError(w, apiErr)
 			return
@@ -801,6 +808,7 @@ func (s *Server) handleFundTransfer(w http.ResponseWriter, r *http.Request) {
 
 type fundWithdrawReq struct {
 	VAAccountID     string `json:"vaAccountId"`
+	Currency        string `json:"currency"`
 	Amount          string `json:"amount"`
 	Rail            string `json:"rail"`
 	DestinationHint string `json:"destinationHint"`
@@ -810,6 +818,7 @@ func (s *Server) handleFundWithdraw(w http.ResponseWriter, r *http.Request) {
 	var req fundWithdrawReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
 		strings.TrimSpace(req.VAAccountID) == "" ||
+		service.NormalizeCurrency(req.Currency) == "" ||
 		!isPositiveDecimal(req.Amount) ||
 		strings.TrimSpace(req.Rail) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
@@ -823,7 +832,7 @@ func (s *Server) handleFundWithdraw(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
-	rec, err := s.svc.WithdrawFunds(req.VAAccountID, req.Amount, req.Rail, req.DestinationHint, idem)
+	rec, err := s.svc.WithdrawFunds(req.VAAccountID, req.Currency, req.Amount, req.Rail, req.DestinationHint, idem)
 	if err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
 			writeAPIError(w, apiErr)
@@ -840,6 +849,7 @@ func (s *Server) handleFundWithdraw(w http.ResponseWriter, r *http.Request) {
 type debitPreviewReq struct {
 	AgentDID   string `json:"agentDid"`
 	MerchantID string `json:"merchantId"`
+	Currency   string `json:"currency"`
 	Amount     string `json:"amount"`
 	Signature  string `json:"signature"`
 }
@@ -849,6 +859,7 @@ func (s *Server) handleDebitPreview(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
 		strings.TrimSpace(req.AgentDID) == "" ||
 		strings.TrimSpace(req.MerchantID) == "" ||
+		service.NormalizeCurrency(req.Currency) == "" ||
 		!isPositiveDecimal(req.Amount) ||
 		strings.TrimSpace(req.Signature) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
@@ -910,6 +921,7 @@ func (s *Server) handleX402Check(w http.ResponseWriter, r *http.Request) {
 type x402TransferReq struct {
 	VAAccountID            string `json:"vaAccountId"`
 	ToAddress              string `json:"toAddress"`
+	Currency               string `json:"currency"`
 	Amount                 string `json:"amount"`
 	ReferenceTransactionID string `json:"referenceTransactionId"`
 }
@@ -932,7 +944,7 @@ func (s *Server) handleX402Transfer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
-	if err := s.svc.TransferX402Outbound(req.VAAccountID, req.ToAddress, req.Amount, req.ReferenceTransactionID, idem); err != nil {
+	if err := s.svc.TransferX402Outbound(req.VAAccountID, req.ToAddress, req.Currency, req.Amount, req.ReferenceTransactionID, idem); err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
 			writeAPIError(w, apiErr)
 			return
@@ -1032,6 +1044,7 @@ type cardPayReq struct {
 	AgentDID   string `json:"agentDid"`
 	CardID     string `json:"cardId"`
 	MerchantID string `json:"merchantId"`
+	Currency   string `json:"currency"`
 	Amount     string `json:"amount"`
 	Signature  string `json:"signature"`
 }
@@ -1042,6 +1055,7 @@ func (s *Server) handleCardPay(w http.ResponseWriter, r *http.Request) {
 		strings.TrimSpace(req.AgentDID) == "" ||
 		strings.TrimSpace(req.CardID) == "" ||
 		strings.TrimSpace(req.MerchantID) == "" ||
+		service.NormalizeCurrency(req.Currency) == "" ||
 		!isPositiveDecimal(req.Amount) ||
 		strings.TrimSpace(req.Signature) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
@@ -1401,6 +1415,7 @@ func (s *Server) handleSessionRevoke(w http.ResponseWriter, r *http.Request) {
 type paymentSignRequestHTTP struct {
 	AgentDID   string `json:"agentDid"`
 	MerchantID string `json:"merchantId"`
+	Currency   string `json:"currency"`
 	Amount     string `json:"amount"`
 	SessionID  string `json:"sessionId"`
 	Signature  string `json:"signature"`
@@ -1411,6 +1426,7 @@ func (s *Server) handlePaymentSignRequest(w http.ResponseWriter, r *http.Request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
 		strings.TrimSpace(req.AgentDID) == "" ||
 		strings.TrimSpace(req.MerchantID) == "" ||
+		service.NormalizeCurrency(req.Currency) == "" ||
 		!isPositiveDecimal(req.Amount) ||
 		strings.TrimSpace(req.Signature) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
@@ -1452,12 +1468,13 @@ func (s *Server) handlePaymentSignRequest(w http.ResponseWriter, r *http.Request
 }
 
 type paymentSignSubmitReq struct {
-	SignID       string `json:"signId"`
-	PayerDID     string `json:"payerDid"`
-	MerchantID   string `json:"merchantId"`
-	Amount       string `json:"amount"`
+	SignID         string `json:"signId"`
+	PayerDID       string `json:"payerDid"`
+	MerchantID     string `json:"merchantId"`
+	Currency       string `json:"currency"`
+	Amount         string `json:"amount"`
 	IdempotencyKey string `json:"idempotencyKey"`
-	Signature    string `json:"signature"`
+	Signature      string `json:"signature"`
 }
 
 func (s *Server) handlePaymentSignSubmit(w http.ResponseWriter, r *http.Request) {
@@ -1466,6 +1483,7 @@ func (s *Server) handlePaymentSignSubmit(w http.ResponseWriter, r *http.Request)
 		strings.TrimSpace(req.SignID) == "" ||
 		strings.TrimSpace(req.PayerDID) == "" ||
 		strings.TrimSpace(req.MerchantID) == "" ||
+		service.NormalizeCurrency(req.Currency) == "" ||
 		!isPositiveDecimal(req.Amount) ||
 		strings.TrimSpace(req.Signature) == "" ||
 		strings.TrimSpace(req.IdempotencyKey) == "" {
@@ -1484,7 +1502,7 @@ func (s *Server) handlePaymentSignSubmit(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "missing did public key"})
 		return
 	}
-	signPayload := buildPaySignaturePayload(req.PayerDID, req.MerchantID, req.Amount, strings.TrimSpace(req.IdempotencyKey), r.Header.Get("X-Sign-Timestamp"))
+	signPayload := buildPaySignaturePayload(req.PayerDID, req.MerchantID, req.Currency, req.Amount, strings.TrimSpace(req.IdempotencyKey), r.Header.Get("X-Sign-Timestamp"))
 	if !verifyDIDSignature(pubKey, req.Signature, signPayload) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid did signature"})
 		return
@@ -1492,6 +1510,7 @@ func (s *Server) handlePaymentSignSubmit(w http.ResponseWriter, r *http.Request)
 	resp, apiErr := s.svc.SubmitSignedPayment(strings.TrimSpace(req.SignID), service.PayRequest{
 		PayerDID:       strings.TrimSpace(req.PayerDID),
 		MerchantID:     strings.TrimSpace(req.MerchantID),
+		Currency:       strings.TrimSpace(req.Currency),
 		Amount:         strings.TrimSpace(req.Amount),
 		IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
 		Signature:      strings.TrimSpace(req.Signature),
@@ -1999,8 +2018,8 @@ func isBase64Ed25519PubKey(raw string) bool {
 	return err == nil && len(decoded) == ed25519.PublicKeySize
 }
 
-func buildPaySignaturePayload(payerDID, merchantID, amount, idemKey, ts string) []byte {
-	return []byte(payerDID + "|" + merchantID + "|" + amount + "|" + idemKey + "|" + ts)
+func buildPaySignaturePayload(payerDID, merchantID, currency, amount, idemKey, ts string) []byte {
+	return []byte(payerDID + "|" + merchantID + "|" + service.NormalizeCurrency(currency) + "|" + amount + "|" + idemKey + "|" + ts)
 }
 
 func buildUpdateKeyProofPayload(agentDID, newPubKey, ts string) string {

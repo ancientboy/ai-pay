@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -358,13 +359,17 @@ func (s *PersistentService) CreateAccount(agentDID string) Account {
 	_, _ = s.store.DB.Exec(`
 INSERT INTO asset_va_account (va_account_id, va_card_no, agent_did, wallet_address, balance, status, created_at)
 VALUES (?, ?, ?, ?, 0, 'ACTIVE', UTC_TIMESTAMP())`, va, cardNo, agentDID, wallet)
-	return Account{WalletAddress: wallet, VAAccountID: va, VACardNo: cardNo, AgentDID: agentDID, Balance: 0, FrozenBalance: 0}
+	return Account{WalletAddress: wallet, VAAccountID: va, VACardNo: cardNo, AgentDID: agentDID, Currency: "GUSD", Balance: 0, FrozenBalance: 0}
 }
 
-func (s *PersistentService) Recharge(va string, amount string, idemKey string) error {
+func (s *PersistentService) Recharge(va string, currency string, amount string, idemKey string) error {
 	amountV, err := parseAmount(amount)
 	if err != nil || amountV <= 0 {
 		return &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	curr := NormalizeCurrency(currency)
+	if curr == "" {
+		return &APIError{Code: "PAY-010", Message: "invalid currency"}
 	}
 	if idemKey == "" {
 		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
@@ -391,11 +396,15 @@ func (s *PersistentService) Recharge(va string, amount string, idemKey string) e
 		return &APIError{Code: "PAY-010", Message: "account not found"}
 	}
 	var resolvedVA string
-	if err := tx.QueryRow(`SELECT va_account_id FROM asset_va_account WHERE va_account_id = ? OR va_card_no = ? LIMIT 1`, va, va).Scan(&resolvedVA); err != nil {
+	var accountCurrency string
+	if err := tx.QueryRow(`SELECT va_account_id, COALESCE(currency,'GUSD') FROM asset_va_account WHERE va_account_id = ? OR va_card_no = ? LIMIT 1`, va, va).Scan(&resolvedVA, &accountCurrency); err != nil {
 		return &APIError{Code: "PAY-010", Message: "account not found"}
 	}
-	_, err = tx.Exec(`INSERT INTO fund_recharge_order (recharge_id, va_account_id, amount, status, created_at) VALUES (?, ?, ?, 'SETTLED', UTC_TIMESTAMP())`,
-		rechargeID, resolvedVA, amountV)
+	if NormalizeCurrency(accountCurrency) != curr {
+		return &APIError{Code: "PAY-010", Message: "currency mismatch"}
+	}
+	_, err = tx.Exec(`INSERT INTO fund_recharge_order (recharge_id, va_account_id, currency, amount, status, created_at) VALUES (?, ?, ?, ?, 'SETTLED', UTC_TIMESTAMP())`,
+		rechargeID, resolvedVA, curr, amountV)
 	if err != nil {
 		return &APIError{Code: "PAY-010", Message: "recharge log failed"}
 	}
@@ -589,7 +598,7 @@ WHERE va_account_id = ?`, accountID).Scan(
 	}, nil
 }
 
-func (s *PersistentService) TransferVA(fromAccountID string, toAccountID string, amount string, idemKey string) error {
+func (s *PersistentService) TransferVA(fromAccountID string, toAccountID string, currency string, amount string, idemKey string) error {
 	if strings.TrimSpace(idemKey) == "" {
 		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
 	}
@@ -1206,16 +1215,24 @@ VALUES
 	return nil
 }
 
-func (s *PersistentService) BalanceByVA(va string) (float64, error) {
+func (s *PersistentService) BalanceByVA(va string, currency string) (float64, error) {
+	curr := NormalizeCurrency(currency)
+	if curr == "" {
+		return 0, errors.New("invalid currency")
+	}
 	var balance float64
-	err := s.store.DB.QueryRow(`SELECT balance FROM asset_va_account WHERE va_account_id = ?`, va).Scan(&balance)
+	var accountCurrency string
+	err := s.store.DB.QueryRow(`SELECT balance, COALESCE(currency,'GUSD') FROM asset_va_account WHERE va_account_id = ?`, va).Scan(&balance, &accountCurrency)
 	if err != nil {
 		return 0, err
+	}
+	if NormalizeCurrency(accountCurrency) != curr {
+		return 0, errors.New("currency mismatch")
 	}
 	return balance, nil
 }
 
-func (s *PersistentService) LedgerByVA(va string) []Transaction {
+func (s *PersistentService) LedgerByVA(va string, currency string) []Transaction {
 	rows, err := s.store.DB.Query(`
 SELECT p.order_id, p.agent_did, p.merchant_id, p.amount, p.fee, p.net_amount, p.status, p.created_at
 FROM pay_order p
@@ -1586,7 +1603,7 @@ func merchantInWhitelist(raw string, merchant string) bool {
 
 func formatAmount(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
 
-func (s *PersistentService) TransferFunds(fromAccountID string, toAccountID string, amount string, idemKey string) error {
+func (s *PersistentService) TransferFunds(fromAccountID string, toAccountID string, currency string, amount string, idemKey string) error {
 	if strings.TrimSpace(idemKey) == "" {
 		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
 	}
@@ -1645,7 +1662,7 @@ VALUES (?, ?, ?, ?, 'SETTLED', ?, UTC_TIMESTAMP())`, tid, fromID, toID, amountV,
 	return s.store.Redis.Set(ctx, idem, tid, 24*time.Hour).Err()
 }
 
-func (s *PersistentService) WithdrawFunds(vaAccountID string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error) {
+func (s *PersistentService) WithdrawFunds(vaAccountID string, currency string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error) {
 	if strings.TrimSpace(idemKey) == "" {
 		return WithdrawRecord{}, &APIError{Code: "PAY-008", Message: "idempotency key required"}
 	}
@@ -1787,7 +1804,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, UTC_TIMESTAMP())`,
 	}, nil
 }
 
-func (s *PersistentService) TransferX402Outbound(vaAccountID string, toAddress string, amount string, referenceTransactionID string, idemKey string) error {
+func (s *PersistentService) TransferX402Outbound(vaAccountID string, toAddress string, currency string, amount string, referenceTransactionID string, idemKey string) error {
 	v, err := parseAmount(amount)
 	if err != nil || v <= 0 {
 		return &APIError{Code: "PAY-010", Message: "invalid amount"}

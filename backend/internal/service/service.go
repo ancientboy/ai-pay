@@ -30,6 +30,7 @@ type Account struct {
 	VAAccountID   string
 	VACardNo      string
 	AgentDID      string
+	Currency      string
 	Balance       float64
 	FrozenBalance float64
 }
@@ -45,6 +46,7 @@ type Transaction struct {
 	ID        string
 	PayerDID  string
 	Merchant  string
+	Currency  string
 	Amount    float64
 	Fee       float64
 	NetAmount float64
@@ -56,6 +58,7 @@ type Transaction struct {
 type PayRequest struct {
 	PayerDID       string
 	MerchantID     string
+	Currency       string
 	Amount         string
 	IdempotencyKey string
 	Signature      string
@@ -71,6 +74,7 @@ type AgentSummary struct {
 	VAAccountID   string  `json:"vaAccountId"`
 	VACardNo      string  `json:"vaCardNo"`
 	WalletAddress string  `json:"walletAddress"`
+	Currency      string  `json:"currency"`
 	Balance       float64 `json:"balance"`
 	Status        string  `json:"status"`
 }
@@ -78,6 +82,7 @@ type AgentSummary struct {
 type RechargeOrder struct {
 	RechargeID  string    `json:"rechargeId"`
 	VAAccountID string    `json:"vaAccountId"`
+	Currency    string    `json:"currency"`
 	Amount      float64   `json:"amount"`
 	Status      string    `json:"status"`
 	CreatedAt   time.Time `json:"createdAt"`
@@ -355,7 +360,7 @@ type PaymentService interface {
 	AdminListSubscriptions(limit int, offset int) []UserSubscription
 	AdminUpdateSubscription(userID string, planCode string, status string, autoRenew bool) (UserSubscription, error)
 	CreateAccount(agentDID string) Account
-	Recharge(va string, amount string, idemKey string) error
+	Recharge(va string, currency string, amount string, idemKey string) error
 	SetAuthorizeRule(agentDID string, single string, daily string, merchants []string) error
 	UpdateAuthorizeRule(agentDID string, single string, daily string, merchants []string) error
 	FreezeAuthorizeRule(agentDID string) error
@@ -365,8 +370,8 @@ type PaymentService interface {
 	Unfreeze(transactionID string, idemKey string) error
 	Refund(transactionID string, idemKey string) error
 	QueryStatus(txID string) (Transaction, error)
-	BalanceByVA(va string) (float64, error)
-	LedgerByVA(va string) []Transaction
+	BalanceByVA(va string, currency string) (float64, error)
+	LedgerByVA(va string, currency string) []Transaction
 	ListAgents() []AgentSummary
 	ListRecharges(va string, limit int) []RechargeOrder
 	OverviewMetrics() (OverviewMetrics, error)
@@ -382,7 +387,7 @@ type PaymentService interface {
 	QueryInterest(accountID string) (InterestQuote, error)
 	SetVATopupConfig(accountID string, autoTopup bool, threshold string, target string) (VATopupConfig, error)
 	GetVATopupConfig(accountID string) (VATopupConfig, error)
-	TransferVA(fromAccountID string, toAccountID string, amount string, idemKey string) error
+	TransferVA(fromAccountID string, toAccountID string, currency string, amount string, idemKey string) error
 	ListVATransfers(accountID string, status string, startTime string, endTime string, limit int, offset int) []VATransferRecord
 	AppendAuditLog(actor string, role string, action string, resource string, requestID string, detail map[string]any) error
 	ListAuditLogs(action string, resource string, limit int, offset int) []AuditLog
@@ -392,10 +397,10 @@ type PaymentService interface {
 	SetChannelRoute(merchantID string, mode string) (ChannelRoute, error)
 	DeleteChannelRoute(merchantID string) error
 	// M6 funds & payment extensions (gated by FEATURE_M6_FUNDS at HTTP layer).
-	TransferFunds(fromAccountID string, toAccountID string, amount string, idemKey string) error
-	WithdrawFunds(vaAccountID string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error)
+	TransferFunds(fromAccountID string, toAccountID string, currency string, amount string, idemKey string) error
+	WithdrawFunds(vaAccountID string, currency string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error)
 	DebitPreview(agentDID string, merchantID string, amount string) (DebitPreview, error)
-	TransferX402Outbound(vaAccountID string, toAddress string, amount string, referenceTransactionID string, idemKey string) error
+	TransferX402Outbound(vaAccountID string, toAddress string, currency string, amount string, referenceTransactionID string, idemKey string) error
 	CheckX402Settlement(transactionID string) (map[string]any, error)
 	RefundApply(transactionID string, reason string, idemKey string) error
 	// M7 card + risk + party KYC (gated by FEATURE_M7_CARD_RISK at HTTP layer).
@@ -692,6 +697,7 @@ func (s *Service) CreateAccount(agentDID string) Account {
 		VAAccountID:   fmt.Sprintf("va_%d", len(s.accounts)+1),
 		VACardNo:      generateVACardNo(len(s.accounts) + 1),
 		AgentDID:      agentDID,
+		Currency:      "GUSD",
 		Balance:       0,
 		FrozenBalance: 0,
 	}
@@ -702,10 +708,14 @@ func (s *Service) CreateAccount(agentDID string) Account {
 	return *a
 }
 
-func (s *Service) Recharge(va string, amount string, idemKey string) error {
+func (s *Service) Recharge(va string, currency string, amount string, idemKey string) error {
 	v, err := parseAmount(amount)
 	if err != nil || v <= 0 {
 		return &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	curr := NormalizeCurrency(currency)
+	if curr == "" {
+		return &APIError{Code: "PAY-010", Message: "invalid currency"}
 	}
 	if idemKey == "" {
 		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
@@ -722,11 +732,15 @@ func (s *Service) Recharge(va string, amount string, idemKey string) error {
 	if !ok {
 		return &APIError{Code: "PAY-010", Message: "account not found"}
 	}
+	if acc.Currency != curr {
+		return &APIError{Code: "PAY-010", Message: "currency mismatch"}
+	}
 	acc.Balance += v
 	s.recharges = append([]RechargeOrder{
 		{
 			RechargeID:  fmt.Sprintf("rch_%d", len(s.recharges)+1),
 			VAAccountID: va,
+			Currency:    curr,
 			Amount:      v,
 			Status:      "SETTLED",
 			CreatedAt:   time.Now().UTC(),
@@ -814,6 +828,10 @@ func (s *Service) ActivateAuthorizeRule(agentDID string) error {
 }
 
 func (s *Service) Pay(req PayRequest) (PayResponse, *APIError) {
+	curr := NormalizeCurrency(req.Currency)
+	if curr == "" {
+		return PayResponse{}, &APIError{Code: "PAY-010", Message: "invalid currency"}
+	}
 	if req.Signature == "" {
 		return PayResponse{}, &APIError{Code: "PAY-001", Message: "signature required"}
 	}
@@ -889,6 +907,7 @@ func (s *Service) Pay(req PayRequest) (PayResponse, *APIError) {
 		ID:        txID,
 		PayerDID:  req.PayerDID,
 		Merchant:  req.MerchantID,
+		Currency:  curr,
 		Amount:    amount,
 		Fee:       fee,
 		NetAmount: amount - fee,
@@ -1009,26 +1028,37 @@ func (s *Service) Refund(transactionID string, idemKey string) error {
 	return nil
 }
 
-func (s *Service) BalanceByVA(va string) (float64, error) {
+func (s *Service) BalanceByVA(va string, currency string) (float64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	curr := NormalizeCurrency(currency)
+	if curr == "" {
+		return 0, errors.New("invalid currency")
+	}
 	acc, ok := s.accountsByVA[va]
 	if !ok {
 		return 0, errors.New("not found")
 	}
+	if acc.Currency != curr {
+		return 0, errors.New("currency mismatch")
+	}
 	return acc.Balance, nil
 }
 
-func (s *Service) LedgerByVA(va string) []Transaction {
+func (s *Service) LedgerByVA(va string, currency string) []Transaction {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	curr := NormalizeCurrency(currency)
+	if curr == "" {
+		return nil
+	}
 	acc, ok := s.accountsByVA[va]
 	if !ok {
 		return nil
 	}
 	result := make([]Transaction, 0)
 	for _, tx := range s.orders {
-		if tx.PayerDID == acc.AgentDID {
+		if tx.PayerDID == acc.AgentDID && tx.Currency == curr {
 			result = append(result, tx)
 		}
 	}
@@ -1081,6 +1111,7 @@ func (s *Service) ListAgents() []AgentSummary {
 			VAAccountID:   acc.VAAccountID,
 			VACardNo:      acc.VACardNo,
 			WalletAddress: acc.WalletAddress,
+			Currency:      acc.Currency,
 			Balance:       acc.Balance,
 			Status:        "ACTIVE",
 		})
@@ -1105,6 +1136,18 @@ func (s *Service) ListRecharges(va string, limit int) []RechargeOrder {
 		}
 	}
 	return out
+}
+
+func NormalizeCurrency(raw string) string {
+	c := strings.ToUpper(strings.TrimSpace(raw))
+	switch c {
+	case "", "GUSD":
+		return "GUSD"
+	case "USDC", "USDT":
+		return c
+	default:
+		return ""
+	}
 }
 
 func parseAmount(v string) (float64, error) {
@@ -1438,7 +1481,7 @@ func (s *Service) GetVATopupConfig(accountID string) (VATopupConfig, error) {
 	}, nil
 }
 
-func (s *Service) TransferVA(fromAccountID string, toAccountID string, amount string, idemKey string) error {
+func (s *Service) TransferVA(fromAccountID string, toAccountID string, currency string, amount string, idemKey string) error {
 	v, err := parseAmount(amount)
 	if err != nil || v <= 0 {
 		return &APIError{Code: "PAY-010", Message: "invalid amount"}
@@ -1646,7 +1689,7 @@ func (s *Service) DeleteChannelRoute(merchantID string) error {
 	return nil
 }
 
-func (s *Service) TransferFunds(fromAccountID string, toAccountID string, amount string, idemKey string) error {
+func (s *Service) TransferFunds(fromAccountID string, toAccountID string, currency string, amount string, idemKey string) error {
 	v, err := parseAmount(amount)
 	if err != nil || v <= 0 {
 		return &APIError{Code: "PAY-010", Message: "invalid amount"}
@@ -1687,7 +1730,7 @@ func (s *Service) TransferFunds(fromAccountID string, toAccountID string, amount
 	return nil
 }
 
-func (s *Service) WithdrawFunds(vaAccountID string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error) {
+func (s *Service) WithdrawFunds(vaAccountID string, currency string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error) {
 	v, err := parseAmount(amount)
 	if err != nil || v <= 0 {
 		return WithdrawRecord{}, &APIError{Code: "PAY-010", Message: "invalid amount"}
@@ -1787,7 +1830,7 @@ func (s *Service) DebitPreview(agentDID string, merchantID string, amount string
 	return pv, nil
 }
 
-func (s *Service) TransferX402Outbound(vaAccountID string, toAddress string, amount string, referenceTransactionID string, idemKey string) error {
+func (s *Service) TransferX402Outbound(vaAccountID string, toAddress string, currency string, amount string, referenceTransactionID string, idemKey string) error {
 	v, err := parseAmount(amount)
 	if err != nil || v <= 0 {
 		return &APIError{Code: "PAY-010", Message: "invalid amount"}

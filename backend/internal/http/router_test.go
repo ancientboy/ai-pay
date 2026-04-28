@@ -178,7 +178,7 @@ func TestPayRejectsWhenAgentPublicKeyMissing(t *testing.T) {
 	svc := service.New()
 	_ = svc.RegisterAgent("did:gusd:agent:nokey")
 	acc := svc.CreateAccount("did:gusd:agent:nokey")
-	_ = svc.Recharge(acc.VAAccountID, "20", "rch-http-nokey-1")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "20", "rch-http-nokey-1")
 	_ = svc.SetAuthorizeRule("did:gusd:agent:nokey", "20", "100", []string{"m1"})
 	now := time.Date(2026, 4, 22, 9, 0, 0, 0, time.UTC)
 	server := NewServerForTest(svc, func() time.Time { return now }, 100, 100)
@@ -227,7 +227,7 @@ func TestAuthorizeUpdateAndFreeze(t *testing.T) {
 	owner := "test-owner"
 	_ = svc.RegisterAgent(agent)
 	acc := svc.CreateAccount(agent)
-	_ = svc.Recharge(acc.VAAccountID, "100", "rch-auth-update-1")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "100", "rch-auth-update-1")
 	_ = svc.SetAuthorizeRule(agent, "20", "100", []string{"m1"})
 	server := NewServerForTest(svc, time.Now, 100, 100)
 	server.bindAgentOwner(agent, owner)
@@ -262,7 +262,7 @@ func TestAuthorizeUpdateAndFreeze(t *testing.T) {
 	_ = svc.SetAgentPublicKey(agent, base64.StdEncoding.EncodeToString(pub))
 	idem := "idem-auth-frozen-1"
 	ts := time.Now().UTC().Format(time.RFC3339)
-	signPayload := buildPaySignaturePayload(agent, "m1", "1", idem, ts)
+	signPayload := buildPaySignaturePayload(agent, "m1", "GUSD", "1", idem, ts)
 	payBody := map[string]string{
 		"payerDid":   agent,
 		"merchantId": "m1",
@@ -293,7 +293,7 @@ func TestAuthorizeUpdateAndFreeze(t *testing.T) {
 
 	idem2 := "idem-auth-active-2"
 	ts2 := time.Now().UTC().Format(time.RFC3339)
-	signPayload2 := buildPaySignaturePayload(agent, "m1", "1", idem2, ts2)
+	signPayload2 := buildPaySignaturePayload(agent, "m1", "GUSD", "1", idem2, ts2)
 	payBody2 := map[string]string{
 		"payerDid":   agent,
 		"merchantId": "m1",
@@ -382,7 +382,7 @@ func TestOverviewMetrics(t *testing.T) {
 	svc := service.New()
 	_ = svc.RegisterAgent("did:gusd:agent:m1")
 	acc := svc.CreateAccount("did:gusd:agent:m1")
-	_ = svc.Recharge(acc.VAAccountID, "100", "rch-http-overview-1")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "100", "rch-http-overview-1")
 	_ = svc.SetAuthorizeRule("did:gusd:agent:m1", "20", "100", []string{"m1"})
 	_, _ = svc.Pay(service.PayRequest{
 		PayerDID:       "did:gusd:agent:m1",
@@ -405,7 +405,7 @@ func TestAgentAndRechargeList(t *testing.T) {
 	svc := service.New()
 	_ = svc.RegisterAgent("did:gusd:agent:list1")
 	acc := svc.CreateAccount("did:gusd:agent:list1")
-	_ = svc.Recharge(acc.VAAccountID, "12", "rch-http-list-1")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "12", "rch-http-list-1")
 
 	server := NewServerForTest(svc, time.Now, 100, 100)
 
@@ -461,13 +461,13 @@ func TestPayChannelTimeoutReturnsPAY007AndRollsBack(t *testing.T) {
 	_ = svc.RegisterAgent("did:gusd:agent:timeout")
 	_ = svc.SetAgentPublicKey("did:gusd:agent:timeout", base64.StdEncoding.EncodeToString(pub))
 	acc := svc.CreateAccount("did:gusd:agent:timeout")
-	_ = svc.Recharge(acc.VAAccountID, "50", "rch-http-timeout-1")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "50", "rch-http-timeout-1")
 	_ = svc.SetAuthorizeRule("did:gusd:agent:timeout", "50", "200", []string{"m_fail"})
 	server := NewServerForTest(svc, time.Now, 100, 100)
 
 	idem := "idem-timeout-1"
 	ts := time.Now().UTC().Format(time.RFC3339)
-	signPayload := buildPaySignaturePayload("did:gusd:agent:timeout", "m_fail", "10", idem, ts)
+	signPayload := buildPaySignaturePayload("did:gusd:agent:timeout", "m_fail", "GUSD", "10", idem, ts)
 	body := map[string]string{
 		"payerDid":   "did:gusd:agent:timeout",
 		"merchantId": "m_fail",
@@ -491,7 +491,7 @@ func TestPayChannelTimeoutReturnsPAY007AndRollsBack(t *testing.T) {
 		t.Fatalf("expected PAY-007 got %v", payload["code"])
 	}
 
-	balance, err := svc.BalanceByVA(acc.VAAccountID)
+	balance, err := svc.BalanceByVA(acc.VAAccountID, "GUSD")
 	if err != nil {
 		t.Fatalf("query balance failed: %v", err)
 	}
@@ -507,13 +507,13 @@ func TestStatusCallbackSettlesAsyncOrder(t *testing.T) {
 	_ = svc.RegisterAgent(agent)
 	_ = svc.SetAgentPublicKey(agent, base64.StdEncoding.EncodeToString(pub))
 	acc := svc.CreateAccount(agent)
-	_ = svc.Recharge(acc.VAAccountID, "50", "rch-http-async-1")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "50", "rch-http-async-1")
 	_ = svc.SetAuthorizeRule(agent, "50", "200", []string{"m_async"})
 	server := NewServerForTest(svc, time.Now, 100, 100)
 
 	idem := "idem-async-callback-1"
 	ts := time.Now().UTC().Format(time.RFC3339)
-	signPayload := buildPaySignaturePayload(agent, "m_async", "10", idem, ts)
+	signPayload := buildPaySignaturePayload(agent, "m_async", "GUSD", "10", idem, ts)
 	payBody := map[string]string{
 		"payerDid":   agent,
 		"merchantId": "m_async",
@@ -562,13 +562,13 @@ func TestUnfreezeEndpoint(t *testing.T) {
 	_ = svc.RegisterAgent(agent)
 	_ = svc.SetAgentPublicKey(agent, base64.StdEncoding.EncodeToString(pub))
 	acc := svc.CreateAccount(agent)
-	_ = svc.Recharge(acc.VAAccountID, "60", "rch-http-unfreeze-1")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "60", "rch-http-unfreeze-1")
 	_ = svc.SetAuthorizeRule(agent, "60", "200", []string{"m_async"})
 	server := NewServerForTest(svc, time.Now, 100, 100)
 
 	idem := "idem-http-unfreeze-pay-1"
 	ts := time.Now().UTC().Format(time.RFC3339)
-	signPayload := buildPaySignaturePayload(agent, "m_async", "10", idem, ts)
+	signPayload := buildPaySignaturePayload(agent, "m_async", "GUSD", "10", idem, ts)
 	payBody := map[string]string{
 		"payerDid":   agent,
 		"merchantId": "m_async",
@@ -611,7 +611,7 @@ func TestRefundEndpoint(t *testing.T) {
 			"amount":     "1",
 		}
 		ts := time.Now().UTC().Format(time.RFC3339)
-		payload := buildPaySignaturePayload(body["payerDid"], body["merchantId"], body["amount"], idem, ts)
+		payload := buildPaySignaturePayload(body["payerDid"], body["merchantId"], "GUSD", body["amount"], idem, ts)
 		body["signature"] = base64.StdEncoding.EncodeToString(ed25519.Sign(testPayPrivateKey, payload))
 		req := httptest.NewRequest(http.MethodPost, "/payment/x402/pay", bytes.NewReader(mustJSONMap(t, body)))
 		req.Header.Set("Content-Type", "application/json")
@@ -639,7 +639,7 @@ func TestVAInterestAndTopupConfigEndpoints(t *testing.T) {
 	svc := service.New()
 	_ = svc.RegisterAgent("did:gusd:agent:week2-interest")
 	acc := svc.CreateAccount("did:gusd:agent:week2-interest")
-	_ = svc.Recharge(acc.VAAccountID, "100", "rch-http-week2-1")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "100", "rch-http-week2-1")
 	server := NewServerForTest(svc, time.Now, 100, 100)
 
 	interestReq := httptest.NewRequest(http.MethodGet, "/account/interest/query?accountId="+acc.VAAccountID, nil)
@@ -680,7 +680,7 @@ func TestVATransferEndpointWithIdempotency(t *testing.T) {
 	_ = svc.RegisterAgent("did:gusd:agent:week2-transfer-b")
 	accA := svc.CreateAccount("did:gusd:agent:week2-transfer-a")
 	accB := svc.CreateAccount("did:gusd:agent:week2-transfer-b")
-	_ = svc.Recharge(accA.VAAccountID, "20", "rch-http-week2-transfer-1")
+	_ = svc.Recharge(accA.VAAccountID, "GUSD", "20", "rch-http-week2-transfer-1")
 	server := NewServerForTest(svc, time.Now, 100, 100)
 
 	transferBody := map[string]string{
@@ -708,8 +708,8 @@ func TestVATransferEndpointWithIdempotency(t *testing.T) {
 		t.Fatalf("va transfer idempotent retry expected 200 got %d", resp2.Code)
 	}
 
-	balA, _ := svc.BalanceByVA(accA.VAAccountID)
-	balB, _ := svc.BalanceByVA(accB.VAAccountID)
+	balA, _ := svc.BalanceByVA(accA.VAAccountID, "GUSD")
+	balB, _ := svc.BalanceByVA(accB.VAAccountID, "GUSD")
 	if balA != 15 {
 		t.Fatalf("expected from balance 15 got %v", balA)
 	}
@@ -889,7 +889,7 @@ func TestDeveloperAPIKeyAndWebhookCRUD(t *testing.T) {
 	agent := "did:gusd:agent:delivery-http"
 	_ = svc.RegisterAgent(agent)
 	acc := svc.CreateAccount(agent)
-	_ = svc.Recharge(acc.VAAccountID, "20", "rch-http-delivery-1")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "20", "rch-http-delivery-1")
 	_ = svc.SetAuthorizeRule(agent, "20", "100", []string{"m1"})
 	payResp, payErr := svc.Pay(service.PayRequest{
 		PayerDID:       agent,
@@ -1007,7 +1007,7 @@ func TestFundsEndpointsRespectRoleTokens(t *testing.T) {
 	_ = svc.RegisterAgent("did:gusd:agent:role-b")
 	accA := svc.CreateAccount("did:gusd:agent:role-a")
 	accB := svc.CreateAccount("did:gusd:agent:role-b")
-	_ = svc.Recharge(accA.VAAccountID, "20", "rch-role-token-1")
+	_ = svc.Recharge(accA.VAAccountID, "GUSD", "20", "rch-role-token-1")
 
 	server := NewServerForTest(svc, time.Now, 100, 100)
 	server.SetAdminBearerToken("admin-token")
@@ -1264,7 +1264,7 @@ func TestCallbackReplayByIdempotencyKeyReturnsOK(t *testing.T) {
 	_ = svc.RegisterAgent(agent)
 	_ = svc.SetAgentPublicKey(agent, base64.StdEncoding.EncodeToString(pub))
 	acc := svc.CreateAccount(agent)
-	_ = svc.Recharge(acc.VAAccountID, "50", "rch-http-cb-idem-1")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "50", "rch-http-cb-idem-1")
 	_ = svc.SetAuthorizeRule(agent, "50", "200", []string{"m_async"})
 
 	server := NewServerForTest(svc, time.Now, 100, 100)
@@ -1273,7 +1273,7 @@ func TestCallbackReplayByIdempotencyKeyReturnsOK(t *testing.T) {
 
 	idemPay := "idem-cb-idem-pay-1"
 	tsPay := time.Now().UTC().Format(time.RFC3339)
-	signPayload := buildPaySignaturePayload(agent, "m_async", "10", idemPay, tsPay)
+	signPayload := buildPaySignaturePayload(agent, "m_async", "GUSD", "10", idemPay, tsPay)
 	payBody := map[string]string{
 		"payerDid":   agent,
 		"merchantId": "m_async",
@@ -1331,7 +1331,7 @@ func seedServiceForPay() *service.Service {
 	_ = svc.RegisterAgent("did:gusd:agent:test_http")
 	_ = svc.SetAgentPublicKey("did:gusd:agent:test_http", base64.StdEncoding.EncodeToString(pub))
 	acc := svc.CreateAccount("did:gusd:agent:test_http")
-	_ = svc.Recharge(acc.VAAccountID, "100", "rch-http-seed-1")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "100", "rch-http-seed-1")
 	_ = svc.SetAuthorizeRule("did:gusd:agent:test_http", "50", "200", []string{"m1"})
 	return svc
 }
@@ -1389,7 +1389,7 @@ func TestM6FundTransferRequiresAdminAuth(t *testing.T) {
 	_ = svc.RegisterAgent(agent1)
 	_ = svc.SetAgentPublicKey(agent1, base64.StdEncoding.EncodeToString(pub1))
 	acc1 := svc.CreateAccount(agent1)
-	_ = svc.Recharge(acc1.VAAccountID, "50", "m6-rch-1")
+	_ = svc.Recharge(acc1.VAAccountID, "GUSD", "50", "m6-rch-1")
 
 	pub2, _, _ := ed25519.GenerateKey(rand.Reader)
 	agent2 := "did:gusd:agent:m6_b"
@@ -1506,7 +1506,7 @@ func performPay(server *Server, idem string) int {
 		"amount":     "1",
 	}
 	ts := time.Date(2026, 4, 22, 9, 0, 0, 0, time.UTC).Format(time.RFC3339)
-	payload := buildPaySignaturePayload(body["payerDid"], body["merchantId"], body["amount"], idem, ts)
+	payload := buildPaySignaturePayload(body["payerDid"], body["merchantId"], "GUSD", body["amount"], idem, ts)
 	body["signature"] = base64.StdEncoding.EncodeToString(ed25519.Sign(testPayPrivateKey, payload))
 	b, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/payment/x402/pay", bytes.NewReader(b))

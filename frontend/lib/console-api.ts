@@ -137,7 +137,7 @@ export function activateAuthorizeRule(agentDid: string) {
   });
 }
 
-export function recharge(input: { vaAccountId?: string; vaCardNo?: string; amount: string }) {
+export function recharge(input: { vaAccountId?: string; vaCardNo?: string; currency: "GUSD" | "USDC" | "USDT"; amount: string }) {
   return request("/fund/recharge", {
     method: "POST",
     body: JSON.stringify(input),
@@ -148,6 +148,7 @@ export function recharge(input: { vaAccountId?: string; vaCardNo?: string; amoun
 export function pay(input: {
   payerDid: string;
   merchantId: string;
+  currency: "GUSD" | "USDC" | "USDT";
   amount: string;
 }) {
   const idempotencyKey = `idem-ui-${Date.now()}`;
@@ -160,6 +161,7 @@ export function pay(input: {
         buildPaySignPayload(
           input.payerDid,
           input.merchantId,
+          input.currency,
           input.amount,
           idempotencyKey,
           signTimestamp,
@@ -189,13 +191,13 @@ export function queryTransaction(transactionId: string) {
   }>(`/payment/status/query?transactionId=${encodeURIComponent(transactionId)}`);
 }
 
-export function queryBalance(accountId: string) {
-  return request<{ balance: number }>(
-    `/account/balance/query?accountId=${encodeURIComponent(accountId)}`,
+export function queryBalance(accountId: string, currency: "GUSD" | "USDC" | "USDT" = "GUSD") {
+  return request<{ balance: number; currency: string }>(
+    `/account/balance/query?accountId=${encodeURIComponent(accountId)}&currency=${encodeURIComponent(currency)}`,
   );
 }
 
-export function queryLedger(accountId: string) {
+export function queryLedger(accountId: string, currency: "GUSD" | "USDC" | "USDT" = "GUSD") {
   return request<
     Array<{
       ID: string;
@@ -205,7 +207,7 @@ export function queryLedger(accountId: string) {
       Status: string;
       CreatedAt: string;
     }>
-  >(`/account/ledger/query?accountId=${encodeURIComponent(accountId)}`);
+  >(`/account/ledger/query?accountId=${encodeURIComponent(accountId)}&currency=${encodeURIComponent(currency)}`);
 }
 
 export function queryInterest(accountId: string) {
@@ -773,6 +775,7 @@ export function createPaymentSignRequest(input: {
         buildSignRequestPayload(
           input.agentDid,
           input.merchantId,
+          input.currency,
           input.amount,
           sessionId,
           idempotencyKey,
@@ -816,6 +819,7 @@ export function submitPaymentSign(input: {
         buildPaySignPayload(
           input.payerDid,
           input.merchantId,
+          input.currency,
           input.amount,
           idempotencyKey,
           signTimestamp,

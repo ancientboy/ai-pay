@@ -11,7 +11,7 @@ func TestPaySuccess(t *testing.T) {
 	svc := New()
 	_ = svc.RegisterAgent("did:gusd:agent:a1")
 	acc := svc.CreateAccount("did:gusd:agent:a1")
-	svc.Recharge(acc.VAAccountID, "100", "rch-1")
+	svc.Recharge(acc.VAAccountID, "GUSD", "100", "rch-1")
 	svc.SetAuthorizeRule("did:gusd:agent:a1", "50", "200", []string{"m1"})
 
 	resp, err := svc.Pay(PayRequest{
@@ -34,7 +34,7 @@ func TestPaySuccess(t *testing.T) {
 	if tx.Fee <= 0 {
 		t.Fatalf("expected fee > 0")
 	}
-	balance, err3 := svc.BalanceByVA(acc.VAAccountID)
+	balance, err3 := svc.BalanceByVA(acc.VAAccountID, "GUSD")
 	if err3 != nil {
 		t.Fatalf("query balance err: %v", err3)
 	}
@@ -68,7 +68,7 @@ func TestPayIdempotency(t *testing.T) {
 	svc := New()
 	_ = svc.RegisterAgent("did:gusd:agent:a3")
 	acc := svc.CreateAccount("did:gusd:agent:a3")
-	svc.Recharge(acc.VAAccountID, "100", "rch-2")
+	svc.Recharge(acc.VAAccountID, "GUSD", "100", "rch-2")
 	svc.SetAuthorizeRule("did:gusd:agent:a3", "50", "200", []string{"m1"})
 
 	first, err := svc.Pay(PayRequest{
@@ -100,7 +100,7 @@ func TestPayDailyLimitExceeded(t *testing.T) {
 	svc := New()
 	_ = svc.RegisterAgent("did:gusd:agent:a4")
 	acc := svc.CreateAccount("did:gusd:agent:a4")
-	svc.Recharge(acc.VAAccountID, "100", "rch-3")
+	svc.Recharge(acc.VAAccountID, "GUSD", "100", "rch-3")
 	svc.SetAuthorizeRule("did:gusd:agent:a4", "50", "15", []string{"m1"})
 
 	_, err := svc.Pay(PayRequest{
@@ -129,7 +129,7 @@ func TestPayRiskBlockedMerchant(t *testing.T) {
 	svc := New()
 	_ = svc.RegisterAgent("did:gusd:agent:risk-merchant")
 	acc := svc.CreateAccount("did:gusd:agent:risk-merchant")
-	_ = svc.Recharge(acc.VAAccountID, "100", "rch-risk-merchant")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "100", "rch-risk-merchant")
 	_ = svc.SetAuthorizeRule("did:gusd:agent:risk-merchant", "2000", "5000", []string{"m_risk_block"})
 
 	_, err := svc.Pay(PayRequest{
@@ -148,7 +148,7 @@ func TestPayRiskAmountExceeded(t *testing.T) {
 	svc := New()
 	_ = svc.RegisterAgent("did:gusd:agent:risk-amount")
 	acc := svc.CreateAccount("did:gusd:agent:risk-amount")
-	_ = svc.Recharge(acc.VAAccountID, "5000", "rch-risk-amount")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "5000", "rch-risk-amount")
 	_ = svc.SetAuthorizeRule("did:gusd:agent:risk-amount", "5000", "10000", []string{"m1"})
 
 	_, err := svc.Pay(PayRequest{
@@ -167,7 +167,7 @@ func TestPayRiskConfigCanDisableChecks(t *testing.T) {
 	svc := New()
 	_ = svc.RegisterAgent("did:gusd:agent:risk-disable")
 	acc := svc.CreateAccount("did:gusd:agent:risk-disable")
-	_ = svc.Recharge(acc.VAAccountID, "5000", "rch-risk-disable")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "5000", "rch-risk-disable")
 	_ = svc.SetAuthorizeRule("did:gusd:agent:risk-disable", "5000", "10000", []string{"m1"})
 	_, _ = svc.SetRiskConfig(false, "1000", []string{"m1"})
 
@@ -190,7 +190,7 @@ func TestPayChannelRouteCanForceFail(t *testing.T) {
 	svc := New()
 	_ = svc.RegisterAgent("did:gusd:agent:route-fail")
 	acc := svc.CreateAccount("did:gusd:agent:route-fail")
-	_ = svc.Recharge(acc.VAAccountID, "100", "rch-route-fail")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "100", "rch-route-fail")
 	_ = svc.SetAuthorizeRule("did:gusd:agent:route-fail", "100", "500", []string{"m_route_fail"})
 	_, _ = svc.SetChannelRoute("m_route_fail", "FAIL")
 
@@ -210,7 +210,7 @@ func TestPayChannelTimeoutRollsBackFrozenBalance(t *testing.T) {
 	svc := New()
 	_ = svc.RegisterAgent("did:gusd:agent:rollback")
 	acc := svc.CreateAccount("did:gusd:agent:rollback")
-	_ = svc.Recharge(acc.VAAccountID, "100", "rch-4")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "100", "rch-4")
 	_ = svc.SetAuthorizeRule("did:gusd:agent:rollback", "100", "500", []string{"m_fail"})
 
 	_, err := svc.Pay(PayRequest{
@@ -223,7 +223,7 @@ func TestPayChannelTimeoutRollsBackFrozenBalance(t *testing.T) {
 	if err == nil || err.Code != "PAY-007" {
 		t.Fatalf("expected PAY-007 got %+v", err)
 	}
-	balance, queryErr := svc.BalanceByVA(acc.VAAccountID)
+	balance, queryErr := svc.BalanceByVA(acc.VAAccountID, "GUSD")
 	if queryErr != nil {
 		t.Fatalf("query balance failed: %v", queryErr)
 	}
@@ -239,7 +239,7 @@ func TestPayAsyncCreatesSettlingWithFrozenBalance(t *testing.T) {
 	svc := New()
 	_ = svc.RegisterAgent("did:gusd:agent:async")
 	acc := svc.CreateAccount("did:gusd:agent:async")
-	_ = svc.Recharge(acc.VAAccountID, "100", "rch-async-1")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "100", "rch-async-1")
 	_ = svc.SetAuthorizeRule("did:gusd:agent:async", "100", "500", []string{"m_async"})
 
 	resp, err := svc.Pay(PayRequest{
@@ -255,7 +255,7 @@ func TestPayAsyncCreatesSettlingWithFrozenBalance(t *testing.T) {
 	if resp.Status != "SETTLING" {
 		t.Fatalf("expected SETTLING got %s", resp.Status)
 	}
-	balance, qErr := svc.BalanceByVA(acc.VAAccountID)
+	balance, qErr := svc.BalanceByVA(acc.VAAccountID, "GUSD")
 	if qErr != nil {
 		t.Fatalf("balance query failed: %v", qErr)
 	}
@@ -272,7 +272,7 @@ func TestResolveSettlingToSettled(t *testing.T) {
 	agent := "did:gusd:agent:resolve-ok"
 	_ = svc.RegisterAgent(agent)
 	acc := svc.CreateAccount(agent)
-	_ = svc.Recharge(acc.VAAccountID, "100", "rch-resolve-ok-1")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "100", "rch-resolve-ok-1")
 	_ = svc.SetAuthorizeRule(agent, "100", "500", []string{"m_async"})
 
 	resp, err := svc.Pay(PayRequest{
@@ -305,7 +305,7 @@ func TestUnfreezeSettlingTransaction(t *testing.T) {
 	agent := "did:gusd:agent:unfreeze"
 	_ = svc.RegisterAgent(agent)
 	acc := svc.CreateAccount(agent)
-	_ = svc.Recharge(acc.VAAccountID, "100", "rch-unfreeze-1")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "100", "rch-unfreeze-1")
 	_ = svc.SetAuthorizeRule(agent, "100", "500", []string{"m_async"})
 	resp, err := svc.Pay(PayRequest{
 		PayerDID:       agent,
@@ -320,7 +320,7 @@ func TestUnfreezeSettlingTransaction(t *testing.T) {
 	if err := svc.Unfreeze(resp.TransactionID, "unfreeze-idem-1"); err != nil {
 		t.Fatalf("unfreeze failed: %v", err)
 	}
-	balance, _ := svc.BalanceByVA(acc.VAAccountID)
+	balance, _ := svc.BalanceByVA(acc.VAAccountID, "GUSD")
 	if balance != 100 {
 		t.Fatalf("expected balance restored to 100 got %v", balance)
 	}
@@ -331,7 +331,7 @@ func TestRefundSettledTransaction(t *testing.T) {
 	agent := "did:gusd:agent:refund"
 	_ = svc.RegisterAgent(agent)
 	acc := svc.CreateAccount(agent)
-	_ = svc.Recharge(acc.VAAccountID, "100", "rch-refund-1")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "100", "rch-refund-1")
 	_ = svc.SetAuthorizeRule(agent, "100", "500", []string{"m1"})
 	resp, err := svc.Pay(PayRequest{
 		PayerDID:       agent,
@@ -346,7 +346,7 @@ func TestRefundSettledTransaction(t *testing.T) {
 	if err := svc.Refund(resp.TransactionID, "refund-idem-1"); err != nil {
 		t.Fatalf("refund failed: %v", err)
 	}
-	balance, _ := svc.BalanceByVA(acc.VAAccountID)
+	balance, _ := svc.BalanceByVA(acc.VAAccountID, "GUSD")
 	if balance != 100 {
 		t.Fatalf("expected refunded balance 100 got %v", balance)
 	}
@@ -356,7 +356,7 @@ func TestPayConcurrentNoOverdraft(t *testing.T) {
 	svc := New()
 	_ = svc.RegisterAgent("did:gusd:agent:concurrent")
 	acc := svc.CreateAccount("did:gusd:agent:concurrent")
-	_ = svc.Recharge(acc.VAAccountID, "100", "rch-concurrent-1")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "100", "rch-concurrent-1")
 	_ = svc.SetAuthorizeRule("did:gusd:agent:concurrent", "100", "500", []string{"m1"})
 
 	var wg sync.WaitGroup
@@ -424,10 +424,10 @@ func TestRechargeByVACardNo(t *testing.T) {
 	_ = svc.RegisterAgent("did:gusd:agent:card-2")
 	acc := svc.CreateAccount("did:gusd:agent:card-2")
 
-	if err := svc.Recharge(acc.VACardNo, "12.5", "rch-5"); err != nil {
+	if err := svc.Recharge(acc.VACardNo, "GUSD", "12.5", "rch-5"); err != nil {
 		t.Fatalf("recharge by card no failed: %v", err)
 	}
-	balance, err := svc.BalanceByVA(acc.VAAccountID)
+	balance, err := svc.BalanceByVA(acc.VAAccountID, "GUSD")
 	if err != nil {
 		t.Fatalf("query balance failed: %v", err)
 	}
@@ -440,7 +440,7 @@ func BenchmarkPayInMemory(b *testing.B) {
 	svc := New()
 	_ = svc.RegisterAgent("did:gusd:agent:bench")
 	acc := svc.CreateAccount("did:gusd:agent:bench")
-	_ = svc.Recharge(acc.VAAccountID, "1000000000", "rch-6")
+	_ = svc.Recharge(acc.VAAccountID, "GUSD", "1000000000", "rch-6")
 	_ = svc.SetAuthorizeRule("did:gusd:agent:bench", "1000", "999999999", []string{"m1"})
 
 	b.ResetTimer()
