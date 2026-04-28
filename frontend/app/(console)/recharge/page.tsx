@@ -7,6 +7,7 @@ import { useLocale } from "@/components/locale-provider";
 import { useToast } from "@/components/toast-provider";
 import {
   getVATopupConfig,
+  getBridgeCustomerStatus,
   listAgents,
   listRecharges,
   listVATransfers,
@@ -15,6 +16,7 @@ import {
   queryRechargeConfirm,
   recharge,
   setVATopupConfig,
+  syncBridgeCustomer,
   transferVA,
 } from "@/lib/console-api";
 import { ApiClientError, toReadableError } from "@/lib/error-map";
@@ -142,6 +144,13 @@ export default function RechargePage() {
     currentConfirmations: number;
     confirmed: boolean;
     status: string;
+    updatedAt: string;
+  } | null>(null);
+  const [bridgeStatus, setBridgeStatus] = useState<{
+    agentDid: string;
+    bridgeCustomerId: string;
+    kycStatus: string;
+    lastError?: string;
     updatedAt: string;
   } | null>(null);
   const [selected, setSelected] = useState<{
@@ -329,7 +338,47 @@ export default function RechargePage() {
     },
   });
 
+  const selectedAgentDid = useMemo(() => {
+    const selectedVA = vaAccountId.trim();
+    if (!selectedVA) {
+      return "";
+    }
+    return (agentsQuery.data ?? []).find((item) => item.vaAccountId === selectedVA)?.agentDid ?? "";
+  }, [agentsQuery.data, vaAccountId]);
+
+  const bridgeSyncMutation = useMutation({
+    mutationFn: () => syncBridgeCustomer(selectedAgentDid),
+    onSuccess: (data) => {
+      setBridgeStatus(data);
+      setMessage(`Bridge customer synced: ${data.bridgeCustomerId}`);
+      setErrorDetails(null);
+      showToast("success", "Bridge KYC synced");
+    },
+    onError: (err) => {
+      const msg = toReadableError(err, locale);
+      setMessage(msg);
+      setErrorDetails(err instanceof ApiClientError ? { message: msg, code: err.code, requestId: err.requestId } : { message: msg });
+      showToast("error", msg);
+    },
+  });
+
+  const bridgeStatusMutation = useMutation({
+    mutationFn: () => getBridgeCustomerStatus(selectedAgentDid),
+    onSuccess: (data) => {
+      setBridgeStatus(data);
+      setMessage(`Bridge KYC status: ${data.kycStatus}`);
+      setErrorDetails(null);
+    },
+    onError: (err) => {
+      const msg = toReadableError(err, locale);
+      setMessage(msg);
+      setErrorDetails(err instanceof ApiClientError ? { message: msg, code: err.code, requestId: err.requestId } : { message: msg });
+      showToast("error", msg);
+    },
+  });
+
   const targetId = vaCardNo.trim() || vaAccountId.trim();
+  const isBridgeRechargeFlow = rechargeMode === "platform" && currency !== "GUSD";
   const timelineRows = useMemo(() => {
     const startAt = toISOTime(transferStartAt);
     const endAt = toISOTime(transferEndAt);
@@ -769,17 +818,75 @@ export default function RechargePage() {
             <h3 className="text-sm font-medium text-slate-200">Recharge Address</h3>
             <button
               type="button"
-              onClick={() => rechargeAddressMutation.mutate()}
+              onClick={() => {
+                if (!selectedAgentDid) {
+                  showToast("error", "Please select a valid VA account first");
+                  return;
+                }
+                rechargeAddressMutation.mutate();
+              }}
               className="mt-3 rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200"
             >
               Query Address
             </button>
+            <p className="mt-2 text-xs text-slate-400">
+              agentDid: {selectedAgentDid || "N/A"}
+            </p>
             {rechargeAddressResult ? (
               <div className="mt-3 rounded-md border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-200">
                 <p>Mode: {rechargeAddressResult.mode}</p>
                 <p>Currency: {rechargeAddressResult.currency}</p>
                 <p>Chain: {rechargeAddressResult.chainId || "N/A"}</p>
                 <p>Address: {rechargeAddressResult.address || "N/A"}</p>
+                {isBridgeRechargeFlow && !rechargeAddressResult.address ? (
+                  <p className="mt-2 text-amber-300">
+                    Bridge address is pending. Complete KYC sync and verify your Bridge product capability for the selected rail.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <h3 className="text-sm font-medium text-slate-200">Bridge KYC</h3>
+            <p className="mt-2 text-xs text-slate-400">
+              Required before platform-mode stablecoin recharge.
+            </p>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!selectedAgentDid) {
+                    showToast("error", "Please select a valid VA account first");
+                    return;
+                  }
+                  bridgeSyncMutation.mutate();
+                }}
+                className="rounded-md bg-blue-600 px-3 py-2 text-sm text-white"
+              >
+                Sync KYC
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!selectedAgentDid) {
+                    showToast("error", "Please select a valid VA account first");
+                    return;
+                  }
+                  bridgeStatusMutation.mutate();
+                }}
+                className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200"
+              >
+                Query KYC
+              </button>
+            </div>
+            {bridgeStatus ? (
+              <div className="mt-3 rounded-md border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-200">
+                <p>Agent: {bridgeStatus.agentDid}</p>
+                <p>Customer: {bridgeStatus.bridgeCustomerId || "N/A"}</p>
+                <p>KYC: {bridgeStatus.kycStatus}</p>
+                <p>Error: {bridgeStatus.lastError || "-"}</p>
+                <p>Updated: {bridgeStatus.updatedAt}</p>
               </div>
             ) : null}
           </div>

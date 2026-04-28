@@ -46,6 +46,23 @@ type DeliveryItem = {
   updatedAt: string;
 };
 
+function formatKycStatus(status: string): string {
+  const s = status.trim().toLowerCase();
+  if (!s) return "unknown";
+  switch (s) {
+    case "approved":
+      return "approved";
+    case "incomplete":
+      return "incomplete (action required)";
+    case "under_review":
+      return "under review";
+    case "rejected":
+      return "rejected";
+    default:
+      return s;
+  }
+}
+
 export default function DeveloperPage() {
   const { t, locale } = useLocale();
   const { showToast } = useToast();
@@ -651,9 +668,14 @@ export default function DeveloperPage() {
           <div className="mt-3 rounded border border-slate-800 p-2 text-xs text-slate-300">
             <p>agent: {bridgeStatus.agentDid}</p>
             <p>customer: {bridgeStatus.bridgeCustomerId}</p>
-            <p>kyc: {bridgeStatus.kycStatus}</p>
+            <p>kyc: {formatKycStatus(bridgeStatus.kycStatus)}</p>
             <p>error: {bridgeStatus.lastError || '-'}</p>
             <p>updated: {bridgeStatus.updatedAt}</p>
+            {bridgeStatus.kycStatus.trim().toLowerCase() !== "approved" ? (
+              <p className="mt-2 rounded border border-amber-700/60 bg-amber-950/30 p-2 text-amber-200">
+                KYC not approved yet. Customer can continue Bridge onboarding/KYC before production recharge/settlement.
+              </p>
+            ) : null}
           </div>
         ) : null}
       </div>
