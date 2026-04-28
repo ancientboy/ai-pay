@@ -98,6 +98,10 @@ func (b *BridgeWalletProvider) CreateAddress(agentDID string, currency string, c
 		return "", "", err
 	}
 	if strings.TrimSpace(address) == "" {
+		walletID, walletAddr, walletErr := b.createBridgeWallet(customerID, chain)
+		if walletErr == nil && strings.TrimSpace(walletAddr) != "" {
+			return strings.TrimSpace(walletID), strings.TrimSpace(walletAddr), nil
+		}
 		address = vaID
 	}
 	return vaID, address, nil
@@ -153,6 +157,34 @@ func (b *BridgeWalletProvider) createVirtualAccount(customerID string, currency 
 		addr = extractBridgeAddress(resp["source_deposit_instructions"])
 	}
 	return strings.TrimSpace(vaID), strings.TrimSpace(addr), nil
+}
+
+func (b *BridgeWalletProvider) createBridgeWallet(customerID string, chain string) (string, string, error) {
+	cid := strings.TrimSpace(customerID)
+	if cid == "" {
+		return "", "", fmt.Errorf("bridge customer id missing")
+	}
+	ch := strings.ToLower(strings.TrimSpace(chain))
+	if ch == "" {
+		ch = "base"
+	}
+	resp, err := b.call("POST", fmt.Sprintf("/customers/%s/wallets", cid), map[string]any{
+		"chain": ch,
+	})
+	if err != nil {
+		listResp, listErr := b.call("GET", fmt.Sprintf("/customers/%s/wallets", cid), nil)
+		if listErr != nil {
+			return "", "", err
+		}
+		id, addr := extractBridgeWalletFromList(listResp, ch)
+		if id != "" && addr != "" {
+			return id, addr, nil
+		}
+		return "", "", err
+	}
+	id, _ := resp["id"].(string)
+	addr, _ := resp["address"].(string)
+	return strings.TrimSpace(id), strings.TrimSpace(addr), nil
 }
 
 func bridgeSyntheticEmail(agentDID string) string {
@@ -289,6 +321,29 @@ func extractBridgeAddress(raw any) string {
 		}
 	}
 	return ""
+}
+
+func extractBridgeWalletFromList(resp map[string]any, chain string) (string, string) {
+	list, ok := resp["data"].([]any)
+	if !ok {
+		list, _ = resp["wallets"].([]any)
+	}
+	for _, item := range list {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		itemChain, _ := obj["chain"].(string)
+		if chain != "" && !strings.EqualFold(strings.TrimSpace(itemChain), chain) {
+			continue
+		}
+		id, _ := obj["id"].(string)
+		addr, _ := obj["address"].(string)
+		if strings.TrimSpace(id) != "" && strings.TrimSpace(addr) != "" {
+			return strings.TrimSpace(id), strings.TrimSpace(addr)
+		}
+	}
+	return "", ""
 }
 
 func (b *BridgeWalletProvider) VerifyWebhookSignature(payload []byte, signatureHeader string) error {

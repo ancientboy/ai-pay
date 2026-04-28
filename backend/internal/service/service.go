@@ -2135,7 +2135,25 @@ func (s *Service) GetRechargeAddress(agentDID string, currency string, mode stri
 		}
 		return RechargeAddress{Mode: m, AgentDID: strings.TrimSpace(agentDID), Currency: ccy, ChainID: cfg.ChainID, Address: wb.WalletAddress, IsSelfHosted: true}, nil
 	}
-	return RechargeAddress{Mode: "platform", AgentDID: strings.TrimSpace(agentDID), Currency: ccy, ChainID: cfg.ChainID, Address: cfg.HotWallet, IsSelfHosted: false}, nil
+	addr := strings.TrimSpace(cfg.HotWallet)
+	if addr == "" && NormalizeWalletProvider(cfg.Provider) == "bridge" {
+		provider := NewBridgeWalletProviderFromEnv()
+		providerID, bridgeAddr, err := provider.CreateAddress(strings.TrimSpace(agentDID), ccy, cfg.ChainID, "platform")
+		if err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "missing_address_data") {
+				return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "bridge customer missing address data, complete hosted kyc first"}
+			}
+			return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "platform wallet allocate failed"}
+		}
+		addr = strings.TrimSpace(bridgeAddr)
+		if addr == "" {
+			addr = strings.TrimSpace(providerID)
+		}
+	}
+	if addr == "" {
+		return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "platform recharge address unavailable"}
+	}
+	return RechargeAddress{Mode: "platform", AgentDID: strings.TrimSpace(agentDID), Currency: ccy, ChainID: cfg.ChainID, Address: addr, IsSelfHosted: false}, nil
 }
 
 func (s *Service) HandleRechargeCallback(event RechargeCallback) (RechargeConfirmationStatus, error) {

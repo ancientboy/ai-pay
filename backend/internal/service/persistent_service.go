@@ -2532,7 +2532,7 @@ func (s *PersistentService) GetRechargeAddress(agentDID string, currency string,
 		_ = s.store.DB.QueryRow(`SELECT hot_wallet FROM stablecoin_config WHERE currency = ?`, ccy).Scan(&configuredHotWallet)
 		generatedAddr, genErr := s.ensureWalletAccountAddress(agentDID, ccy, chainID, "platform")
 		if genErr != nil {
-			return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "platform wallet allocate failed"}
+			return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "platform wallet allocate failed: bridge customer missing required address data; complete hosted KYC first"}
 		}
 		if strings.TrimSpace(configuredHotWallet) != "" {
 			addr = strings.TrimSpace(configuredHotWallet)
