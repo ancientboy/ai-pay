@@ -26,14 +26,15 @@ func TestMVP8EndpointsFlow(t *testing.T) {
 
 	// 1) register
 	registerBody := mustJSON(t, map[string]any{"agentDid": agentDid, "didPubKey": pubBase64})
-	registerResp := performRequest(t, handler, http.MethodPost, "/agent/did/register", registerBody, nil)
+	authHeaders := map[string]string{"X-User-Id": "e2e-owner"}
+	registerResp := performRequest(t, handler, http.MethodPost, "/agent/did/register", registerBody, authHeaders)
 	if registerResp.Code != http.StatusOK {
 		t.Fatalf("register status=%d", registerResp.Code)
 	}
 
 	// 2) create account
 	createBody := mustJSON(t, map[string]any{"agentDid": agentDid})
-	createResp := performRequest(t, handler, http.MethodPost, "/account/create", createBody, nil)
+	createResp := performRequest(t, handler, http.MethodPost, "/account/create", createBody, authHeaders)
 	if createResp.Code != http.StatusOK {
 		t.Fatalf("create account status=%d", createResp.Code)
 	}
@@ -48,8 +49,8 @@ func TestMVP8EndpointsFlow(t *testing.T) {
 		"vaAccountId": vaID,
 		"amount":      "100",
 	})
-	rechargeHeaders := map[string]string{"Idempotency-Key": "rch-e2e-1"}
-	rechargeResp := performRequest(t, handler, http.MethodPost, "/fund/recharge", rechargeBody, rechargeHeaders)
+	rechargeAllHeaders := map[string]string{"Idempotency-Key": "rch-e2e-1", "X-User-Id": "e2e-owner"}
+	rechargeResp := performRequest(t, handler, http.MethodPost, "/fund/recharge", rechargeBody, rechargeAllHeaders)
 	if rechargeResp.Code != http.StatusOK {
 		t.Fatalf("recharge status=%d", rechargeResp.Code)
 	}
@@ -61,7 +62,7 @@ func TestMVP8EndpointsFlow(t *testing.T) {
 		"dailyLimit":  "200",
 		"whitelist":   []string{"m1"},
 	})
-	authResp := performRequest(t, handler, http.MethodPost, "/authorize/payment/set", authBody, nil)
+	authResp := performRequest(t, handler, http.MethodPost, "/authorize/payment/set", authBody, authHeaders)
 	if authResp.Code != http.StatusOK {
 		t.Fatalf("authorize status=%d", authResp.Code)
 	}
@@ -77,6 +78,7 @@ func TestMVP8EndpointsFlow(t *testing.T) {
 	payHeaders := map[string]string{
 		"Idempotency-Key":  "idem-e2e-1",
 		"X-Sign-Timestamp": now.Format(time.RFC3339),
+		"X-User-Id":        "e2e-owner",
 	}
 	payResp := performRequest(t, handler, http.MethodPost, "/payment/x402/pay", payBody, payHeaders)
 	if payResp.Code != http.StatusOK {
@@ -89,13 +91,13 @@ func TestMVP8EndpointsFlow(t *testing.T) {
 	}
 
 	// 6) status
-	statusResp := performRequest(t, handler, http.MethodGet, "/payment/status/query?transactionId="+txID, nil, nil)
+	statusResp := performRequest(t, handler, http.MethodGet, "/payment/status/query?transactionId="+txID, nil, authHeaders)
 	if statusResp.Code != http.StatusOK {
 		t.Fatalf("status query status=%d", statusResp.Code)
 	}
 
 	// 7) balance
-	balanceResp := performRequest(t, handler, http.MethodGet, "/account/balance/query?accountId="+vaID, nil, nil)
+	balanceResp := performRequest(t, handler, http.MethodGet, "/account/balance/query?accountId="+vaID, nil, authHeaders)
 	if balanceResp.Code != http.StatusOK {
 		t.Fatalf("balance query status=%d", balanceResp.Code)
 	}
@@ -109,7 +111,7 @@ func TestMVP8EndpointsFlow(t *testing.T) {
 	}
 
 	// 8) ledger
-	ledgerResp := performRequest(t, handler, http.MethodGet, "/account/ledger/query?accountId="+vaID, nil, nil)
+	ledgerResp := performRequest(t, handler, http.MethodGet, "/account/ledger/query?accountId="+vaID, nil, authHeaders)
 	if ledgerResp.Code != http.StatusOK {
 		t.Fatalf("ledger query status=%d", ledgerResp.Code)
 	}

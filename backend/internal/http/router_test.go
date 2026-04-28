@@ -63,6 +63,7 @@ func TestVerifyAgentSignatureEndpoint(t *testing.T) {
 		})),
 	)
 	okReq.Header.Set("Content-Type", "application/json")
+	okReq.Header.Set("X-User-Id", agent)
 	okResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(okResp, okReq)
 	if okResp.Code != http.StatusOK {
@@ -79,6 +80,7 @@ func TestVerifyAgentSignatureEndpoint(t *testing.T) {
 		})),
 	)
 	badReq.Header.Set("Content-Type", "application/json")
+	badReq.Header.Set("X-User-Id", agent)
 	badResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(badResp, badReq)
 	if badResp.Code != http.StatusBadRequest {
@@ -222,11 +224,13 @@ func TestAuthorizeSetValidatesFields(t *testing.T) {
 func TestAuthorizeUpdateAndFreeze(t *testing.T) {
 	svc := service.New()
 	agent := "did:gusd:agent:auth-update"
+	owner := "test-owner"
 	_ = svc.RegisterAgent(agent)
 	acc := svc.CreateAccount(agent)
 	_ = svc.Recharge(acc.VAAccountID, "100", "rch-auth-update-1")
 	_ = svc.SetAuthorizeRule(agent, "20", "100", []string{"m1"})
 	server := NewServerForTest(svc, time.Now, 100, 100)
+	server.bindAgentOwner(agent, owner)
 
 	updateBody := map[string]any{
 		"agentDid":    agent,
@@ -236,6 +240,7 @@ func TestAuthorizeUpdateAndFreeze(t *testing.T) {
 	}
 	updateReq := httptest.NewRequest(http.MethodPost, "/authorize/payment/update", bytes.NewReader(mustJSONAny(t, updateBody)))
 	updateReq.Header.Set("Content-Type", "application/json")
+	updateReq.Header.Set("X-User-Id", owner)
 	updateResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(updateResp, updateReq)
 	if updateResp.Code != http.StatusOK {
@@ -246,6 +251,7 @@ func TestAuthorizeUpdateAndFreeze(t *testing.T) {
 		"agentDid": agent,
 	})))
 	freezeReq.Header.Set("Content-Type", "application/json")
+	freezeReq.Header.Set("X-User-Id", owner)
 	freezeResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(freezeResp, freezeReq)
 	if freezeResp.Code != http.StatusOK {
@@ -267,6 +273,7 @@ func TestAuthorizeUpdateAndFreeze(t *testing.T) {
 	payReq.Header.Set("Content-Type", "application/json")
 	payReq.Header.Set("Idempotency-Key", idem)
 	payReq.Header.Set("X-Sign-Timestamp", ts)
+	payReq.Header.Set("X-User-Id", owner)
 	payResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(payResp, payReq)
 	if payResp.Code != http.StatusBadRequest {
@@ -277,6 +284,7 @@ func TestAuthorizeUpdateAndFreeze(t *testing.T) {
 		"agentDid": agent,
 	})))
 	activateReq.Header.Set("Content-Type", "application/json")
+	activateReq.Header.Set("X-User-Id", owner)
 	activateResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(activateResp, activateReq)
 	if activateResp.Code != http.StatusOK {
@@ -296,6 +304,7 @@ func TestAuthorizeUpdateAndFreeze(t *testing.T) {
 	payReq2.Header.Set("Content-Type", "application/json")
 	payReq2.Header.Set("Idempotency-Key", idem2)
 	payReq2.Header.Set("X-Sign-Timestamp", ts2)
+	payReq2.Header.Set("X-User-Id", owner)
 	payResp2 := httptest.NewRecorder()
 	server.Routes().ServeHTTP(payResp2, payReq2)
 	if payResp2.Code != http.StatusOK {
@@ -408,6 +417,7 @@ func TestAgentAndRechargeList(t *testing.T) {
 	}
 
 	rechargeReq := httptest.NewRequest(http.MethodGet, "/fund/recharge/list?accountId="+acc.VAAccountID, nil)
+	rechargeReq.Header.Set("X-User-Id", "did:gusd:agent:list1")
 	rechargeResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rechargeResp, rechargeReq)
 	if rechargeResp.Code != http.StatusOK {
@@ -429,6 +439,7 @@ func TestRechargeByVACardNo(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/fund/recharge", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "rch-http-card-1")
+	req.Header.Set("X-User-Id", "did:gusd:agent:card-http")
 	rr := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -436,6 +447,7 @@ func TestRechargeByVACardNo(t *testing.T) {
 	}
 
 	balanceReq := httptest.NewRequest(http.MethodGet, "/account/balance/query?accountId="+acc.VAAccountID, nil)
+	balanceReq.Header.Set("X-User-Id", "did:gusd:agent:card-http")
 	balanceResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(balanceResp, balanceReq)
 	if balanceResp.Code != http.StatusOK {
@@ -467,6 +479,7 @@ func TestPayChannelTimeoutReturnsPAY007AndRollsBack(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", idem)
 	req.Header.Set("X-Sign-Timestamp", ts)
+	req.Header.Set("X-User-Id", "did:gusd:agent:timeout")
 	rr := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
@@ -511,6 +524,7 @@ func TestStatusCallbackSettlesAsyncOrder(t *testing.T) {
 	payReq.Header.Set("Content-Type", "application/json")
 	payReq.Header.Set("Idempotency-Key", idem)
 	payReq.Header.Set("X-Sign-Timestamp", ts)
+	payReq.Header.Set("X-User-Id", agent)
 	payResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(payResp, payReq)
 	if payResp.Code != http.StatusOK {
@@ -565,6 +579,7 @@ func TestUnfreezeEndpoint(t *testing.T) {
 	payReq.Header.Set("Content-Type", "application/json")
 	payReq.Header.Set("Idempotency-Key", idem)
 	payReq.Header.Set("X-Sign-Timestamp", ts)
+	payReq.Header.Set("X-User-Id", agent)
 	payResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(payResp, payReq)
 	if payResp.Code != http.StatusOK {
@@ -602,6 +617,7 @@ func TestRefundEndpoint(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Idempotency-Key", idem)
 		req.Header.Set("X-Sign-Timestamp", ts)
+		req.Header.Set("X-User-Id", "did:gusd:agent:test_http")
 		resp := httptest.NewRecorder()
 		server.Routes().ServeHTTP(resp, req)
 		var payPayload map[string]any
@@ -627,6 +643,7 @@ func TestVAInterestAndTopupConfigEndpoints(t *testing.T) {
 	server := NewServerForTest(svc, time.Now, 100, 100)
 
 	interestReq := httptest.NewRequest(http.MethodGet, "/account/interest/query?accountId="+acc.VAAccountID, nil)
+	interestReq.Header.Set("X-User-Id", "did:gusd:agent:week2-interest")
 	interestResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(interestResp, interestReq)
 	if interestResp.Code != http.StatusOK {
@@ -641,6 +658,7 @@ func TestVAInterestAndTopupConfigEndpoints(t *testing.T) {
 	}
 	setReq := httptest.NewRequest(http.MethodPost, "/account/va/topup/config", bytes.NewReader(mustJSONAny(t, setBody)))
 	setReq.Header.Set("Content-Type", "application/json")
+	setReq.Header.Set("X-User-Id", "did:gusd:agent:week2-interest")
 	setResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(setResp, setReq)
 	if setResp.Code != http.StatusOK {
@@ -648,6 +666,7 @@ func TestVAInterestAndTopupConfigEndpoints(t *testing.T) {
 	}
 
 	getReq := httptest.NewRequest(http.MethodGet, "/account/va/topup/config?accountId="+acc.VAAccountID, nil)
+	getReq.Header.Set("X-User-Id", "did:gusd:agent:week2-interest")
 	getResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(getResp, getReq)
 	if getResp.Code != http.StatusOK {
@@ -672,6 +691,7 @@ func TestVATransferEndpointWithIdempotency(t *testing.T) {
 	req1 := httptest.NewRequest(http.MethodPost, "/account/va/transfer", bytes.NewReader(mustJSONMap(t, transferBody)))
 	req1.Header.Set("Content-Type", "application/json")
 	req1.Header.Set("Idempotency-Key", "idem-http-week2-transfer-1")
+	req1.Header.Set("X-User-Id", "did:gusd:agent:week2-transfer-a")
 	resp1 := httptest.NewRecorder()
 	server.Routes().ServeHTTP(resp1, req1)
 	if resp1.Code != http.StatusOK {
@@ -681,6 +701,7 @@ func TestVATransferEndpointWithIdempotency(t *testing.T) {
 	req2 := httptest.NewRequest(http.MethodPost, "/account/va/transfer", bytes.NewReader(mustJSONMap(t, transferBody)))
 	req2.Header.Set("Content-Type", "application/json")
 	req2.Header.Set("Idempotency-Key", "idem-http-week2-transfer-1")
+	req2.Header.Set("X-User-Id", "did:gusd:agent:week2-transfer-a")
 	resp2 := httptest.NewRecorder()
 	server.Routes().ServeHTTP(resp2, req2)
 	if resp2.Code != http.StatusOK {
@@ -697,6 +718,7 @@ func TestVATransferEndpointWithIdempotency(t *testing.T) {
 	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/account/va/transfer/list?accountId="+accA.VAAccountID+"&status=SETTLED&limit=10&offset=0", nil)
+	listReq.Header.Set("X-User-Id", "did:gusd:agent:week2-transfer-a")
 	listResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(listResp, listReq)
 	if listResp.Code != http.StatusOK {
@@ -721,6 +743,7 @@ func TestVATransferEndpointWithIdempotency(t *testing.T) {
 		nil,
 	)
 	timeResp := httptest.NewRecorder()
+	timeReq.Header.Set("X-User-Id", "did:gusd:agent:week2-transfer-a")
 	server.Routes().ServeHTTP(timeResp, timeReq)
 	if timeResp.Code != http.StatusOK {
 		t.Fatalf("va transfer list with time window expected 200 got %d", timeResp.Code)
@@ -737,6 +760,7 @@ func TestVATransferEndpointWithIdempotency(t *testing.T) {
 		nil,
 	)
 	invalidTimeResp := httptest.NewRecorder()
+	invalidTimeReq.Header.Set("X-User-Id", "did:gusd:agent:week2-transfer-a")
 	server.Routes().ServeHTTP(invalidTimeResp, invalidTimeReq)
 	if invalidTimeResp.Code != http.StatusBadRequest {
 		t.Fatalf("invalid startTime expected 400 got %d", invalidTimeResp.Code)
@@ -992,6 +1016,7 @@ func TestFundsEndpointsRespectRoleTokens(t *testing.T) {
 
 	readReq := httptest.NewRequest(http.MethodGet, "/account/va/transfer/list?accountId="+accA.VAAccountID, nil)
 	readReq.Header.Set("Authorization", "Bearer readonly-token")
+	readReq.Header.Set("X-User-Role", "readonly")
 	readResp := httptest.NewRecorder()
 	handler.ServeHTTP(readResp, readReq)
 	if readResp.Code != http.StatusOK {
@@ -1007,6 +1032,7 @@ func TestFundsEndpointsRespectRoleTokens(t *testing.T) {
 	adminWriteReq.Header.Set("Content-Type", "application/json")
 	adminWriteReq.Header.Set("Idempotency-Key", "idem-role-token-admin")
 	adminWriteReq.Header.Set("Authorization", "Bearer admin-token")
+	adminWriteReq.Header.Set("X-User-Role", "admin")
 	adminWriteResp := httptest.NewRecorder()
 	handler.ServeHTTP(adminWriteResp, adminWriteReq)
 	if adminWriteResp.Code != http.StatusOK {
@@ -1017,6 +1043,7 @@ func TestFundsEndpointsRespectRoleTokens(t *testing.T) {
 	writeReq.Header.Set("Content-Type", "application/json")
 	writeReq.Header.Set("Idempotency-Key", "idem-role-token-1")
 	writeReq.Header.Set("Authorization", "Bearer readonly-token")
+	writeReq.Header.Set("X-User-Role", "readonly")
 	writeResp := httptest.NewRecorder()
 	handler.ServeHTTP(writeResp, writeReq)
 	if writeResp.Code != http.StatusUnauthorized {
@@ -1025,6 +1052,7 @@ func TestFundsEndpointsRespectRoleTokens(t *testing.T) {
 
 	auditReq := httptest.NewRequest(http.MethodGet, "/developer/audit-logs?action=va_transfer&limit=10&offset=0", nil)
 	auditReq.Header.Set("Authorization", "Bearer readonly-token")
+	auditReq.Header.Set("X-User-Role", "readonly")
 	auditResp := httptest.NewRecorder()
 	handler.ServeHTTP(auditResp, auditReq)
 	if auditResp.Code != http.StatusOK {
@@ -1035,6 +1063,40 @@ func TestFundsEndpointsRespectRoleTokens(t *testing.T) {
 	items, ok := payload["data"].([]any)
 	if !ok || len(items) == 0 {
 		t.Fatalf("expected audit logs after transfer")
+	}
+}
+
+func TestRoleHeaderAuthorization(t *testing.T) {
+	svc := service.New()
+	server := NewServerForTest(svc, time.Now, 100, 100)
+	server.SetAdminBearerToken("admin-token")
+	server.SetReadonlyBearerToken("readonly-token")
+	handler := server.Routes()
+
+	readReq := httptest.NewRequest(http.MethodGet, "/developer/api-keys", nil)
+	readReq.Header.Set("X-User-Role", "readonly")
+	readResp := httptest.NewRecorder()
+	handler.ServeHTTP(readResp, readReq)
+	if readResp.Code != http.StatusOK {
+		t.Fatalf("readonly role header should access read endpoint, got %d", readResp.Code)
+	}
+
+	writeReq := httptest.NewRequest(http.MethodPost, "/developer/api-keys", bytes.NewReader(mustJSONMap(t, map[string]string{"name": "k1"})))
+	writeReq.Header.Set("Content-Type", "application/json")
+	writeReq.Header.Set("X-User-Role", "readonly")
+	writeResp := httptest.NewRecorder()
+	handler.ServeHTTP(writeResp, writeReq)
+	if writeResp.Code != http.StatusUnauthorized {
+		t.Fatalf("readonly role header should be blocked on write endpoint, got %d", writeResp.Code)
+	}
+
+	adminReq := httptest.NewRequest(http.MethodPost, "/developer/api-keys", bytes.NewReader(mustJSONMap(t, map[string]string{"name": "k2"})))
+	adminReq.Header.Set("Content-Type", "application/json")
+	adminReq.Header.Set("X-User-Role", "admin")
+	adminResp := httptest.NewRecorder()
+	handler.ServeHTTP(adminResp, adminReq)
+	if adminResp.Code != http.StatusOK {
+		t.Fatalf("admin role header should access write endpoint, got %d", adminResp.Code)
 	}
 }
 
@@ -1384,6 +1446,57 @@ func TestM6DebitPreviewRejectsBadSignature(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 bad signature got %d body=%s", rr.Code, rr.Body.String())
 	}
+}
+
+func TestAgentOwnershipHeadersRequiredAndEnforced(t *testing.T) {
+	svc := service.New()
+	server := NewServerForTest(svc, time.Now, 100, 100)
+
+	registerBody := mustJSONAny(t, map[string]string{
+		"agentDid":  "did:gusd:agent:owner1",
+		"didPubKey": validEd25519PubKeyBase64(t),
+	})
+	reqOwner := httptest.NewRequest(http.MethodPost, "/agent/did/register", bytes.NewReader(registerBody))
+	reqOwner.Header.Set("Content-Type", "application/json")
+	reqOwner.Header.Set("X-User-Id", "user_a")
+	rrOwner := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rrOwner, reqOwner)
+	if rrOwner.Code != http.StatusOK {
+		t.Fatalf("expected 200 register with owner, got %d body=%s", rrOwner.Code, rrOwner.Body.String())
+	}
+
+	setRuleBody := mustJSONAny(t, map[string]any{
+		"agentDid":    "did:gusd:agent:owner1",
+		"singleLimit": "10",
+		"dailyLimit":  "100",
+		"whitelist":   []string{"m1"},
+	})
+	reqForbidden := httptest.NewRequest(http.MethodPost, "/authorize/payment/set", bytes.NewReader(setRuleBody))
+	reqForbidden.Header.Set("Content-Type", "application/json")
+	reqForbidden.Header.Set("X-User-Id", "user_b")
+	rrForbidden := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rrForbidden, reqForbidden)
+	if rrForbidden.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 when non-owner sets rule, got %d", rrForbidden.Code)
+	}
+
+	reqAllowed := httptest.NewRequest(http.MethodPost, "/authorize/payment/set", bytes.NewReader(setRuleBody))
+	reqAllowed.Header.Set("Content-Type", "application/json")
+	reqAllowed.Header.Set("X-User-Id", "user_a")
+	rrAllowed := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rrAllowed, reqAllowed)
+	if rrAllowed.Code != http.StatusOK {
+		t.Fatalf("expected 200 when owner sets rule, got %d body=%s", rrAllowed.Code, rrAllowed.Body.String())
+	}
+}
+
+func validEd25519PubKeyBase64(t *testing.T) string {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key failed: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(pub)
 }
 
 func performPay(server *Server, idem string) int {

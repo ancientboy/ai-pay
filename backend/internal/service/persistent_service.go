@@ -31,6 +31,287 @@ func (s *PersistentService) RegisterAgent(did string) Agent {
 	return Agent{DID: did}
 }
 
+func (s *PersistentService) BindAgentOwner(agentDID string, userID string) error {
+	if strings.TrimSpace(agentDID) == "" || strings.TrimSpace(userID) == "" {
+		return nil
+	}
+	_, err := s.store.DB.Exec(`
+INSERT INTO agent_owner (agent_did, user_id, created_at, updated_at)
+VALUES (?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())
+ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), updated_at = UTC_TIMESTAMP()`,
+		strings.TrimSpace(agentDID), strings.TrimSpace(userID))
+	return err
+}
+
+func (s *PersistentService) AgentOwner(agentDID string) (string, bool, error) {
+	agent := strings.TrimSpace(agentDID)
+	if agent == "" {
+		return "", false, nil
+	}
+	var owner string
+	err := s.store.DB.QueryRow(`SELECT user_id FROM agent_owner WHERE agent_did = ? LIMIT 1`, agent).Scan(&owner)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return strings.TrimSpace(owner), true, nil
+}
+
+func (s *PersistentService) ListSubscriptionPlans() []SubscriptionPlan {
+	rows, err := s.store.DB.Query(`
+SELECT plan_id, name, amount_monthly, currency, features_json, active
+FROM subscription_plan
+WHERE active = 1
+ORDER BY amount_monthly ASC`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]SubscriptionPlan, 0, 8)
+	for rows.Next() {
+		var item SubscriptionPlan
+		var planID string
+		var planName string
+		var amount float64
+		var currency string
+		var featuresRaw string
+		if err := rows.Scan(&planID, &planName, &amount, &currency, &featuresRaw, new(int)); err != nil {
+			continue
+		}
+		item.PlanCode = planID
+		item.PlanName = planName
+		item.MonthlyPrice = fmt.Sprintf("%.2f", amount)
+		_ = currency
+		_ = featuresRaw
+		out = append(out, item)
+	}
+	return out
+}
+
+func (s *PersistentService) GetUserSubscription(userID string) (UserSubscription, error) {
+	user := strings.TrimSpace(userID)
+	if user == "" {
+		return UserSubscription{}, &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	var item UserSubscription
+	var planID string
+	err := s.store.DB.QueryRow(`
+SELECT user_id, plan_id, status, amount_monthly, currency, started_at, current_period_start, current_period_end, auto_renew, cancelled_at, expires_at, updated_at
+FROM user_subscription
+WHERE user_id = ?
+LIMIT 1`, user).Scan(
+		&item.UserID,
+		&planID,
+		&item.Status,
+		new(float64),
+		new(string),
+		&item.CurrentFrom,
+		&item.CurrentFrom,
+		&item.CurrentTo,
+		&item.AutoRenew,
+		new(sql.NullTime),
+		new(sql.NullTime),
+		&item.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return UserSubscription{}, &APIError{Code: "PAY-010", Message: "subscription not found"}
+	}
+	if err != nil {
+		return UserSubscription{}, err
+	}
+	item.PlanCode = planID
+	return item, nil
+}
+
+func (s *PersistentService) ChangeUserSubscription(userID string, planCode string, autoRenew bool) (UserSubscription, error) {
+	user := strings.TrimSpace(userID)
+	plan := strings.TrimSpace(planCode)
+	if user == "" || plan == "" {
+		return UserSubscription{}, &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	var amount float64
+	var currency string
+	if err := s.store.DB.QueryRow(`
+SELECT amount_monthly, currency
+FROM subscription_plan
+WHERE plan_id = ? AND active = 1
+LIMIT 1`, plan).Scan(&amount, &currency); err != nil {
+		if err == sql.ErrNoRows {
+			return UserSubscription{}, &APIError{Code: "PAY-010", Message: "plan not found"}
+		}
+		return UserSubscription{}, err
+	}
+	tx, err := s.store.DB.BeginTx(context.Background(), nil)
+	if err != nil {
+		return UserSubscription{}, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
+INSERT INTO user_subscription (
+  user_id, plan_id, status, amount_monthly, currency, started_at, current_period_start, current_period_end, auto_renew, cancelled_at, expires_at, updated_at
+) VALUES (
+  ?, ?, 'ACTIVE', ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 MONTH), ?, NULL, NULL, UTC_TIMESTAMP()
+)
+ON DUPLICATE KEY UPDATE
+  plan_id = VALUES(plan_id),
+  status = 'ACTIVE',
+  amount_monthly = VALUES(amount_monthly),
+  currency = VALUES(currency),
+  current_period_start = UTC_TIMESTAMP(),
+  current_period_end = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 MONTH),
+  auto_renew = VALUES(auto_renew),
+  cancelled_at = NULL,
+  expires_at = NULL,
+  updated_at = UTC_TIMESTAMP()`,
+		user, plan, amount, currency, autoRenew); err != nil {
+		return UserSubscription{}, err
+	}
+	invoiceID := fmt.Sprintf("inv_%d", time.Now().UnixNano())
+	if _, err := tx.Exec(`
+INSERT INTO subscription_invoice (invoice_id, user_id, plan_id, amount, currency, status, period_start, period_end, due_at, paid_at, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, 'PAID', UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 MONTH), UTC_TIMESTAMP(), UTC_TIMESTAMP(), UTC_TIMESTAMP(), UTC_TIMESTAMP())`,
+		invoiceID, user, plan, amount, currency); err != nil {
+		return UserSubscription{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return UserSubscription{}, err
+	}
+	item, err := s.GetUserSubscription(user)
+	return item, err
+}
+
+func (s *PersistentService) ListUserInvoices(userID string, limit int) []BillingInvoice {
+	user := strings.TrimSpace(userID)
+	if user == "" {
+		return nil
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	rows, err := s.store.DB.Query(`
+SELECT invoice_id, user_id, plan_id, amount, currency, status, period_start, period_end, due_at, paid_at, created_at, updated_at
+FROM subscription_invoice
+WHERE user_id = ?
+ORDER BY created_at DESC
+LIMIT ?`, user, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]BillingInvoice, 0, limit)
+	for rows.Next() {
+		var item BillingInvoice
+		var planID string
+		var amount float64
+		var paidAt sql.NullTime
+		if err := rows.Scan(
+			&item.InvoiceID,
+			&item.UserID,
+			&planID,
+			&amount,
+			new(string),
+			&item.Status,
+			&item.PeriodFrom,
+			&item.PeriodTo,
+			new(time.Time),
+			&paidAt,
+			&item.CreatedAt,
+			new(time.Time),
+		); err != nil {
+			continue
+		}
+		item.PlanCode = planID
+		item.Amount = fmt.Sprintf("%.2f", amount)
+		_ = paidAt
+		out = append(out, item)
+	}
+	return out
+}
+
+func (s *PersistentService) AdminListSubscriptions(limit int, offset int) []UserSubscription {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := s.store.DB.Query(`
+SELECT user_id, plan_id, status, amount_monthly, currency, started_at, current_period_start, current_period_end, auto_renew, cancelled_at, expires_at, updated_at
+FROM user_subscription
+ORDER BY updated_at DESC
+LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]UserSubscription, 0, limit)
+	for rows.Next() {
+		var item UserSubscription
+		var amount float64
+		var currency string
+		var currentFrom sql.NullTime
+		var currentStart sql.NullTime
+		var currentEnd sql.NullTime
+		var cancelledAt sql.NullTime
+		var expiresAt sql.NullTime
+		if err := rows.Scan(
+			&item.UserID,
+			&item.PlanCode,
+			&item.Status,
+			&amount,
+			&currency,
+			&currentFrom,
+			&currentStart,
+			&currentEnd,
+			&item.AutoRenew,
+			&cancelledAt,
+			&expiresAt,
+			&item.UpdatedAt,
+		); err != nil {
+			continue
+		}
+		_ = amount
+		_ = currency
+		if currentFrom.Valid {
+			item.CurrentFrom = currentFrom.Time
+		}
+		if currentStart.Valid {
+			item.CurrentFrom = currentStart.Time
+		}
+		if currentEnd.Valid {
+			item.CurrentTo = currentEnd.Time
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func (s *PersistentService) AdminUpdateSubscription(userID string, planCode string, status string, autoRenew bool) (UserSubscription, error) {
+	plan := strings.TrimSpace(planCode)
+	st := strings.ToUpper(strings.TrimSpace(status))
+	switch st {
+	case "", "ACTIVE":
+		return s.ChangeUserSubscription(userID, plan, autoRenew)
+	case "CANCELLED":
+		res, err := s.store.DB.Exec(`
+UPDATE user_subscription
+SET status = 'CANCELLED', auto_renew = 0, cancelled_at = UTC_TIMESTAMP(), expires_at = current_period_end, updated_at = UTC_TIMESTAMP()
+WHERE user_id = ?`, strings.TrimSpace(userID))
+		if err != nil {
+			return UserSubscription{}, err
+		}
+		affected, _ := res.RowsAffected()
+		if affected == 0 {
+			return UserSubscription{}, &APIError{Code: "PAY-010", Message: "subscription not found"}
+		}
+		return s.GetUserSubscription(userID)
+	default:
+		return UserSubscription{}, &APIError{Code: "PAY-010", Message: "invalid status"}
+	}
+}
+
 func (s *PersistentService) SetAgentPublicKey(did string, pubKey string) error {
 	if _, err := s.store.DB.Exec(`UPDATE agent_did SET did_pub_key = ? WHERE did = ?`, pubKey, did); err != nil {
 		return err
