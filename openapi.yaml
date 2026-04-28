@@ -6,6 +6,7 @@ info:
     OpenAPI contract for backend endpoints.
     Milestone M6 (`/fund/transfer`, ...) requires `FEATURE_M6_FUNDS=true`.
     Milestone M7 (`/payment/card/*`, `/risk/*`) requires `FEATURE_M7_CARD_RISK=true`.
+    Milestone M8 (`/wallet/*`, `/authorize/session/*`, `/payment/sign/*`) requires `FEATURE_M8_SELF_HOSTED=true`.
 servers:
   - url: http://127.0.0.1:8080
     description: Local backend server
@@ -18,6 +19,7 @@ tags:
   - name: authorize
   - name: payment
   - name: risk
+  - name: custody
   - name: metrics
   - name: developer
 paths:
@@ -763,6 +765,173 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: M7 disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /wallet/bind:
+    post:
+      tags: [custody]
+      summary: Bind external wallet address for self-custody flows (M8)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/SignTimestamp"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WalletBindRequest"
+      responses:
+        "200":
+          description: Bound
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: M8 disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /wallet/unbind:
+    post:
+      tags: [custody]
+      summary: Unbind wallet (M8)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/SignTimestamp"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WalletUnbindRequest"
+      responses:
+        "200":
+          description: Unbound
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: M8 disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /authorize/session/create:
+    post:
+      tags: [authorize]
+      summary: Create time-bounded authorization session (M8)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/SignTimestamp"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionCreateRequest"
+      responses:
+        "200":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSessionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: M8 disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /authorize/session/revoke:
+    post:
+      tags: [authorize]
+      summary: Revoke authorization session (M8)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/SignTimestamp"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionRevokeRequest"
+      responses:
+        "200":
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: M8 disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /payment/sign/request:
+    post:
+      tags: [payment]
+      summary: Create pending payment signature request (M8)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/SignTimestamp"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaymentSignRequestBody"
+      responses:
+        "200":
+          description: Sign request created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentSignRequestResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: M8 disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /payment/sign/submit:
+    post:
+      tags: [payment]
+      summary: Submit signed payment for a prior sign request (M8)
+      parameters:
+        - $ref: "#/components/parameters/SignTimestamp"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaymentSignSubmitRequest"
+      responses:
+        "200":
+          description: Payment executed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PayResponseWrapper"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: M8 disabled
           content:
             application/json:
               schema:
@@ -2336,3 +2505,150 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/RiskAuditEntry"
+    WalletBindRequest:
+      type: object
+      required: [agentDid, walletAddress, signature]
+      properties:
+        agentDid:
+          type: string
+        walletAddress:
+          type: string
+        label:
+          type: string
+        signature:
+          type: string
+          description: Ed25519 over UTF-8 wallet_bind|agentDid|walletAddress|Idempotency-Key|X-Sign-Timestamp
+    WalletUnbindRequest:
+      type: object
+      required: [agentDid, signature]
+      properties:
+        agentDid:
+          type: string
+        signature:
+          type: string
+          description: Ed25519 over UTF-8 wallet_unbind|agentDid|Idempotency-Key|X-Sign-Timestamp
+    SessionCreateRequest:
+      type: object
+      required: [agentDid, signature]
+      properties:
+        agentDid:
+          type: string
+        ttlMinutes:
+          type: integer
+          minimum: 1
+          maximum: 1440
+        signature:
+          type: string
+          description: Ed25519 over UTF-8 session_create|agentDid|Idempotency-Key|X-Sign-Timestamp
+    SessionRevokeRequest:
+      type: object
+      required: [agentDid, sessionId, signature]
+      properties:
+        agentDid:
+          type: string
+        sessionId:
+          type: string
+        signature:
+          type: string
+          description: Ed25519 over UTF-8 session_revoke|agentDid|sessionId|Idempotency-Key|X-Sign-Timestamp
+    AuthSession:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        agentDid:
+          type: string
+        status:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+    AuthSessionResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          $ref: "#/components/schemas/AuthSession"
+    PaymentSignRequestBody:
+      type: object
+      required: [agentDid, merchantId, amount, signature]
+      properties:
+        agentDid:
+          type: string
+        merchantId:
+          type: string
+        amount:
+          type: string
+        sessionId:
+          type: string
+        signature:
+          type: string
+          description: >
+            Ed25519 over UTF-8 sign_request|agentDid|merchantId|amount|sessionId|Idempotency-Key|X-Sign-Timestamp
+            (empty sessionId if omitted)
+    PaymentSignRequestRecord:
+      type: object
+      properties:
+        signId:
+          type: string
+        agentDid:
+          type: string
+        merchantId:
+          type: string
+        amount:
+          type: string
+        sessionId:
+          type: string
+        status:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+    PaymentSignRequestResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          $ref: "#/components/schemas/PaymentSignRequestRecord"
+    PaymentSignSubmitRequest:
+      type: object
+      required: [signId, payerDid, merchantId, amount, idempotencyKey, signature]
+      properties:
+        signId:
+          type: string
+        payerDid:
+          type: string
+        merchantId:
+          type: string
+        amount:
+          type: string
+        idempotencyKey:
+          type: string
+        signature:
+          type: string
+          description: Same payload as POST /payment/x402/pay (payerDid|merchantId|amount|idempotencyKey|timestamp)
+    PayInnerData:
+      type: object
+      properties:
+        transactionId:
+          type: string
+        status:
+          type: string
+    PayResponseWrapper:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          $ref: "#/components/schemas/PayInnerData"

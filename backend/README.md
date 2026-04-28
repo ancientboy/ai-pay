@@ -27,33 +27,34 @@ Go 实现的 MVP 后端，覆盖文档中第一阶段核心接口：
 - `GET /account/va/transfer/list`
 - `GET /metrics/overview`
 
-- 可选环境变量 `FEATURE_M7_CARD_RISK`：设为 `1` 或 `true` 时开启里程碑 M7 虚拟卡与风控接口；未开启时返回 **404**（`PAY-012`）。
+**可选特性开关（未开启时对应路由返回 404）：**
 
-## 里程碑 M7（沙箱虚拟卡 + 规则风控 + 当事人 KYC 占位）
+- `FEATURE_M6_FUNDS`：`PAY-011`
+- `FEATURE_M7_CARD_RISK`：`PAY-012`
+- `FEATURE_M8_SELF_HOSTED`：`PAY-013`
 
-在 `FEATURE_M7_CARD_RISK=true` 时额外提供（**沙箱模拟**，不接真实卡清算）：
-
-- `POST /payment/card/apply`：为指定 `agentDid` + `vaAccountId` 开通虚拟卡额度（管理员）
-- `POST /payment/card/pay`：DID 签名卡支付（从 VA 余额扣款，复用 P2 黑白名单 + 金额阈值）
-- `PUT /payment/card/manage`：冻结/解冻/调额（管理员）
-- `POST /risk/transaction/check`：规则引擎交易试拦（只读令牌或管理员）
-- `POST /risk/kyc/verify`：对 **资金当事方**（以 `agentDid` 标识的持币/付款主体）做沙箱 KYC 状态落库；**不是对 AI 模型做 KYC**，生产应接入持牌身份服务商
-- `GET /risk/audit/query`：风控侧审计流水（`risk_audit_entry`）
-
-持久化需执行迁移 `013_add_m7_card_kyc_audit.sql`。
-
-## 安全基线（M2）
+## 里程碑 M6（资金与支付扩展）
 
 在 `FEATURE_M6_FUNDS=true` 时额外提供：
 
-- `POST /fund/transfer`：VA 账户间转账（管理员，需 `Idempotency-Key`）
-- `POST /fund/withdraw`：提现申请（立即扣减余额，法币出金异步；管理员）
-- `POST /payment/debit/preview`：支付前试算（DID 签名，与支付相同时间窗与 `Idempotency-Key`）
-- `POST /payment/x402/check`：查询 x402 支付结算态
-- `POST /payment/x402/transfer`：参考已结算支付发起链上出款（管理员，金额须与参考订单一致）
-- `POST /payment/refund/apply`：调用方 DID 签名的退款申请（与管理员 `POST /payment/refund` 二选一场景）
+- `POST /fund/transfer`、`POST /fund/withdraw`
+- `POST /payment/debit/preview`、`POST /payment/x402/check`、`POST /payment/x402/transfer`、`POST /payment/refund/apply`
 
-持久化需执行迁移 `012_add_m6_fund_and_preview.sql`。
+持久化需迁移 `012_add_m6_fund_and_preview.sql`。
+
+## 里程碑 M7（沙箱虚拟卡 + 规则风控 + 当事人 KYC 占位）
+
+在 `FEATURE_M7_CARD_RISK=true` 时额外提供（**沙箱**，不接真实清算）：`POST /payment/card/*`、`POST /risk/*`、`GET /risk/audit/query`。持久化需 `013_add_m7_card_kyc_audit.sql`。
+
+## 里程碑 M8（自托管钱包 + 授权会话 + 支付签名两步）
+
+在 `FEATURE_M8_SELF_HOSTED=true` 时额外提供：
+
+- `POST /wallet/bind`、`POST /wallet/unbind`（链上地址绑定占位）
+- `POST /authorize/session/create`、`POST /authorize/session/revoke`
+- `POST /payment/sign/request`（返回 `signId`）、`POST /payment/sign/submit`（复用与 `x402/pay` 相同的签名载荷）
+
+持久化需迁移 `014_add_m8_self_host.sql`。
 
 ## 安全基线（M2）
 

@@ -294,6 +294,11 @@ type Service struct {
 	kycByAgent     map[string]PartyKYCStatus
 	riskAuditEntries []RiskAuditEntry
 	riskAuditSeq     int64
+	walletBindings   map[string]WalletBinding
+	m8sessions       map[string]m8session
+	m8signReqs       map[string]m8signReq
+	m8sessCreateIdem map[string]string
+	m8signReqIdem    map[string]string
 }
 
 type holdRecord struct {
@@ -360,6 +365,13 @@ type PaymentService interface {
 	RiskTransactionCheck(agentDID string, merchantID string, amount string, transactionID string) (map[string]any, error)
 	RiskKYCVerify(agentDID string, documentReference string, idemKey string) (PartyKYCStatus, error)
 	RiskAuditQuery(agentDID string, merchantID string, limit int, offset int) []RiskAuditEntry
+	// M8 self-custody + session + sign workflow (FEATURE_M8_SELF_HOSTED).
+	BindWallet(agentDID string, walletAddress string, label string) error
+	UnbindWallet(agentDID string) error
+	CreateAuthSession(agentDID string, ttlMinutes int, idemKey string) (AuthSession, error)
+	RevokeAuthSession(agentDID string, sessionID string, idemKey string) error
+	RequestPaymentSign(agentDID string, merchantID string, amount string, sessionID string, idemKey string) (PaymentSignRequestRecord, error)
+	SubmitSignedPayment(signID string, req PayRequest) (PayResponse, *APIError)
 }
 
 func New() *Service {
@@ -396,6 +408,11 @@ func New() *Service {
 		debitPreviews:    map[string]DebitPreview{},
 		cardPayIdem:      map[string]string{},
 		kycByAgent:       map[string]PartyKYCStatus{},
+		walletBindings:   map[string]WalletBinding{},
+		m8sessions:       map[string]m8session{},
+		m8signReqs:       map[string]m8signReq{},
+		m8sessCreateIdem: map[string]string{},
+		m8signReqIdem:    map[string]string{},
 	}
 }
 

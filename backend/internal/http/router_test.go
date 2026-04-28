@@ -1302,6 +1302,23 @@ func TestM6EndpointsDisabledWithoutFlag(t *testing.T) {
 	}
 }
 
+func TestM8EndpointsDisabledWithoutFlag(t *testing.T) {
+	t.Setenv("FEATURE_M8_SELF_HOSTED", "")
+	svc := service.New()
+	server := NewServerForTest(svc, time.Now, 100, 100)
+	req := httptest.NewRequest(http.MethodPost, "/wallet/bind", bytes.NewReader(mustJSONAny(t, map[string]string{
+		"agentDid": "a", "walletAddress": "0xabc", "signature": "x",
+	})))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "idem-m8")
+	req.Header.Set("X-Sign-Timestamp", time.Now().UTC().Format(time.RFC3339))
+	rr := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when M8 disabled, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestM6FundTransferRequiresAdminAuth(t *testing.T) {
 	t.Setenv("FEATURE_M6_FUNDS", "1")
 	svc := service.New()
