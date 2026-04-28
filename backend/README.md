@@ -27,6 +27,21 @@ Go 实现的 MVP 后端，覆盖文档中第一阶段核心接口：
 - `GET /account/va/transfer/list`
 - `GET /metrics/overview`
 
+- 可选环境变量 `FEATURE_M6_FUNDS`：设为 `1` 或 `true` 时开启里程碑 M6 资金与支付扩展接口；未开启时这些路由返回 `404`（`PAY-011`），便于快速下线。
+
+## 里程碑 M6（资金与支付扩展，特性开关）
+
+在 `FEATURE_M6_FUNDS=true` 时额外提供：
+
+- `POST /fund/transfer`：VA 账户间转账（管理员，需 `Idempotency-Key`）
+- `POST /fund/withdraw`：提现申请（立即扣减余额，法币出金异步；管理员）
+- `POST /payment/debit/preview`：支付前试算（DID 签名，与支付相同时间窗与 `Idempotency-Key`）
+- `POST /payment/x402/check`：查询 x402 支付结算态
+- `POST /payment/x402/transfer`：参考已结算支付发起链上出款（管理员，金额须与参考订单一致）
+- `POST /payment/refund/apply`：调用方 DID 签名的退款申请（与管理员 `POST /payment/refund` 二选一场景）
+
+持久化需执行迁移 `012_add_m6_fund_and_preview.sql`。
+
 ## 安全基线（M2）
 
 - 请求体字段做基础校验（必填、正数金额、白名单非空）

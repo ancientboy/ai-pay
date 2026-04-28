@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -176,6 +177,55 @@ type ChannelRoute struct {
 	UpdatedAt  time.Time `json:"updatedAt"`
 }
 
+// FundTransferRecord documents account-to-account transfers exposed at POST /fund/transfer (M6).
+type FundTransferRecord struct {
+	TransferID     string    `json:"transferId"`
+	FromAccountID  string    `json:"fromAccountId"`
+	ToAccountID    string    `json:"toAccountId"`
+	Amount         float64   `json:"amount"`
+	Status         string    `json:"status"`
+	IdempotencyKey string    `json:"idempotencyKey"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
+// WithdrawRecord is a fiat-rail withdrawal request placeholder (balance debited immediately in MVP).
+type WithdrawRecord struct {
+	WithdrawID      string    `json:"withdrawId"`
+	VAAccountID     string    `json:"vaAccountId"`
+	Amount          float64   `json:"amount"`
+	Rail            string    `json:"rail"`
+	DestinationHint string    `json:"destinationHint"`
+	Status          string    `json:"status"`
+	IdempotencyKey  string    `json:"idempotencyKey"`
+	CreatedAt       time.Time `json:"createdAt"`
+}
+
+// DebitPreview is a fee/FX snapshot for POST /payment/debit/preview (M6).
+type DebitPreview struct {
+	PreviewID     string    `json:"previewId"`
+	AgentDID      string    `json:"agentDid"`
+	MerchantID    string    `json:"merchantId"`
+	Amount        float64   `json:"amount"`
+	FeeRate       float64   `json:"feeRate"`
+	FeeAmount     float64   `json:"feeAmount"`
+	NetToMerchant float64   `json:"netToMerchant"`
+	FxRate        float64   `json:"fxRate"`
+	ExpiresAt     time.Time `json:"expiresAt"`
+	CreatedAt     time.Time `json:"createdAt"`
+}
+
+// X402OutboundTransfer is an on-chain style transfer triggered after a reference x402 payment (M6).
+type X402OutboundTransfer struct {
+	TransferID             string    `json:"transferId"`
+	VAAccountID            string    `json:"vaAccountId"`
+	ToAddress              string    `json:"toAddress"`
+	Amount                 float64   `json:"amount"`
+	ReferenceTransactionID string    `json:"referenceTransactionId,omitempty"`
+	Status                 string    `json:"status"`
+	IdempotencyKey         string    `json:"idempotencyKey"`
+	CreatedAt              time.Time `json:"createdAt"`
+}
+
 type Service struct {
 	mu             sync.Mutex
 	agents         map[string]Agent
@@ -201,6 +251,10 @@ type Service struct {
 	auditSeq       int64
 	riskConfig     RiskConfig
 	channelRoutes  map[string]ChannelRoute
+	fundTransfers  []FundTransferRecord
+	fundWithdraws  []WithdrawRecord
+	debitPreviews  map[string]DebitPreview
+	x402Outbound   []X402OutboundTransfer
 }
 
 type holdRecord struct {
@@ -253,6 +307,13 @@ type PaymentService interface {
 	ListChannelRoutes() []ChannelRoute
 	SetChannelRoute(merchantID string, mode string) (ChannelRoute, error)
 	DeleteChannelRoute(merchantID string) error
+	// M6 funds & payment extensions (gated by FEATURE_M6_FUNDS at HTTP layer).
+	TransferFunds(fromAccountID string, toAccountID string, amount string, idemKey string) error
+	WithdrawFunds(vaAccountID string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error)
+	DebitPreview(agentDID string, merchantID string, amount string) (DebitPreview, error)
+	TransferX402Outbound(vaAccountID string, toAddress string, amount string, referenceTransactionID string, idemKey string) error
+	CheckX402Settlement(transactionID string) (map[string]any, error)
+	RefundApply(transactionID string, reason string, idemKey string) error
 }
 
 func New() *Service {
@@ -286,6 +347,7 @@ func New() *Service {
 			"m_fail":  {MerchantID: "m_fail", Mode: "FAIL", UpdatedAt: time.Now().UTC()},
 			"m_async": {MerchantID: "m_async", Mode: "ASYNC", UpdatedAt: time.Now().UTC()},
 		},
+		debitPreviews: map[string]DebitPreview{},
 	}
 }
 
@@ -1317,6 +1379,252 @@ func (s *Service) DeleteChannelRoute(merchantID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.channelRoutes, merchantID)
+	return nil
+}
+
+func (s *Service) TransferFunds(fromAccountID string, toAccountID string, amount string, idemKey string) error {
+	v, err := parseAmount(amount)
+	if err != nil || v <= 0 {
+		return &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	if strings.TrimSpace(idemKey) == "" {
+		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := "fund_transfer:" + idemKey
+	if _, ok := s.actionIdem[key]; ok {
+		return nil
+	}
+	from := s.accountsByVA[strings.TrimSpace(fromAccountID)]
+	to := s.accountsByVA[strings.TrimSpace(toAccountID)]
+	if from == nil || to == nil {
+		return &APIError{Code: "PAY-010", Message: "account not found"}
+	}
+	if from.VAAccountID == to.VAAccountID {
+		return &APIError{Code: "PAY-010", Message: "cannot transfer to same account"}
+	}
+	if from.Balance < v {
+		return &APIError{Code: "PAY-003", Message: "agent va insufficient balance"}
+	}
+	from.Balance -= v
+	to.Balance += v
+	rec := FundTransferRecord{
+		TransferID:     fmt.Sprintf("ft_%d", time.Now().UnixNano()),
+		FromAccountID:  from.VAAccountID,
+		ToAccountID:    to.VAAccountID,
+		Amount:         v,
+		Status:         "SETTLED",
+		IdempotencyKey: strings.TrimSpace(idemKey),
+		CreatedAt:      time.Now().UTC(),
+	}
+	s.fundTransfers = append([]FundTransferRecord{rec}, s.fundTransfers...)
+	s.actionIdem[key] = struct{}{}
+	return nil
+}
+
+func (s *Service) WithdrawFunds(vaAccountID string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error) {
+	v, err := parseAmount(amount)
+	if err != nil || v <= 0 {
+		return WithdrawRecord{}, &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	if strings.TrimSpace(idemKey) == "" {
+		return WithdrawRecord{}, &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
+	rail = strings.TrimSpace(rail)
+	if rail == "" {
+		return WithdrawRecord{}, &APIError{Code: "PAY-010", Message: "rail required"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := "fund_withdraw:" + idemKey
+	if _, ok := s.actionIdem[key]; ok {
+		for _, w := range s.fundWithdraws {
+			if w.IdempotencyKey == strings.TrimSpace(idemKey) {
+				return w, nil
+			}
+		}
+		return WithdrawRecord{}, &APIError{Code: "PAY-010", Message: "withdraw idempotency replay without record"}
+	}
+	acc := s.accountsByVA[strings.TrimSpace(vaAccountID)]
+	if acc == nil {
+		return WithdrawRecord{}, &APIError{Code: "PAY-010", Message: "account not found"}
+	}
+	if acc.Balance < v {
+		return WithdrawRecord{}, &APIError{Code: "PAY-003", Message: "agent va insufficient balance"}
+	}
+	acc.Balance -= v
+	rec := WithdrawRecord{
+		WithdrawID:      fmt.Sprintf("fw_%d", time.Now().UnixNano()),
+		VAAccountID:     acc.VAAccountID,
+		Amount:          v,
+		Rail:            rail,
+		DestinationHint: strings.TrimSpace(destinationHint),
+		Status:          "PROCESSING",
+		IdempotencyKey:  strings.TrimSpace(idemKey),
+		CreatedAt:       time.Now().UTC(),
+	}
+	s.fundWithdraws = append([]WithdrawRecord{rec}, s.fundWithdraws...)
+	s.actionIdem[key] = struct{}{}
+	return rec, nil
+}
+
+func (s *Service) DebitPreview(agentDID string, merchantID string, amount string) (DebitPreview, error) {
+	v, err := parseAmount(amount)
+	if err != nil || v <= 0 {
+		return DebitPreview{}, &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	agentDID = strings.TrimSpace(agentDID)
+	merchantID = strings.TrimSpace(merchantID)
+	if agentDID == "" || merchantID == "" {
+		return DebitPreview{}, &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.accounts[agentDID]; !ok {
+		return DebitPreview{}, &APIError{Code: "PAY-010", Message: "account not found"}
+	}
+	rule, ok := s.rules[agentDID]
+	if !ok {
+		return DebitPreview{}, &APIError{Code: "PAY-002", Message: "missing authorization rule"}
+	}
+	if strings.ToUpper(strings.TrimSpace(rule.Status)) != "ACTIVE" {
+		return DebitPreview{}, &APIError{Code: "PAY-002", Message: "authorization rule inactive"}
+	}
+	if v > rule.SingleLimit {
+		return DebitPreview{}, &APIError{Code: "PAY-002", Message: "single limit exceeded"}
+	}
+	todayKey := agentDID + ":" + time.Now().UTC().Format("2006-01-02")
+	if s.dailySpent[todayKey]+v > rule.DailyLimit {
+		return DebitPreview{}, &APIError{Code: "PAY-002", Message: "daily limit exceeded"}
+	}
+	if _, ok := rule.Whitelist[merchantID]; !ok {
+		return DebitPreview{}, &APIError{Code: "PAY-002", Message: "merchant not whitelisted"}
+	}
+	if riskErr := evaluateRiskWithConfig(s.riskConfig, merchantID, v); riskErr != nil {
+		return DebitPreview{}, riskErr
+	}
+	const feeRate = 0.003
+	fee := v * feeRate
+	now := time.Now().UTC()
+	pv := DebitPreview{
+		PreviewID:     fmt.Sprintf("prv_%d", now.UnixNano()),
+		AgentDID:      agentDID,
+		MerchantID:    merchantID,
+		Amount:        v,
+		FeeRate:       feeRate,
+		FeeAmount:     fee,
+		NetToMerchant: v - fee,
+		FxRate:        1,
+		ExpiresAt:     now.Add(15 * time.Minute),
+		CreatedAt:     now,
+	}
+	s.debitPreviews[pv.PreviewID] = pv
+	return pv, nil
+}
+
+func (s *Service) TransferX402Outbound(vaAccountID string, toAddress string, amount string, referenceTransactionID string, idemKey string) error {
+	v, err := parseAmount(amount)
+	if err != nil || v <= 0 {
+		return &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	if strings.TrimSpace(idemKey) == "" {
+		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
+	ref := strings.TrimSpace(referenceTransactionID)
+	toAddress = strings.TrimSpace(toAddress)
+	if ref == "" || toAddress == "" {
+		return &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := "x402_out:" + idemKey
+	if _, ok := s.actionIdem[key]; ok {
+		return nil
+	}
+	tx, ok := s.orders[ref]
+	if !ok {
+		return &APIError{Code: "PAY-010", Message: "reference transaction not found"}
+	}
+	if tx.Status != "SETTLED" {
+		return &APIError{Code: "PAY-010", Message: "reference transaction not settled"}
+	}
+	if math.Abs(tx.Amount-v) > 1e-9 {
+		return &APIError{Code: "PAY-010", Message: "amount must match reference payment"}
+	}
+	acc := s.accountsByVA[strings.TrimSpace(vaAccountID)]
+	if acc == nil {
+		return &APIError{Code: "PAY-010", Message: "account not found"}
+	}
+	if acc.AgentDID != tx.PayerDID {
+		return &APIError{Code: "PAY-010", Message: "account does not match payer"}
+	}
+	if acc.Balance < v {
+		return &APIError{Code: "PAY-003", Message: "agent va insufficient balance"}
+	}
+	acc.Balance -= v
+	out := X402OutboundTransfer{
+		TransferID:             fmt.Sprintf("xo_%d", time.Now().UnixNano()),
+		VAAccountID:            acc.VAAccountID,
+		ToAddress:              toAddress,
+		Amount:                 v,
+		ReferenceTransactionID: ref,
+		Status:                 "SETTLED",
+		IdempotencyKey:         strings.TrimSpace(idemKey),
+		CreatedAt:              time.Now().UTC(),
+	}
+	s.x402Outbound = append([]X402OutboundTransfer{out}, s.x402Outbound...)
+	s.actionIdem[key] = struct{}{}
+	return nil
+}
+
+func (s *Service) CheckX402Settlement(transactionID string) (map[string]any, error) {
+	transactionID = strings.TrimSpace(transactionID)
+	if transactionID == "" {
+		return nil, &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, ok := s.orders[transactionID]
+	if !ok {
+		return nil, &APIError{Code: "PAY-010", Message: "not found"}
+	}
+	out := map[string]any{
+		"transactionId": transactionID,
+		"status":        tx.Status,
+		"amount":        tx.Amount,
+		"merchantId":    tx.Merchant,
+	}
+	switch tx.Status {
+	case "SETTLED":
+		out["settled"] = true
+		out["settledAt"] = tx.CreatedAt.UTC().Format(time.RFC3339)
+		out["chainTxHash"] = "sandbox:0x" + fmt.Sprintf("%x", transactionID)
+	case "SETTLING":
+		out["settled"] = false
+	default:
+		out["settled"] = false
+	}
+	return out, nil
+}
+
+func (s *Service) RefundApply(transactionID string, reason string, idemKey string) error {
+	if strings.TrimSpace(idemKey) == "" {
+		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
+	innerKey := "refund_apply_inner:" + idemKey
+	s.mu.Lock()
+	if _, ok := s.actionIdem["refund_apply:"+idemKey]; ok {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+	if err := s.Refund(transactionID, innerKey); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.actionIdem["refund_apply:"+idemKey] = struct{}{}
+	s.mu.Unlock()
 	return nil
 }
 
