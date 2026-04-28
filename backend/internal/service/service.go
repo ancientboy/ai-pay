@@ -344,6 +344,126 @@ type BillingInvoice struct {
 	CreatedAt  time.Time `json:"createdAt"`
 }
 
+type ProviderAccountBinding struct {
+	ID                int64     `json:"id"`
+	PlatformVAAccount string    `json:"platformVaAccountId"`
+	Provider          string    `json:"provider"`
+	ProviderCustomer  string    `json:"providerCustomerId"`
+	ProviderAccount   string    `json:"providerAccountId"`
+	AssetType         string    `json:"assetType"`
+	Currency          string    `json:"currency"`
+	Status            string    `json:"status"`
+	MetadataJSON      string    `json:"metadataJson,omitempty"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+}
+
+type PaymentIntentRecord struct {
+	IntentID           string    `json:"intentId"`
+	PlatformVAAccount  string    `json:"platformVaAccountId"`
+	AgentDID           string    `json:"agentDid"`
+	Scenario           string    `json:"scenario"`
+	Currency           string    `json:"currency"`
+	Amount             float64   `json:"amount"`
+	TargetType         string    `json:"targetType"`
+	TargetReference    string    `json:"targetReference"`
+	PreferredProvider  string    `json:"preferredProvider,omitempty"`
+	SelectedProvider   string    `json:"selectedProvider,omitempty"`
+	Status             string    `json:"status"`
+	IdempotencyKey     string    `json:"idempotencyKey,omitempty"`
+	CreatedAt          time.Time `json:"createdAt"`
+	UpdatedAt          time.Time `json:"updatedAt"`
+}
+
+type PaymentExecutionRecord struct {
+	ID                 int64     `json:"id"`
+	IntentID           string    `json:"intentId"`
+	Provider           string    `json:"provider"`
+	ProviderAccountID  string    `json:"providerAccountId,omitempty"`
+	ProviderTxnID      string    `json:"providerTxnId,omitempty"`
+	Status             string    `json:"status"`
+	FailureCode        string    `json:"failureCode,omitempty"`
+	FailureReason      string    `json:"failureReason,omitempty"`
+	RawResponseJSON    string    `json:"rawResponseJson,omitempty"`
+	CreatedAt          time.Time `json:"createdAt"`
+	UpdatedAt          time.Time `json:"updatedAt"`
+}
+
+type ProviderSubAccountBindInput struct {
+	PlatformVAID       string `json:"platformVaId"`
+	Provider           string `json:"provider"`
+	ProviderCustomerID string `json:"providerCustomerId"`
+	ProviderAccountID  string `json:"providerAccountId"`
+	AccountType        string `json:"accountType"`
+	Currency           string `json:"currency"`
+	Status             string `json:"status"`
+	MetadataJSON       string `json:"metadataJson"`
+}
+
+type ProviderSubAccount struct {
+	SubAccountID       string    `json:"subAccountId"`
+	PlatformVAID       string    `json:"platformVaId"`
+	Provider           string    `json:"provider"`
+	ProviderCustomerID string    `json:"providerCustomerId"`
+	ProviderAccountID  string    `json:"providerAccountId"`
+	AccountType        string    `json:"accountType"`
+	Currency           string    `json:"currency"`
+	Status             string    `json:"status"`
+	MetadataJSON       string    `json:"metadataJson"`
+	CreatedAt          time.Time `json:"createdAt"`
+	UpdatedAt          time.Time `json:"updatedAt"`
+}
+
+type PaymentIntentCreateInput struct {
+	PlatformVAID      string `json:"platformVaId"`
+	AgentDID          string `json:"agentDid"`
+	MerchantID        string `json:"merchantId"`
+	Currency          string `json:"currency"`
+	Amount            string `json:"amount"`
+	RouteProvider     string `json:"routeProvider"`
+	RouteSubAccountID string `json:"routeSubAccountId"`
+	IdempotencyKey    string `json:"idempotencyKey"`
+	MetadataJSON      string `json:"metadataJson"`
+}
+
+type PaymentIntent struct {
+	IntentID             string    `json:"intentId"`
+	PlatformVAID         string    `json:"platformVaId"`
+	AgentDID             string    `json:"agentDid"`
+	MerchantID           string    `json:"merchantId"`
+	Currency             string    `json:"currency"`
+	Amount               float64   `json:"amount"`
+	Status               string    `json:"status"`
+	RouteProvider        string    `json:"routeProvider"`
+	RouteSubAccountID    string    `json:"routeSubAccountId"`
+	ProviderTransactionID string   `json:"providerTransactionId"`
+	IdempotencyKey       string    `json:"idempotencyKey"`
+	MetadataJSON         string    `json:"metadataJson"`
+	CreatedAt            time.Time `json:"createdAt"`
+	UpdatedAt            time.Time `json:"updatedAt"`
+}
+
+type PaymentIntentExecuteInput struct {
+	IntentID        string `json:"intentId"`
+	ForceResult     string `json:"forceResult"`
+	RawResponseJSON string `json:"rawResponseJson"`
+}
+
+type PaymentExecution struct {
+	ExecutionID        string    `json:"executionId"`
+	IntentID           string    `json:"intentId"`
+	Provider           string    `json:"provider"`
+	SubAccountID       string    `json:"subAccountId"`
+	Amount             float64   `json:"amount"`
+	Currency           string    `json:"currency"`
+	Result             string    `json:"result"`
+	ProviderTransactionID string  `json:"providerTransactionId"`
+	ErrorCode          string    `json:"errorCode"`
+	ErrorMessage       string    `json:"errorMessage"`
+	RawResponseJSON    string    `json:"rawResponseJson"`
+	CreatedAt          time.Time `json:"createdAt"`
+}
+
 type Service struct {
 	mu             sync.Mutex
 	agents         map[string]Agent
@@ -388,6 +508,9 @@ type Service struct {
 	invoices         []BillingInvoice
 	stablecoinCfgs   map[string]StablecoinConfig
 	bridgeCustomers  map[string]BridgeCustomerStatus
+	providerAccounts []ProviderAccountBinding
+	paymentIntents   map[string]PaymentIntentRecord
+	paymentExecs     map[string][]PaymentExecutionRecord
 }
 
 type holdRecord struct {
@@ -458,6 +581,12 @@ type PaymentService interface {
 	BridgeGetCustomerStatus(agentDID string) (BridgeCustomerStatus, error)
 	BridgeGetCustomerKYCLink(agentDID string, endorsement string, redirectURI string) (string, error)
 	BridgeHandleWebhook(rawBody []byte, signatureHeader string) error
+	BindProviderAccount(platformVAAccountID string, provider string, providerCustomerID string, providerAccountID string, currency string, metadata string) (ProviderAccountBinding, error)
+	ListProviderAccounts(platformVAAccountID string) []ProviderAccountBinding
+	CreatePaymentIntent(platformVAAccountID string, agentDID string, merchantID string, currency string, amount string, metadata string) (PaymentIntentRecord, error)
+	ExecutePaymentIntent(intentID string, provider string) (PaymentExecutionRecord, error)
+	GetPaymentIntentStatus(intentID string) (map[string]any, error)
+	ListPaymentExecutions(intentID string) []PaymentExecutionRecord
 	// M6 funds & payment extensions (gated by FEATURE_M6_FUNDS at HTTP layer).
 	TransferFunds(fromAccountID string, toAccountID string, currency string, amount string, idemKey string) error
 	WithdrawFunds(vaAccountID string, currency string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error)
@@ -530,6 +659,9 @@ func New() *Service {
 			"USDT": {Currency: "USDT", Provider: "mock", Enabled: true, ChainID: "eth-mainnet", Decimals: 6, MinConfirmations: 12, RiskThreshold: 10000, UpdatedAt: time.Now().UTC()},
 		},
 		bridgeCustomers: map[string]BridgeCustomerStatus{},
+		providerAccounts: []ProviderAccountBinding{},
+		paymentIntents:   map[string]PaymentIntentRecord{},
+		paymentExecs:     map[string][]PaymentExecutionRecord{},
 	}
 }
 
@@ -2247,4 +2379,169 @@ func (s *Service) BridgeHandleWebhook(rawBody []byte, signatureHeader string) er
 		return &APIError{Code: "PAY-010", Message: "bridge webhook signature invalid"}
 	}
 	return nil
+}
+
+func (s *Service) BindProviderAccount(platformVAAccountID string, provider string, providerCustomerID string, providerAccountID string, currency string, metadata string) (ProviderAccountBinding, error) {
+	va := strings.TrimSpace(platformVAAccountID)
+	p := strings.ToLower(strings.TrimSpace(provider))
+	pa := strings.TrimSpace(providerAccountID)
+	ccy := NormalizeCurrency(currency)
+	if va == "" || p == "" || pa == "" || ccy == "" {
+		return ProviderAccountBinding{}, &APIError{Code: "PAY-010", Message: "invalid provider account input"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.accountsByVA[va]; !ok {
+		return ProviderAccountBinding{}, &APIError{Code: "PAY-010", Message: "platform va account not found"}
+	}
+	now := time.Now().UTC()
+	for i := range s.providerAccounts {
+		if s.providerAccounts[i].PlatformVAAccount == va && strings.EqualFold(s.providerAccounts[i].Provider, p) && s.providerAccounts[i].ProviderAccount == pa {
+			s.providerAccounts[i].ProviderCustomer = strings.TrimSpace(providerCustomerID)
+			s.providerAccounts[i].Currency = ccy
+			s.providerAccounts[i].MetadataJSON = defaultJSON(metadata)
+			s.providerAccounts[i].Status = "ACTIVE"
+			s.providerAccounts[i].UpdatedAt = now
+			return s.providerAccounts[i], nil
+		}
+	}
+	item := ProviderAccountBinding{
+		ID:                int64(len(s.providerAccounts) + 1),
+		PlatformVAAccount: va,
+		Provider:          p,
+		ProviderCustomer:  strings.TrimSpace(providerCustomerID),
+		ProviderAccount:   pa,
+		AssetType:         "wallet",
+		Currency:          ccy,
+		Status:            "ACTIVE",
+		MetadataJSON:      defaultJSON(metadata),
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	s.providerAccounts = append(s.providerAccounts, item)
+	return item, nil
+}
+
+func (s *Service) ListProviderAccounts(platformVAAccountID string) []ProviderAccountBinding {
+	va := strings.TrimSpace(platformVAAccountID)
+	if va == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]ProviderAccountBinding, 0, 4)
+	for _, item := range s.providerAccounts {
+		if item.PlatformVAAccount == va {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func (s *Service) CreatePaymentIntent(platformVAAccountID string, agentDID string, merchantID string, currency string, amount string, metadata string) (PaymentIntentRecord, error) {
+	va := strings.TrimSpace(platformVAAccountID)
+	agent := strings.TrimSpace(agentDID)
+	merchant := strings.TrimSpace(merchantID)
+	ccy := NormalizeCurrency(currency)
+	amt, err := parseAmount(amount)
+	if va == "" || agent == "" || merchant == "" || ccy == "" || err != nil || amt <= 0 {
+		return PaymentIntentRecord{}, &APIError{Code: "PAY-010", Message: "invalid payment intent input"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.accountsByVA[va]; !ok {
+		return PaymentIntentRecord{}, &APIError{Code: "PAY-010", Message: "platform va account not found"}
+	}
+	now := time.Now().UTC()
+	intentID := fmt.Sprintf("pi_%d", now.UnixNano())
+	item := PaymentIntentRecord{
+		IntentID:          intentID,
+		PlatformVAAccount: va,
+		AgentDID:          agent,
+		Scenario:          "agent_payment",
+		Currency:          ccy,
+		Amount:            amt,
+		TargetType:        "merchant",
+		TargetReference:   merchant,
+		Status:            "CREATED",
+		IdempotencyKey:    "",
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	if strings.TrimSpace(metadata) != "" {
+		item.TargetReference = merchant
+	}
+	s.paymentIntents[intentID] = item
+	return item, nil
+}
+
+func (s *Service) ExecutePaymentIntent(intentID string, provider string) (PaymentExecutionRecord, error) {
+	id := strings.TrimSpace(intentID)
+	p := strings.ToLower(strings.TrimSpace(provider))
+	if id == "" || p == "" {
+		return PaymentExecutionRecord{}, &APIError{Code: "PAY-010", Message: "invalid execute input"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	intent, ok := s.paymentIntents[id]
+	if !ok {
+		return PaymentExecutionRecord{}, &APIError{Code: "PAY-010", Message: "payment intent not found"}
+	}
+	now := time.Now().UTC()
+	exec := PaymentExecutionRecord{
+		ID:                int64(len(s.paymentExecs[id]) + 1),
+		IntentID:          id,
+		Provider:          p,
+		ProviderAccountID: intent.SelectedProvider,
+		ProviderTxnID:     fmt.Sprintf("%s_txn_%d", p, now.UnixNano()),
+		Status:            "SUCCESS",
+		RawResponseJSON:   "{}",
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	s.paymentExecs[id] = append(s.paymentExecs[id], exec)
+	intent.SelectedProvider = p
+	intent.Status = "SETTLED"
+	intent.UpdatedAt = now
+	s.paymentIntents[id] = intent
+	return exec, nil
+}
+
+func (s *Service) GetPaymentIntentStatus(intentID string) (map[string]any, error) {
+	intent, err := s.GetPaymentIntent(intentID)
+	if err != nil {
+		return nil, err
+	}
+	execs := s.ListPaymentExecutions(intentID)
+	return map[string]any{
+		"intent":     intent,
+		"executions": execs,
+	}, nil
+}
+
+func (s *Service) GetPaymentIntent(intentID string) (PaymentIntentRecord, error) {
+	id := strings.TrimSpace(intentID)
+	if id == "" {
+		return PaymentIntentRecord{}, &APIError{Code: "PAY-010", Message: "invalid intent id"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	item, ok := s.paymentIntents[id]
+	if !ok {
+		return PaymentIntentRecord{}, &APIError{Code: "PAY-010", Message: "payment intent not found"}
+	}
+	return item, nil
+}
+
+func (s *Service) ListPaymentExecutions(intentID string) []PaymentExecutionRecord {
+	id := strings.TrimSpace(intentID)
+	if id == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := s.paymentExecs[id]
+	out := make([]PaymentExecutionRecord, len(items))
+	copy(out, items)
+	return out
 }

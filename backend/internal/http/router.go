@@ -140,6 +140,11 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /bridge/customer/sync", s.withReadAuth(http.HandlerFunc(s.handleBridgeCustomerSync)))
 	mux.Handle("GET /bridge/customer/status", s.withReadAuth(http.HandlerFunc(s.handleBridgeCustomerStatus)))
 	mux.Handle("GET /bridge/customer/kyc-link", s.withReadAuth(http.HandlerFunc(s.handleBridgeCustomerKYCLink)))
+	mux.Handle("POST /orchestrate/provider-account/bind", s.withReadAuth(http.HandlerFunc(s.handleProviderAccountBind)))
+	mux.Handle("GET /orchestrate/provider-account/list", s.withReadAuth(http.HandlerFunc(s.handleProviderAccountList)))
+	mux.Handle("POST /orchestrate/payment-intent/create", s.withReadAuth(http.HandlerFunc(s.handlePaymentIntentCreate)))
+	mux.Handle("POST /orchestrate/payment-intent/execute", s.withReadAuth(http.HandlerFunc(s.handlePaymentIntentExecute)))
+	mux.Handle("GET /orchestrate/payment-intent/status", s.withReadAuth(http.HandlerFunc(s.handlePaymentIntentStatus)))
 	mux.Handle("POST /bridge/webhook", http.HandlerFunc(s.handleBridgeWebhook))
 	mux.Handle("GET /fund/recharge/confirm", s.withReadAuth(http.HandlerFunc(s.handleRechargeConfirmQuery)))
 	mux.Handle("POST /fund/transfer", s.withM6Funds(s.withAdminAuth(http.HandlerFunc(s.handleFundTransfer))))
@@ -2638,4 +2643,143 @@ func (s *Server) handleBridgeWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
+}
+
+type providerAccountBindReq struct {
+	PlatformVAAccountID string `json:"platformVaAccountId"`
+	Provider            string `json:"provider"`
+	ProviderCustomerID  string `json:"providerCustomerId"`
+	ProviderAccountID   string `json:"providerAccountId"`
+	Currency            string `json:"currency"`
+	Metadata            string `json:"metadata"`
+}
+
+func (s *Server) handleProviderAccountBind(w http.ResponseWriter, r *http.Request) {
+	var req providerAccountBindReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+		strings.TrimSpace(req.PlatformVAAccountID) == "" ||
+		strings.TrimSpace(req.Provider) == "" ||
+		strings.TrimSpace(req.ProviderAccountID) == "" ||
+		service.NormalizeCurrency(req.Currency) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAccountOwnedByRef(w, r, req.PlatformVAAccountID) {
+		return
+	}
+	item, err := s.svc.BindProviderAccount(
+		strings.TrimSpace(req.PlatformVAAccountID),
+		strings.ToLower(strings.TrimSpace(req.Provider)),
+		strings.TrimSpace(req.ProviderCustomerID),
+		strings.TrimSpace(req.ProviderAccountID),
+		service.NormalizeCurrency(req.Currency),
+		strings.TrimSpace(req.Metadata),
+	)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "bind provider account", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handleProviderAccountList(w http.ResponseWriter, r *http.Request) {
+	platformVA := strings.TrimSpace(r.URL.Query().Get("platformVaAccountId"))
+	if platformVA == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAccountOwnedByRef(w, r, platformVA) {
+		return
+	}
+	items := s.svc.ListProviderAccounts(platformVA)
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": items})
+}
+
+type paymentIntentCreateReq struct {
+	PlatformVAAccountID string `json:"platformVaAccountId"`
+	AgentDID            string `json:"agentDid"`
+	MerchantID          string `json:"merchantId"`
+	Currency            string `json:"currency"`
+	Amount              string `json:"amount"`
+	Metadata            string `json:"metadata"`
+}
+
+func (s *Server) handlePaymentIntentCreate(w http.ResponseWriter, r *http.Request) {
+	var req paymentIntentCreateReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+		strings.TrimSpace(req.PlatformVAAccountID) == "" ||
+		strings.TrimSpace(req.AgentDID) == "" ||
+		strings.TrimSpace(req.MerchantID) == "" ||
+		service.NormalizeCurrency(req.Currency) == "" ||
+		!isPositiveDecimal(req.Amount) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAccountOwnedByRef(w, r, req.PlatformVAAccountID) {
+		return
+	}
+	item, err := s.svc.CreatePaymentIntent(
+		strings.TrimSpace(req.PlatformVAAccountID),
+		strings.TrimSpace(req.AgentDID),
+		strings.TrimSpace(req.MerchantID),
+		service.NormalizeCurrency(req.Currency),
+		strings.TrimSpace(req.Amount),
+		strings.TrimSpace(req.Metadata),
+	)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "create payment intent", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+type paymentIntentExecuteReq struct {
+	IntentID string `json:"intentId"`
+	Provider string `json:"provider"`
+}
+
+func (s *Server) handlePaymentIntentExecute(w http.ResponseWriter, r *http.Request) {
+	var req paymentIntentExecuteReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
+		strings.TrimSpace(req.IntentID) == "" ||
+		strings.TrimSpace(req.Provider) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	item, err := s.svc.ExecutePaymentIntent(strings.TrimSpace(req.IntentID), strings.TrimSpace(req.Provider))
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "execute payment intent", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handlePaymentIntentStatus(w http.ResponseWriter, r *http.Request) {
+	intentID := strings.TrimSpace(r.URL.Query().Get("intentId"))
+	if intentID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	item, err := s.svc.GetPaymentIntentStatus(intentID)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "query payment intent status", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
 }

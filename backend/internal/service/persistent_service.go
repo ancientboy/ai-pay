@@ -354,6 +354,439 @@ func (s *PersistentService) UpdateAgentPublicKey(did string, newPubKey string, p
 	return s.SetAgentPublicKey(did, newPubKey)
 }
 
+func (s *PersistentService) BindProviderSubAccount(input ProviderSubAccountBindInput) (ProviderSubAccount, error) {
+	platformVAID := strings.TrimSpace(input.PlatformVAID)
+	provider := strings.ToLower(strings.TrimSpace(input.Provider))
+	providerAccountID := strings.TrimSpace(input.ProviderAccountID)
+	currency := NormalizeCurrency(input.Currency)
+	if platformVAID == "" || provider == "" || providerAccountID == "" || currency == "" {
+		return ProviderSubAccount{}, &APIError{Code: "PAY-010", Message: "invalid provider sub account input"}
+	}
+	var accountExists int
+	if err := s.store.DB.QueryRow(`SELECT COUNT(1) FROM asset_va_account WHERE va_account_id = ?`, platformVAID).Scan(&accountExists); err != nil {
+		return ProviderSubAccount{}, err
+	}
+	if accountExists == 0 {
+		return ProviderSubAccount{}, &APIError{Code: "PAY-010", Message: "platform va account not found"}
+	}
+	metadata := strings.TrimSpace(input.MetadataJSON)
+	if metadata == "" {
+		metadata = "{}"
+	}
+	status := strings.ToUpper(strings.TrimSpace(input.Status))
+	if status == "" {
+		status = "ACTIVE"
+	}
+	subID := fmt.Sprintf("psa_%d", time.Now().UnixNano())
+	_, err := s.store.DB.Exec(`
+INSERT INTO provider_sub_account (sub_account_id, platform_va_id, provider, provider_customer_id, provider_account_id, account_type, currency, status, metadata_json, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())
+ON DUPLICATE KEY UPDATE
+  provider_customer_id = VALUES(provider_customer_id),
+  account_type = VALUES(account_type),
+  status = VALUES(status),
+  metadata_json = VALUES(metadata_json),
+  updated_at = UTC_TIMESTAMP()`,
+		subID,
+		platformVAID,
+		provider,
+		strings.TrimSpace(input.ProviderCustomerID),
+		providerAccountID,
+		strings.TrimSpace(input.AccountType),
+		currency,
+		status,
+		metadata,
+	)
+	if err != nil {
+		return ProviderSubAccount{}, err
+	}
+	return s.GetProviderSubAccount(platformVAID, provider, providerAccountID)
+}
+
+func (s *PersistentService) GetProviderSubAccount(platformVAID string, provider string, providerAccountID string) (ProviderSubAccount, error) {
+	var out ProviderSubAccount
+	va := strings.TrimSpace(platformVAID)
+	p := strings.ToLower(strings.TrimSpace(provider))
+	pa := strings.TrimSpace(providerAccountID)
+	if va == "" || p == "" || pa == "" {
+		return ProviderSubAccount{}, &APIError{Code: "PAY-010", Message: "invalid provider sub account key"}
+	}
+	err := s.store.DB.QueryRow(`
+SELECT sub_account_id, platform_va_id, provider, COALESCE(provider_customer_id,''), provider_account_id, COALESCE(account_type,''), currency, status, COALESCE(metadata_json,'{}'), created_at, updated_at
+FROM provider_sub_account
+WHERE platform_va_id = ? AND provider = ? AND provider_account_id = ?
+LIMIT 1`, va, p, pa).Scan(
+		&out.SubAccountID, &out.PlatformVAID, &out.Provider, &out.ProviderCustomerID, &out.ProviderAccountID, &out.AccountType,
+		&out.Currency, &out.Status, &out.MetadataJSON, &out.CreatedAt, &out.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return ProviderSubAccount{}, &APIError{Code: "PAY-010", Message: "provider sub account not found"}
+	}
+	if err != nil {
+		return ProviderSubAccount{}, err
+	}
+	return out, nil
+}
+
+func (s *PersistentService) ListProviderSubAccounts(platformVAID string) []ProviderSubAccount {
+	va := strings.TrimSpace(platformVAID)
+	if va == "" {
+		return nil
+	}
+	rows, err := s.store.DB.Query(`
+SELECT sub_account_id, platform_va_id, provider, COALESCE(provider_customer_id,''), provider_account_id, COALESCE(account_type,''), currency, status, COALESCE(metadata_json,'{}'), created_at, updated_at
+FROM provider_sub_account
+WHERE platform_va_id = ?
+ORDER BY created_at DESC`, va)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]ProviderSubAccount, 0, 8)
+	for rows.Next() {
+		var item ProviderSubAccount
+		if err := rows.Scan(
+			&item.SubAccountID, &item.PlatformVAID, &item.Provider, &item.ProviderCustomerID, &item.ProviderAccountID, &item.AccountType,
+			&item.Currency, &item.Status, &item.MetadataJSON, &item.CreatedAt, &item.UpdatedAt,
+		); err != nil {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func (s *PersistentService) createPaymentIntentInternal(input PaymentIntentCreateInput) (PaymentIntent, error) {
+	va := strings.TrimSpace(input.PlatformVAID)
+	agent := strings.TrimSpace(input.AgentDID)
+	merchant := strings.TrimSpace(input.MerchantID)
+	currency := NormalizeCurrency(input.Currency)
+	if va == "" || agent == "" || merchant == "" || currency == "" {
+		return PaymentIntent{}, &APIError{Code: "PAY-010", Message: "invalid payment intent input"}
+	}
+	amount, err := parseAmount(input.Amount)
+	if err != nil || amount <= 0 {
+		return PaymentIntent{}, &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	intentID := fmt.Sprintf("pi_%d", time.Now().UnixNano())
+	_, err = s.store.DB.Exec(`
+INSERT INTO payment_intent (intent_id, platform_va_id, agent_did, merchant_id, currency, amount, status, route_provider, route_sub_account_id, idempotency_key, metadata_json, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, 'CREATED', ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())`,
+		intentID,
+		va,
+		agent,
+		merchant,
+		currency,
+		amount,
+		strings.ToLower(strings.TrimSpace(input.RouteProvider)),
+		strings.TrimSpace(input.RouteSubAccountID),
+		strings.TrimSpace(input.IdempotencyKey),
+		defaultJSON(input.MetadataJSON),
+	)
+	if err != nil {
+		return PaymentIntent{}, err
+	}
+	return s.getPaymentIntentInternal(intentID)
+}
+
+func (s *PersistentService) getPaymentIntentInternal(intentID string) (PaymentIntent, error) {
+	var out PaymentIntent
+	id := strings.TrimSpace(intentID)
+	if id == "" {
+		return PaymentIntent{}, &APIError{Code: "PAY-010", Message: "invalid intent id"}
+	}
+	err := s.store.DB.QueryRow(`
+SELECT intent_id, platform_va_id, agent_did, merchant_id, currency, amount, status, COALESCE(route_provider,''), COALESCE(route_sub_account_id,''), COALESCE(provider_transaction_id,''), COALESCE(idempotency_key,''), COALESCE(metadata_json,'{}'), created_at, updated_at
+FROM payment_intent
+WHERE intent_id = ?`, id).Scan(
+		&out.IntentID, &out.PlatformVAID, &out.AgentDID, &out.MerchantID, &out.Currency, &out.Amount, &out.Status,
+		&out.RouteProvider, &out.RouteSubAccountID, &out.ProviderTransactionID, &out.IdempotencyKey, &out.MetadataJSON,
+		&out.CreatedAt, &out.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return PaymentIntent{}, &APIError{Code: "PAY-010", Message: "payment intent not found"}
+	}
+	if err != nil {
+		return PaymentIntent{}, err
+	}
+	return out, nil
+}
+
+func (s *PersistentService) executePaymentIntentInternal(input PaymentIntentExecuteInput) (PaymentExecution, error) {
+	intent, err := s.getPaymentIntentInternal(input.IntentID)
+	if err != nil {
+		return PaymentExecution{}, err
+	}
+	executionID := fmt.Sprintf("pe_%d", time.Now().UnixNano())
+	result := "SUCCESS"
+	errorCode := ""
+	errorMessage := ""
+	if strings.TrimSpace(input.ForceResult) != "" {
+		result = strings.ToUpper(strings.TrimSpace(input.ForceResult))
+		if result != "SUCCESS" {
+			errorCode = "EXEC-FAILED"
+			errorMessage = "execution failed by force result"
+		}
+	}
+	_, err = s.store.DB.Exec(`
+INSERT INTO payment_execution (execution_id, intent_id, provider, sub_account_id, amount, currency, result, provider_transaction_id, error_code, error_message, raw_response_json, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())`,
+		executionID,
+		intent.IntentID,
+		intent.RouteProvider,
+		intent.RouteSubAccountID,
+		intent.Amount,
+		intent.Currency,
+		result,
+		deriveProviderTxnID(intent, executionID),
+		errorCode,
+		errorMessage,
+		defaultJSON(input.RawResponseJSON),
+	)
+	if err != nil {
+		return PaymentExecution{}, err
+	}
+	newStatus := "SETTLED"
+	if result != "SUCCESS" {
+		newStatus = "FAILED"
+	}
+	_, _ = s.store.DB.Exec(`UPDATE payment_intent SET status = ?, provider_transaction_id = ?, updated_at = UTC_TIMESTAMP() WHERE intent_id = ?`,
+		newStatus, deriveProviderTxnID(intent, executionID), intent.IntentID)
+	return s.getPaymentExecutionInternal(executionID)
+}
+
+func (s *PersistentService) getPaymentExecutionInternal(executionID string) (PaymentExecution, error) {
+	var out PaymentExecution
+	id := strings.TrimSpace(executionID)
+	if id == "" {
+		return PaymentExecution{}, &APIError{Code: "PAY-010", Message: "invalid execution id"}
+	}
+	err := s.store.DB.QueryRow(`
+SELECT execution_id, intent_id, provider, COALESCE(sub_account_id,''), amount, currency, result, COALESCE(provider_transaction_id,''), COALESCE(error_code,''), COALESCE(error_message,''), COALESCE(raw_response_json,'{}'), created_at
+FROM payment_execution
+WHERE execution_id = ?`, id).Scan(
+		&out.ExecutionID, &out.IntentID, &out.Provider, &out.SubAccountID, &out.Amount, &out.Currency, &out.Result,
+		&out.ProviderTransactionID, &out.ErrorCode, &out.ErrorMessage, &out.RawResponseJSON, &out.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return PaymentExecution{}, &APIError{Code: "PAY-010", Message: "payment execution not found"}
+	}
+	if err != nil {
+		return PaymentExecution{}, err
+	}
+	return out, nil
+}
+
+func (s *PersistentService) listPaymentExecutionsInternal(intentID string) []PaymentExecution {
+	id := strings.TrimSpace(intentID)
+	if id == "" {
+		return nil
+	}
+	rows, err := s.store.DB.Query(`
+SELECT execution_id, intent_id, provider, COALESCE(sub_account_id,''), amount, currency, result, COALESCE(provider_transaction_id,''), COALESCE(error_code,''), COALESCE(error_message,''), COALESCE(raw_response_json,'{}'), created_at
+FROM payment_execution
+WHERE intent_id = ?
+ORDER BY created_at DESC`, id)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]PaymentExecution, 0, 4)
+	for rows.Next() {
+		var item PaymentExecution
+		if err := rows.Scan(
+			&item.ExecutionID, &item.IntentID, &item.Provider, &item.SubAccountID, &item.Amount, &item.Currency, &item.Result,
+			&item.ProviderTransactionID, &item.ErrorCode, &item.ErrorMessage, &item.RawResponseJSON, &item.CreatedAt,
+		); err != nil {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func defaultJSON(raw string) string {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return "{}"
+	}
+	return v
+}
+
+func deriveProviderTxnID(intent PaymentIntent, executionID string) string {
+	provider := strings.ToLower(strings.TrimSpace(intent.RouteProvider))
+	if provider == "" {
+		provider = "local"
+	}
+	return fmt.Sprintf("%s_txn_%s", provider, strings.TrimPrefix(executionID, "pe_"))
+}
+
+func (s *PersistentService) BindProviderAccount(platformVAAccountID string, provider string, providerCustomerID string, providerAccountID string, currency string, metadata string) (ProviderAccountBinding, error) {
+	item, err := s.BindProviderSubAccount(ProviderSubAccountBindInput{
+		PlatformVAID:       platformVAAccountID,
+		Provider:           provider,
+		ProviderCustomerID: providerCustomerID,
+		ProviderAccountID:  providerAccountID,
+		AccountType:        "wallet",
+		Currency:           currency,
+		Status:             "ACTIVE",
+		MetadataJSON:       metadata,
+	})
+	if err != nil {
+		return ProviderAccountBinding{}, err
+	}
+	return ProviderAccountBinding{
+		ID:                time.Now().UnixNano(),
+		PlatformVAAccount: item.PlatformVAID,
+		Provider:          item.Provider,
+		ProviderCustomer:  item.ProviderCustomerID,
+		ProviderAccount:   item.ProviderAccountID,
+		AssetType:         item.AccountType,
+		Currency:          item.Currency,
+		Status:            item.Status,
+		MetadataJSON:      item.MetadataJSON,
+		CreatedAt:         item.CreatedAt,
+		UpdatedAt:         item.UpdatedAt,
+	}, nil
+}
+
+func (s *PersistentService) ListProviderAccounts(platformVAAccountID string) []ProviderAccountBinding {
+	items := s.ListProviderSubAccounts(platformVAAccountID)
+	out := make([]ProviderAccountBinding, 0, len(items))
+	for _, it := range items {
+		out = append(out, ProviderAccountBinding{
+			ID:                time.Now().UnixNano(),
+			PlatformVAAccount: it.PlatformVAID,
+			Provider:          it.Provider,
+			ProviderCustomer:  it.ProviderCustomerID,
+			ProviderAccount:   it.ProviderAccountID,
+			AssetType:         it.AccountType,
+			Currency:          it.Currency,
+			Status:            it.Status,
+			MetadataJSON:      it.MetadataJSON,
+			CreatedAt:         it.CreatedAt,
+			UpdatedAt:         it.UpdatedAt,
+		})
+	}
+	return out
+}
+
+func (s *PersistentService) CreatePaymentIntent(platformVAAccountID string, agentDID string, merchantID string, currency string, amount string, metadata string) (PaymentIntentRecord, error) {
+	item, err := s.createPaymentIntentInternal(PaymentIntentCreateInput{
+		PlatformVAID:    platformVAAccountID,
+		AgentDID:        agentDID,
+		MerchantID:      merchantID,
+		Currency:        currency,
+		Amount:          amount,
+		RouteProvider:   "",
+		RouteSubAccountID: "",
+		IdempotencyKey:  "",
+		MetadataJSON:    metadata,
+	})
+	if err != nil {
+		return PaymentIntentRecord{}, err
+	}
+	return PaymentIntentRecord{
+		IntentID:          item.IntentID,
+		PlatformVAAccount: item.PlatformVAID,
+		AgentDID:          item.AgentDID,
+		Scenario:          "agent_payment",
+		Currency:          item.Currency,
+		Amount:            item.Amount,
+		TargetType:        "merchant",
+		TargetReference:   item.MerchantID,
+		PreferredProvider: item.RouteProvider,
+		SelectedProvider:  item.RouteProvider,
+		Status:            item.Status,
+		IdempotencyKey:    item.IdempotencyKey,
+		CreatedAt:         item.CreatedAt,
+		UpdatedAt:         item.UpdatedAt,
+	}, nil
+}
+
+func (s *PersistentService) ExecutePaymentIntent(intentID string, provider string) (PaymentExecutionRecord, error) {
+	if p := strings.ToLower(strings.TrimSpace(provider)); p != "" {
+		_, _ = s.store.DB.Exec(`UPDATE payment_intent SET route_provider = ?, updated_at = UTC_TIMESTAMP() WHERE intent_id = ?`, p, strings.TrimSpace(intentID))
+	}
+	item, err := s.executePaymentIntentInternal(PaymentIntentExecuteInput{
+		IntentID:        intentID,
+		RawResponseJSON: "",
+		ForceResult:     "",
+	})
+	if err != nil {
+		return PaymentExecutionRecord{}, err
+	}
+	return PaymentExecutionRecord{
+		ID:                time.Now().UnixNano(),
+		IntentID:          item.IntentID,
+		Provider:          item.Provider,
+		ProviderAccountID: item.SubAccountID,
+		ProviderTxnID:     item.ProviderTransactionID,
+		Status:            item.Result,
+		FailureCode:       item.ErrorCode,
+		FailureReason:     item.ErrorMessage,
+		RawResponseJSON:   item.RawResponseJSON,
+		CreatedAt:         item.CreatedAt,
+		UpdatedAt:         item.CreatedAt,
+	}, nil
+}
+
+func (s *PersistentService) GetPaymentIntentStatus(intentID string) (map[string]any, error) {
+	intent, err := s.getPaymentIntentInternal(intentID)
+	if err != nil {
+		return nil, err
+	}
+	executions := s.listPaymentExecutionsInternal(intentID)
+	return map[string]any{
+		"intent":     intent,
+		"executions": executions,
+	}, nil
+}
+
+func (s *PersistentService) GetPaymentIntent(intentID string) (PaymentIntentRecord, error) {
+	item, err := s.getPaymentIntentInternal(intentID)
+	if err != nil {
+		return PaymentIntentRecord{}, err
+	}
+	return PaymentIntentRecord{
+		IntentID:          item.IntentID,
+		PlatformVAAccount: item.PlatformVAID,
+		AgentDID:          item.AgentDID,
+		Scenario:          "agent_payment",
+		Currency:          item.Currency,
+		Amount:            item.Amount,
+		TargetType:        "merchant",
+		TargetReference:   item.MerchantID,
+		PreferredProvider: item.RouteProvider,
+		SelectedProvider:  item.RouteProvider,
+		Status:            item.Status,
+		IdempotencyKey:    item.IdempotencyKey,
+		CreatedAt:         item.CreatedAt,
+		UpdatedAt:         item.UpdatedAt,
+	}, nil
+}
+
+func (s *PersistentService) ListPaymentExecutions(intentID string) []PaymentExecutionRecord {
+	items := s.listPaymentExecutionsInternal(intentID)
+	out := make([]PaymentExecutionRecord, 0, len(items))
+	for _, it := range items {
+		out = append(out, PaymentExecutionRecord{
+			ID:                time.Now().UnixNano(),
+			IntentID:          it.IntentID,
+			Provider:          it.Provider,
+			ProviderAccountID: it.SubAccountID,
+			ProviderTxnID:     it.ProviderTransactionID,
+			Status:            it.Result,
+			FailureCode:       it.ErrorCode,
+			FailureReason:     it.ErrorMessage,
+			RawResponseJSON:   it.RawResponseJSON,
+			CreatedAt:         it.CreatedAt,
+			UpdatedAt:         it.CreatedAt,
+		})
+	}
+	return out
+}
+
 func (s *PersistentService) CreateAccount(agentDID string) Account {
 	wallet := fmt.Sprintf("0xwallet_%d", time.Now().UnixNano())
 	va := fmt.Sprintf("va_%d", time.Now().UnixNano())
