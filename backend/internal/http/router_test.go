@@ -1016,6 +1016,7 @@ func TestFundsEndpointsRespectRoleTokens(t *testing.T) {
 
 	readReq := httptest.NewRequest(http.MethodGet, "/account/va/transfer/list?accountId="+accA.VAAccountID, nil)
 	readReq.Header.Set("Authorization", "Bearer readonly-token")
+	readReq.Header.Set("X-User-Role", "readonly")
 	readResp := httptest.NewRecorder()
 	handler.ServeHTTP(readResp, readReq)
 	if readResp.Code != http.StatusOK {
@@ -1031,6 +1032,7 @@ func TestFundsEndpointsRespectRoleTokens(t *testing.T) {
 	adminWriteReq.Header.Set("Content-Type", "application/json")
 	adminWriteReq.Header.Set("Idempotency-Key", "idem-role-token-admin")
 	adminWriteReq.Header.Set("Authorization", "Bearer admin-token")
+	adminWriteReq.Header.Set("X-User-Role", "admin")
 	adminWriteResp := httptest.NewRecorder()
 	handler.ServeHTTP(adminWriteResp, adminWriteReq)
 	if adminWriteResp.Code != http.StatusOK {
@@ -1041,6 +1043,7 @@ func TestFundsEndpointsRespectRoleTokens(t *testing.T) {
 	writeReq.Header.Set("Content-Type", "application/json")
 	writeReq.Header.Set("Idempotency-Key", "idem-role-token-1")
 	writeReq.Header.Set("Authorization", "Bearer readonly-token")
+	writeReq.Header.Set("X-User-Role", "readonly")
 	writeResp := httptest.NewRecorder()
 	handler.ServeHTTP(writeResp, writeReq)
 	if writeResp.Code != http.StatusUnauthorized {
@@ -1049,6 +1052,7 @@ func TestFundsEndpointsRespectRoleTokens(t *testing.T) {
 
 	auditReq := httptest.NewRequest(http.MethodGet, "/developer/audit-logs?action=va_transfer&limit=10&offset=0", nil)
 	auditReq.Header.Set("Authorization", "Bearer readonly-token")
+	auditReq.Header.Set("X-User-Role", "readonly")
 	auditResp := httptest.NewRecorder()
 	handler.ServeHTTP(auditResp, auditReq)
 	if auditResp.Code != http.StatusOK {
@@ -1059,6 +1063,40 @@ func TestFundsEndpointsRespectRoleTokens(t *testing.T) {
 	items, ok := payload["data"].([]any)
 	if !ok || len(items) == 0 {
 		t.Fatalf("expected audit logs after transfer")
+	}
+}
+
+func TestRoleHeaderAuthorization(t *testing.T) {
+	svc := service.New()
+	server := NewServerForTest(svc, time.Now, 100, 100)
+	server.SetAdminBearerToken("admin-token")
+	server.SetReadonlyBearerToken("readonly-token")
+	handler := server.Routes()
+
+	readReq := httptest.NewRequest(http.MethodGet, "/developer/api-keys", nil)
+	readReq.Header.Set("X-User-Role", "readonly")
+	readResp := httptest.NewRecorder()
+	handler.ServeHTTP(readResp, readReq)
+	if readResp.Code != http.StatusOK {
+		t.Fatalf("readonly role header should access read endpoint, got %d", readResp.Code)
+	}
+
+	writeReq := httptest.NewRequest(http.MethodPost, "/developer/api-keys", bytes.NewReader(mustJSONMap(t, map[string]string{"name": "k1"})))
+	writeReq.Header.Set("Content-Type", "application/json")
+	writeReq.Header.Set("X-User-Role", "readonly")
+	writeResp := httptest.NewRecorder()
+	handler.ServeHTTP(writeResp, writeReq)
+	if writeResp.Code != http.StatusUnauthorized {
+		t.Fatalf("readonly role header should be blocked on write endpoint, got %d", writeResp.Code)
+	}
+
+	adminReq := httptest.NewRequest(http.MethodPost, "/developer/api-keys", bytes.NewReader(mustJSONMap(t, map[string]string{"name": "k2"})))
+	adminReq.Header.Set("Content-Type", "application/json")
+	adminReq.Header.Set("X-User-Role", "admin")
+	adminResp := httptest.NewRecorder()
+	handler.ServeHTTP(adminResp, adminReq)
+	if adminResp.Code != http.StatusOK {
+		t.Fatalf("admin role header should access write endpoint, got %d", adminResp.Code)
 	}
 }
 

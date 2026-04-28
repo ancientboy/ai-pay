@@ -299,6 +299,7 @@ type Service struct {
 	m8signReqs       map[string]m8signReq
 	m8sessCreateIdem map[string]string
 	m8signReqIdem    map[string]string
+	agentOwners      map[string]string
 }
 
 type holdRecord struct {
@@ -314,6 +315,8 @@ type PaymentService interface {
 	AgentPublicKey(did string) (string, error)
 	VerifyAgentSignature(did string, message string, signature string) error
 	UpdateAgentPublicKey(did string, newPubKey string, proofMessage string, proofSignature string) error
+	BindAgentOwner(agentDID string, userID string) error
+	AgentOwner(agentDID string) (string, bool, error)
 	CreateAccount(agentDID string) Account
 	Recharge(va string, amount string, idemKey string) error
 	SetAuthorizeRule(agentDID string, single string, daily string, merchants []string) error
@@ -413,6 +416,7 @@ func New() *Service {
 		m8signReqs:       map[string]m8signReq{},
 		m8sessCreateIdem: map[string]string{},
 		m8signReqIdem:    map[string]string{},
+		agentOwners:      map[string]string{},
 	}
 }
 
@@ -422,6 +426,25 @@ func (s *Service) RegisterAgent(did string) Agent {
 	a := Agent{DID: did}
 	s.agents[did] = a
 	return a
+}
+
+func (s *Service) BindAgentOwner(agentDID string, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	agent := strings.TrimSpace(agentDID)
+	user := strings.TrimSpace(userID)
+	if agent == "" || user == "" {
+		return nil
+	}
+	s.agentOwners[agent] = user
+	return nil
+}
+
+func (s *Service) AgentOwner(agentDID string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	owner, ok := s.agentOwners[strings.TrimSpace(agentDID)]
+	return owner, ok, nil
 }
 
 func (s *Service) SetAgentPublicKey(did string, pubKey string) error {

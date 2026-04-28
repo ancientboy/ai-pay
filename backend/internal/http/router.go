@@ -43,9 +43,10 @@ type contextKey string
 
 const requestIDKey contextKey = "requestId"
 const userIDHeader = "X-User-Id"
+const userRoleHeader = "X-User-Role"
 
 func NewServer(svc service.PaymentService) *Server {
-	return &Server{
+	s := &Server{
 		svc:              svc,
 		nowFn:            time.Now,
 		signatureMaxSkew: 5 * time.Minute,
@@ -55,6 +56,7 @@ func NewServer(svc service.PaymentService) *Server {
 		agentRateLimiter: newFixedWindowLimiter(60, time.Minute),
 		agentOwners:      map[string]string{},
 	}
+	return s
 }
 
 func NewServerWithReadiness(svc service.PaymentService, readyCheck func(context.Context) error) *Server {
@@ -1927,6 +1929,10 @@ func (s *Server) withReadAuth(next http.Handler) http.Handler {
 
 func (s *Server) withRoleAuth(allowReadonly bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.authorizeByUserRole(r, allowReadonly) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		adminConfigured := strings.TrimSpace(s.adminBearerToken) != ""
 		readonlyConfigured := strings.TrimSpace(s.readonlyToken) != ""
 		if !adminConfigured && !readonlyConfigured {
@@ -1945,6 +1951,20 @@ func (s *Server) withRoleAuth(allowReadonly bool, next http.Handler) http.Handle
 		log.Printf("requestId=%s unauthorized path=%s ip=%s readonlyAllowed=%t", getRequestID(r.Context()), r.URL.Path, clientIP(r), allowReadonly)
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": "PAY-010", "message": "unauthorized"})
 	})
+}
+
+func (s *Server) authorizeByUserRole(r *http.Request, allowReadonly bool) bool {
+	role := strings.ToLower(strings.TrimSpace(r.Header.Get(userRoleHeader)))
+	switch role {
+	case "":
+		return false
+	case "admin", "operator":
+		return true
+	case "readonly":
+		return allowReadonly
+	default:
+		return false
+	}
 }
 
 func (s *Server) withCallbackToken(next http.Handler) http.Handler {
@@ -2041,6 +2061,7 @@ func (s *Server) bindAgentOwner(agentDID, userID string) {
 	if agent == "" || user == "" {
 		return
 	}
+	_ = s.svc.BindAgentOwner(agent, user)
 	s.agentOwnersMu.Lock()
 	s.agentOwners[agent] = user
 	s.agentOwnersMu.Unlock()
@@ -2067,6 +2088,15 @@ func (s *Server) ensureAgentOwned(w http.ResponseWriter, r *http.Request, agentD
 	s.agentOwnersMu.RLock()
 	owner, ok := s.agentOwners[agent]
 	s.agentOwnersMu.RUnlock()
+	if !ok {
+		if dbOwner, exists, err := s.svc.AgentOwner(agent); err == nil && exists && strings.TrimSpace(dbOwner) != "" {
+			owner = strings.TrimSpace(dbOwner)
+			ok = true
+			s.agentOwnersMu.Lock()
+			s.agentOwners[agent] = owner
+			s.agentOwnersMu.Unlock()
+		}
+	}
 	if !ok {
 		// Compatibility path: bind unowned pre-existing agents to current user.
 		s.bindAgentOwner(agent, userID)

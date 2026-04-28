@@ -31,6 +31,34 @@ func (s *PersistentService) RegisterAgent(did string) Agent {
 	return Agent{DID: did}
 }
 
+func (s *PersistentService) BindAgentOwner(agentDID string, userID string) error {
+	if strings.TrimSpace(agentDID) == "" || strings.TrimSpace(userID) == "" {
+		return nil
+	}
+	_, err := s.store.DB.Exec(`
+INSERT INTO agent_owner (agent_did, user_id, created_at, updated_at)
+VALUES (?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())
+ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), updated_at = UTC_TIMESTAMP()`,
+		strings.TrimSpace(agentDID), strings.TrimSpace(userID))
+	return err
+}
+
+func (s *PersistentService) AgentOwner(agentDID string) (string, bool, error) {
+	agent := strings.TrimSpace(agentDID)
+	if agent == "" {
+		return "", false, nil
+	}
+	var owner string
+	err := s.store.DB.QueryRow(`SELECT user_id FROM agent_owner WHERE agent_did = ? LIMIT 1`, agent).Scan(&owner)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return strings.TrimSpace(owner), true, nil
+}
+
 func (s *PersistentService) SetAgentPublicKey(did string, pubKey string) error {
 	if _, err := s.store.DB.Exec(`UPDATE agent_did SET did_pub_key = ? WHERE did = ?`, pubKey, did); err != nil {
 		return err
