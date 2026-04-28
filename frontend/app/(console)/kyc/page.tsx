@@ -2,11 +2,12 @@
 
 import { useMutation } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useLocale } from "@/components/locale-provider";
 import { useToast } from "@/components/toast-provider";
 import {
   getBridgeCustomerStatus,
-  getBridgeHostedKycLink,
+  getBridgeCustomerKycLink,
   listAgents,
   syncBridgeCustomer,
 } from "@/lib/console-api";
@@ -26,6 +27,7 @@ function formatKycHint(status: string, t: (k: string) => string) {
 export default function KycPage() {
   const { t, locale } = useLocale();
   const { showToast } = useToast();
+  const searchParams = useSearchParams();
   const [agentDid, setAgentDid] = useState("");
   const [status, setStatus] = useState<{
     agentDid: string;
@@ -36,6 +38,17 @@ export default function KycPage() {
     updatedAt: string;
   } | null>(null);
   const [endorsement, setEndorsement] = useState("");
+  const [hostedKycUrl, setHostedKycUrl] = useState("");
+  const [manualAgentDid, setManualAgentDid] = useState("");
+  const [manualCurrency, setManualCurrency] = useState<"GUSD" | "USDC" | "USDT">("USDC");
+  const [manualAddressResult, setManualAddressResult] = useState<{
+    mode: string;
+    agentDid: string;
+    currency: string;
+    chainId: string;
+    address: string;
+    isSelfHosted: boolean;
+  } | null>(null);
 
   const agentsQuery = useQuery({
     queryKey: ["agents-for-kyc"],
@@ -63,14 +76,56 @@ export default function KycPage() {
   });
 
   const hostedKycMutation = useMutation({
-    mutationFn: () => getBridgeHostedKycLink(agentDid.trim(), endorsement.trim() || undefined),
+    mutationFn: () =>
+      getBridgeCustomerKycLink({
+        agentDid: agentDid.trim(),
+        endorsement: endorsement.trim() || undefined,
+        redirectUri:
+          typeof window !== "undefined"
+            ? `${window.location.origin}/kyc?from=bridge_kyc&agentDid=${encodeURIComponent(agentDid.trim())}`
+            : undefined,
+      }),
     onSuccess: (data) => {
       if (data.url) {
+        setHostedKycUrl(data.url);
         setStatus((prev) => (prev ? { ...prev, hostedKycUrl: data.url } : prev));
         window.open(data.url, "_blank", "noopener,noreferrer");
         showToast("success", t("kyc.hostedLinkOpened"));
       } else {
         showToast("error", t("kyc.hostedLinkMissing"));
+      }
+    },
+    onError: (err) => showToast("error", toReadableError(err, locale)),
+  });
+
+  const manualAddressMutation = useMutation({
+    mutationFn: async () => {
+      const selectedAgent = manualAgentDid.trim() || agentDid.trim();
+      const params = new URLSearchParams({
+        agentDid: selectedAgent,
+        currency: manualCurrency,
+        mode: "platform",
+      });
+      const response = await fetch(`/api/backend/fund/recharge/address?${params.toString()}`);
+      const payload = await response.json();
+      if (!response.ok || payload?.code !== "0") {
+        throw new Error(payload?.message || "address query failed");
+      }
+      return payload.data as {
+        mode: string;
+        agentDid: string;
+        currency: string;
+        chainId: string;
+        address: string;
+        isSelfHosted: boolean;
+      };
+    },
+    onSuccess: (data) => {
+      setManualAddressResult(data);
+      if (data.address) {
+        showToast("success", t("kyc.addressQuerySuccess"));
+      } else {
+        showToast("error", t("kyc.addressQueryPending"));
       }
     },
     onError: (err) => showToast("error", toReadableError(err, locale)),
@@ -82,6 +137,14 @@ export default function KycPage() {
         <h2 className="text-xl font-semibold">{t("kyc.title")}</h2>
         <p className="mt-1 text-sm text-slate-400">{t("kyc.subtitle")}</p>
       </div>
+      {searchParams.get("from") === "bridge_kyc" ? (
+        <div className="rounded-xl border border-emerald-700/60 bg-emerald-950/30 p-4 text-sm text-emerald-200">
+          <p>{t("kyc.returnedFromHostedHint")}</p>
+          <p className="mt-1 text-xs text-emerald-300">
+            {t("kyc.returnedAgentHint")}: {searchParams.get("agentDid") || "N/A"}
+          </p>
+        </div>
+      ) : null}
 
       <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
         <h3 className="text-sm font-medium text-slate-200">{t("kyc.agentBinding")}</h3>
@@ -160,6 +223,9 @@ export default function KycPage() {
                 Hosted KYC URL: {status.hostedKycUrl}
               </p>
             ) : null}
+            {hostedKycUrl && !status.hostedKycUrl ? (
+              <p className="mt-1 break-all text-sky-300">Hosted KYC URL: {hostedKycUrl}</p>
+            ) : null}
             <p className="mt-2 text-slate-300">{formatKycHint(status.kycStatus, t)}</p>
             {status.lastError ? <p className="mt-2 text-rose-300">Error: {status.lastError}</p> : null}
             <p className="mt-2 text-slate-400">Updated: {status.updatedAt}</p>
@@ -176,6 +242,43 @@ export default function KycPage() {
           <li>{t("kyc.nextStep2")}</li>
           <li>{t("kyc.nextStep3")}</li>
         </ol>
+      </div>
+      <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+        <h3 className="text-sm font-medium text-slate-200">{t("kyc.recheckAddressTitle")}</h3>
+        <p className="mt-2 text-xs text-slate-400">{t("kyc.recheckAddressSubtitle")}</p>
+        <div className="mt-3 grid gap-2 md:grid-cols-[1fr_160px_auto]">
+          <input
+            list="kyc-agent-options"
+            value={manualAgentDid}
+            onChange={(e) => setManualAgentDid(e.target.value)}
+            placeholder={t("kyc.agentDidPlaceholder")}
+            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+          />
+          <select
+            value={manualCurrency}
+            onChange={(e) => setManualCurrency(e.target.value as "GUSD" | "USDC" | "USDT")}
+            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+          >
+            <option value="GUSD">GUSD</option>
+            <option value="USDC">USDC</option>
+            <option value="USDT">USDT</option>
+          </select>
+          <button
+            type="button"
+            onClick={() => manualAddressMutation.mutate()}
+            className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200"
+          >
+            {t("kyc.recheckAddressAction")}
+          </button>
+        </div>
+        {manualAddressResult ? (
+          <div className="mt-3 rounded-md border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-200">
+            <p>Mode: {manualAddressResult.mode}</p>
+            <p>Currency: {manualAddressResult.currency}</p>
+            <p>Chain: {manualAddressResult.chainId || "N/A"}</p>
+            <p>Address: {manualAddressResult.address || "N/A"}</p>
+          </div>
+        ) : null}
       </div>
     </section>
   );
