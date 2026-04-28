@@ -24,7 +24,7 @@ func isValidChannelMode(mode string) bool {
 	}
 }
 
-func evaluateRiskWithConfig(cfg RiskConfig, merchantID string, amount float64) *APIError {
+func evaluateRiskWithConfig(cfg RiskConfig, merchantID string, currency string, amount float64) *APIError {
 	if !cfg.Enabled {
 		return nil
 	}
@@ -34,7 +34,13 @@ func evaluateRiskWithConfig(cfg RiskConfig, merchantID string, amount float64) *
 			return &APIError{Code: "PAY-002", Message: "risk blocked merchant"}
 		}
 	}
-	if amount > cfg.SingleAmountLimit {
+	limit := cfg.SingleAmountLimit
+	if cfg.SingleAmountLimitByCcy != nil {
+		if v, ok := cfg.SingleAmountLimitByCcy[NormalizeCurrency(currency)]; ok && v > 0 {
+			limit = v
+		}
+	}
+	if amount > limit {
 		return &APIError{Code: "PAY-002", Message: "risk amount exceeded"}
 	}
 	return nil
@@ -62,10 +68,10 @@ func decideChannelByRoute(routes map[string]ChannelRoute, merchantID string) cha
 	}
 }
 
-func (s *Service) evaluateP2Risk(merchantID string, amount float64) *APIError {
+func (s *Service) evaluateP2Risk(merchantID string, currency string, amount float64) *APIError {
 	cfg := s.riskConfig
 	cfg.BlockedMerchants = append([]string{}, s.riskConfig.BlockedMerchants...)
-	return evaluateRiskWithConfig(cfg, merchantID, amount)
+	return evaluateRiskWithConfig(cfg, merchantID, currency, amount)
 }
 
 func (s *Service) decideChannelPath(merchantID string) channelDecision {
@@ -111,12 +117,12 @@ func (s *PersistentService) loadChannelRoutes() map[string]ChannelRoute {
 	return out
 }
 
-func (s *PersistentService) evaluateP2Risk(merchantID string, amount float64) *APIError {
+func (s *PersistentService) evaluateP2Risk(merchantID string, currency string, amount float64) *APIError {
 	cfg, err := s.getRiskConfig()
 	if err != nil {
 		return &APIError{Code: "PAY-010", Message: "load risk config failed"}
 	}
-	return evaluateRiskWithConfig(cfg, merchantID, amount)
+	return evaluateRiskWithConfig(cfg, merchantID, currency, amount)
 }
 
 func (s *PersistentService) decideChannelPath(merchantID string) channelDecision {

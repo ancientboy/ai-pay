@@ -169,7 +169,7 @@ func TestPayRiskConfigCanDisableChecks(t *testing.T) {
 	acc := svc.CreateAccount("did:gusd:agent:risk-disable")
 	_ = svc.Recharge(acc.VAAccountID, "GUSD", "5000", "rch-risk-disable")
 	_ = svc.SetAuthorizeRule("did:gusd:agent:risk-disable", "5000", "10000", []string{"m1"})
-	_, _ = svc.SetRiskConfig(false, "1000", []string{"m1"})
+	_, _ = svc.SetRiskConfig(false, "1000", map[string]string{"USDC":"1500"}, []string{"m1"})
 
 	resp, err := svc.Pay(PayRequest{
 		PayerDID:       "did:gusd:agent:risk-disable",

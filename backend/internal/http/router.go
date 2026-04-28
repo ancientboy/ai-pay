@@ -132,6 +132,9 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /developer/channel-routes", s.withReadAuth(http.HandlerFunc(s.handleChannelRouteList)))
 	mux.Handle("POST /developer/channel-routes", s.withAdminAuth(http.HandlerFunc(s.handleChannelRouteSet)))
 	mux.Handle("DELETE /developer/channel-routes", s.withAdminAuth(http.HandlerFunc(s.handleChannelRouteDelete)))
+	mux.Handle("GET /developer/stablecoin-config", s.withReadAuth(http.HandlerFunc(s.handleStablecoinConfigList)))
+	mux.Handle("POST /developer/stablecoin-config", s.withAdminAuth(http.HandlerFunc(s.handleStablecoinConfigSet)))
+	mux.Handle("GET /fund/recharge/confirm", s.withReadAuth(http.HandlerFunc(s.handleRechargeConfirmQuery)))
 	mux.Handle("POST /fund/transfer", s.withM6Funds(s.withAdminAuth(http.HandlerFunc(s.handleFundTransfer))))
 	mux.Handle("POST /fund/withdraw", s.withM6Funds(s.withAdminAuth(http.HandlerFunc(s.handleFundWithdraw))))
 	mux.Handle("POST /payment/debit/preview", s.withM6Funds(http.HandlerFunc(s.handleDebitPreview)))
@@ -1654,9 +1657,10 @@ type replayWebhookDeliveryReq struct {
 }
 
 type riskConfigSetReq struct {
-	Enabled           bool     `json:"enabled"`
-	SingleAmountLimit string   `json:"singleAmountLimit"`
-	BlockedMerchants  []string `json:"blockedMerchants"`
+	Enabled                bool              `json:"enabled"`
+	SingleAmountLimit      string            `json:"singleAmountLimit"`
+	SingleAmountLimitByCcy map[string]string `json:"singleAmountLimitByCurrency"`
+	BlockedMerchants       []string          `json:"blockedMerchants"`
 }
 
 type channelRouteSetReq struct {
@@ -1806,7 +1810,7 @@ func (s *Server) handleRiskConfigSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
-	item, err := s.svc.SetRiskConfig(req.Enabled, req.SingleAmountLimit, req.BlockedMerchants)
+	item, err := s.svc.SetRiskConfig(req.Enabled, req.SingleAmountLimit, req.SingleAmountLimitByCcy, req.BlockedMerchants)
 	if err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
 			writeAPIError(w, apiErr)
@@ -2404,4 +2408,66 @@ func (s *callbackDedupeStore) prune(now time.Time) {
 func callbackDigest(body []byte, ts, nonce string) string {
 	sum := sha256.Sum256([]byte(string(body) + "|" + strings.TrimSpace(ts) + "|" + strings.TrimSpace(nonce)))
 	return hex.EncodeToString(sum[:])
+}
+
+
+type stablecoinConfigSetReq struct {
+	Currency         string `json:"currency"`
+	Enabled          bool   `json:"enabled"`
+	ChainID          string `json:"chainId"`
+	RPCURL           string `json:"rpcUrl"`
+	TokenContract    string `json:"tokenContract"`
+	Decimals         int    `json:"decimals"`
+	HotWallet        string `json:"hotWallet"`
+	MinConfirmations int    `json:"minConfirmations"`
+	RiskThreshold    string `json:"riskThreshold"`
+}
+
+func (s *Server) handleStablecoinConfigList(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": s.svc.ListStablecoinConfigs()})
+}
+
+func (s *Server) handleStablecoinConfigSet(w http.ResponseWriter, r *http.Request) {
+	var req stablecoinConfigSetReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || service.NormalizeCurrency(req.Currency) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	threshold := 0.0
+	if strings.TrimSpace(req.RiskThreshold) != "" {
+		v, err := strconv.ParseFloat(strings.TrimSpace(req.RiskThreshold), 64)
+		if err != nil || v <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid riskThreshold"})
+			return
+		}
+		threshold = v
+	}
+	item, err := s.svc.SetStablecoinConfig(service.StablecoinConfig{Currency: req.Currency, Enabled: req.Enabled, ChainID: req.ChainID, RPCURL: req.RPCURL, TokenContract: req.TokenContract, Decimals: req.Decimals, HotWallet: req.HotWallet, MinConfirmations: req.MinConfirmations, RiskThreshold: threshold})
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "set stablecoin config", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handleRechargeConfirmQuery(w http.ResponseWriter, r *http.Request) {
+	rechargeID := strings.TrimSpace(r.URL.Query().Get("rechargeId"))
+	if rechargeID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	item, err := s.svc.GetRechargeConfirmation(rechargeID)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "recharge confirmation query", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
 }

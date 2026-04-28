@@ -170,10 +170,34 @@ type AuditLog struct {
 }
 
 type RiskConfig struct {
-	Enabled           bool      `json:"enabled"`
-	SingleAmountLimit float64   `json:"singleAmountLimit"`
-	BlockedMerchants  []string  `json:"blockedMerchants"`
-	UpdatedAt         time.Time `json:"updatedAt"`
+	Enabled                bool               `json:"enabled"`
+	SingleAmountLimit      float64            `json:"singleAmountLimit"`
+	SingleAmountLimitByCcy map[string]float64 `json:"singleAmountLimitByCurrency"`
+	BlockedMerchants       []string           `json:"blockedMerchants"`
+	UpdatedAt              time.Time          `json:"updatedAt"`
+}
+
+type StablecoinConfig struct {
+	Currency         string    `json:"currency"`
+	Enabled          bool      `json:"enabled"`
+	ChainID          string    `json:"chainId"`
+	RPCURL           string    `json:"rpcUrl"`
+	TokenContract    string    `json:"tokenContract"`
+	Decimals         int       `json:"decimals"`
+	HotWallet        string    `json:"hotWallet"`
+	MinConfirmations int       `json:"minConfirmations"`
+	RiskThreshold    float64   `json:"riskThreshold"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+}
+
+type RechargeConfirmationStatus struct {
+	RechargeID       string    `json:"rechargeId"`
+	Currency         string    `json:"currency"`
+	RequiredConfirm  int       `json:"requiredConfirmations"`
+	CurrentConfirm   int       `json:"currentConfirmations"`
+	Confirmed        bool      `json:"confirmed"`
+	Status           string    `json:"status"`
+	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
 type ChannelRoute struct {
@@ -336,6 +360,7 @@ type Service struct {
 	agentOwners      map[string]string
 	subscriptions    map[string]UserSubscription
 	invoices         []BillingInvoice
+	stablecoinCfgs   map[string]StablecoinConfig
 }
 
 type holdRecord struct {
@@ -392,10 +417,13 @@ type PaymentService interface {
 	AppendAuditLog(actor string, role string, action string, resource string, requestID string, detail map[string]any) error
 	ListAuditLogs(action string, resource string, limit int, offset int) []AuditLog
 	GetRiskConfig() RiskConfig
-	SetRiskConfig(enabled bool, singleAmountLimit string, blockedMerchants []string) (RiskConfig, error)
+	SetRiskConfig(enabled bool, singleAmountLimit string, singleLimitByCurrency map[string]string, blockedMerchants []string) (RiskConfig, error)
 	ListChannelRoutes() []ChannelRoute
 	SetChannelRoute(merchantID string, mode string) (ChannelRoute, error)
 	DeleteChannelRoute(merchantID string) error
+	ListStablecoinConfigs() []StablecoinConfig
+	SetStablecoinConfig(cfg StablecoinConfig) (StablecoinConfig, error)
+	GetRechargeConfirmation(rechargeID string) (RechargeConfirmationStatus, error)
 	// M6 funds & payment extensions (gated by FEATURE_M6_FUNDS at HTTP layer).
 	TransferFunds(fromAccountID string, toAccountID string, currency string, amount string, idemKey string) error
 	WithdrawFunds(vaAccountID string, currency string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error)
@@ -443,6 +471,7 @@ func New() *Service {
 		riskConfig: RiskConfig{
 			Enabled:           true,
 			SingleAmountLimit: 1000,
+			SingleAmountLimitByCcy: map[string]float64{"GUSD": 1000, "USDC": 1000, "USDT": 1000},
 			BlockedMerchants:  []string{"m_risk_block"},
 			UpdatedAt:         time.Now().UTC(),
 		},
@@ -461,6 +490,11 @@ func New() *Service {
 		agentOwners:      map[string]string{},
 		subscriptions:    map[string]UserSubscription{},
 		invoices:         []BillingInvoice{},
+		stablecoinCfgs: map[string]StablecoinConfig{
+			"GUSD": {Currency: "GUSD", Enabled: true, ChainID: "eth-mainnet", Decimals: 2, MinConfirmations: 6, RiskThreshold: 10000, UpdatedAt: time.Now().UTC()},
+			"USDC": {Currency: "USDC", Enabled: true, ChainID: "eth-mainnet", Decimals: 6, MinConfirmations: 12, RiskThreshold: 10000, UpdatedAt: time.Now().UTC()},
+			"USDT": {Currency: "USDT", Enabled: true, ChainID: "eth-mainnet", Decimals: 6, MinConfirmations: 12, RiskThreshold: 10000, UpdatedAt: time.Now().UTC()},
+		},
 	}
 }
 
@@ -864,7 +898,7 @@ func (s *Service) Pay(req PayRequest) (PayResponse, *APIError) {
 	if _, ok := rule.Whitelist[req.MerchantID]; !ok {
 		return PayResponse{}, &APIError{Code: "PAY-002", Message: "merchant not whitelisted"}
 	}
-	if riskErr := s.evaluateP2Risk(req.MerchantID, amount); riskErr != nil {
+	if riskErr := s.evaluateP2Risk(req.MerchantID, req.Currency, amount); riskErr != nil {
 		return PayResponse{}, riskErr
 	}
 
@@ -1156,6 +1190,11 @@ func parseAmount(v string) (float64, error) {
 		return 0, err
 	}
 	return n, nil
+}
+
+func amountMinor(amount float64, decimals int) int64 {
+	factor := math.Pow10(decimals)
+	return int64(math.Round(amount * factor))
 }
 
 func calcFee(amount float64) float64 {
@@ -1626,7 +1665,7 @@ func (s *Service) GetRiskConfig() RiskConfig {
 	return out
 }
 
-func (s *Service) SetRiskConfig(enabled bool, singleAmountLimit string, blockedMerchants []string) (RiskConfig, error) {
+func (s *Service) SetRiskConfig(enabled bool, singleAmountLimit string, singleLimitByCurrency map[string]string, blockedMerchants []string) (RiskConfig, error) {
 	limit, err := parseAmount(singleAmountLimit)
 	if err != nil || limit <= 0 {
 		return RiskConfig{}, &APIError{Code: "PAY-010", Message: "invalid singleAmountLimit"}
@@ -1808,7 +1847,7 @@ func (s *Service) DebitPreview(agentDID string, merchantID string, amount string
 	if _, ok := rule.Whitelist[merchantID]; !ok {
 		return DebitPreview{}, &APIError{Code: "PAY-002", Message: "merchant not whitelisted"}
 	}
-	if riskErr := evaluateRiskWithConfig(s.riskConfig, merchantID, v); riskErr != nil {
+	if riskErr := evaluateRiskWithConfig(s.riskConfig, "GUSD", merchantID, v); riskErr != nil {
 		return DebitPreview{}, riskErr
 	}
 	const feeRate = 0.003
@@ -1978,4 +2017,58 @@ func (s *Service) enqueueWebhookDelivery(event, dedupeKey string, payload map[st
 		}
 		s.webhookDeliver = append([]WebhookDelivery{item}, s.webhookDeliver...)
 	}
+}
+
+
+func (s *Service) ListStablecoinConfigs() []StablecoinConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]StablecoinConfig, 0, len(s.stablecoinCfgs))
+	for _, v := range s.stablecoinCfgs {
+		out = append(out, v)
+	}
+	return out
+}
+
+func (s *Service) SetStablecoinConfig(cfg StablecoinConfig) (StablecoinConfig, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := NormalizeCurrency(cfg.Currency)
+	if c == "" {
+		return StablecoinConfig{}, &APIError{Code: "PAY-010", Message: "invalid currency"}
+	}
+	cfg.Currency = c
+	if cfg.Decimals < 0 {
+		return StablecoinConfig{}, &APIError{Code: "PAY-010", Message: "invalid decimals"}
+	}
+	if cfg.MinConfirmations <= 0 {
+		cfg.MinConfirmations = 1
+	}
+	cfg.UpdatedAt = time.Now().UTC()
+	s.stablecoinCfgs[c] = cfg
+	return cfg, nil
+}
+
+func (s *Service) GetRechargeConfirmation(rechargeID string) (RechargeConfirmationStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rechargeID = strings.TrimSpace(rechargeID)
+	if rechargeID == "" {
+		return RechargeConfirmationStatus{}, &APIError{Code: "PAY-010", Message: "invalid recharge id"}
+	}
+	for _, r := range s.recharges {
+		if r.RechargeID == rechargeID {
+			cfg, ok := s.stablecoinCfgs[NormalizeCurrency(r.Currency)]
+			req := 12
+			if ok && cfg.MinConfirmations > 0 {
+				req = cfg.MinConfirmations
+			}
+			cur := req
+			if strings.EqualFold(r.Status, "PENDING") {
+				cur = req / 2
+			}
+			return RechargeConfirmationStatus{RechargeID: r.RechargeID, Currency: NormalizeCurrency(r.Currency), RequiredConfirm: req, CurrentConfirm: cur, Confirmed: cur >= req, Status: r.Status, UpdatedAt: time.Now().UTC()}, nil
+		}
+	}
+	return RechargeConfirmationStatus{}, &APIError{Code: "PAY-010", Message: "recharge not found"}
 }

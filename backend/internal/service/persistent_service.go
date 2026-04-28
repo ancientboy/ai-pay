@@ -788,7 +788,7 @@ func (s *PersistentService) GetRiskConfig() RiskConfig {
 	return cfg
 }
 
-func (s *PersistentService) SetRiskConfig(enabled bool, singleAmountLimit string, blockedMerchants []string) (RiskConfig, error) {
+func (s *PersistentService) SetRiskConfig(enabled bool, singleAmountLimit string, singleLimitByCurrency map[string]string, blockedMerchants []string) (RiskConfig, error) {
 	limit, err := parseAmount(singleAmountLimit)
 	if err != nil || limit <= 0 {
 		return RiskConfig{}, &APIError{Code: "PAY-010", Message: "invalid singleAmountLimit"}
@@ -808,13 +808,16 @@ func (s *PersistentService) SetRiskConfig(enabled bool, singleAmountLimit string
 	}
 	raw, _ := json.Marshal(trimmed)
 	if _, err := s.store.DB.Exec(`
-INSERT INTO risk_config (id, enabled, single_amount_limit, blocked_merchants, updated_at)
-VALUES (1, ?, ?, ?, UTC_TIMESTAMP())
+INSERT INTO risk_config (id, enabled, single_amount_limit, single_amount_limit_gusd, single_amount_limit_usdc, single_amount_limit_usdt, blocked_merchants, updated_at)
+VALUES (1, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())
 ON DUPLICATE KEY UPDATE
   enabled = VALUES(enabled),
   single_amount_limit = VALUES(single_amount_limit),
+  single_amount_limit_gusd = VALUES(single_amount_limit_gusd),
+  single_amount_limit_usdc = VALUES(single_amount_limit_usdc),
+  single_amount_limit_usdt = VALUES(single_amount_limit_usdt),
   blocked_merchants = VALUES(blocked_merchants),
-  updated_at = UTC_TIMESTAMP()`, enabled, limit, string(raw)); err != nil {
+  updated_at = UTC_TIMESTAMP()`, enabled, limit, limit, limit, limit, string(raw)); err != nil {
 		return RiskConfig{}, err
 	}
 	return s.getRiskConfig()
@@ -908,7 +911,7 @@ WHERE agent_did = ?
 	if !merchantInWhitelist(whiteList, req.MerchantID) {
 		return PayResponse{}, &APIError{Code: "PAY-002", Message: "merchant not whitelisted"}
 	}
-	if riskErr := s.evaluateP2Risk(req.MerchantID, amount); riskErr != nil {
+	if riskErr := s.evaluateP2Risk(req.MerchantID, req.Currency, amount); riskErr != nil {
 		return PayResponse{}, riskErr
 	}
 
@@ -1775,7 +1778,7 @@ WHERE agent_did = ?
 	if !merchantInWhitelist(whiteList, merchantID) {
 		return DebitPreview{}, &APIError{Code: "PAY-002", Message: "merchant not whitelisted"}
 	}
-	if riskErr := s.evaluateP2Risk(merchantID, v); riskErr != nil {
+	if riskErr := s.evaluateP2Risk(merchantID, "GUSD", v); riskErr != nil {
 		return DebitPreview{}, riskErr
 	}
 	const feeRate = 0.003
@@ -2018,7 +2021,7 @@ func (s *PersistentService) PayVirtualCard(agentDID string, cardID string, merch
 	} else if err != nil && err != redis.Nil {
 		return "", err
 	}
-	if riskErr := s.evaluateP2Risk(merchantID, amt); riskErr != nil {
+	if riskErr := s.evaluateP2Risk(merchantID, "GUSD", amt); riskErr != nil {
 		s.appendRiskAuditRow("risk.transaction.check", "", merchantID, "", map[string]any{"amount": amt, "decision": "BLOCKED", "reason": riskErr.Message})
 		return "", riskErr
 	}
@@ -2121,7 +2124,7 @@ func (s *PersistentService) RiskTransactionCheck(agentDID string, merchantID str
 	if err != nil || amt <= 0 {
 		return nil, &APIError{Code: "PAY-010", Message: "invalid amount"}
 	}
-	if r := s.evaluateP2Risk(merchantID, amt); r != nil {
+	if r := s.evaluateP2Risk(merchantID, "GUSD", amt); r != nil {
 		s.appendRiskAuditRow("risk.transaction.check", agentDID, merchantID, transactionID, map[string]any{"amount": amt, "decision": "BLOCKED", "code": r.Code})
 		return map[string]any{
 			"decision":      "BLOCK",
@@ -2437,4 +2440,63 @@ SELECT agent_did, merchant_id, amount, status, expires_at, session_id FROM payme
 		_, _ = s.store.DB.Exec(`UPDATE payment_sign_request SET status='COMPLETED' WHERE sign_id=?`, signID)
 	}
 	return resp, apiErr
+}
+
+
+func (s *PersistentService) ListStablecoinConfigs() []StablecoinConfig {
+	rows, err := s.store.DB.Query(`SELECT currency, enabled, chain_id, rpc_url, token_contract, decimals, hot_wallet, min_confirmations, risk_threshold, updated_at FROM stablecoin_config ORDER BY currency`)
+	if err != nil {
+		return []StablecoinConfig{}
+	}
+	defer rows.Close()
+	out := make([]StablecoinConfig, 0)
+	for rows.Next() {
+		var item StablecoinConfig
+		if err := rows.Scan(&item.Currency, &item.Enabled, &item.ChainID, &item.RPCURL, &item.TokenContract, &item.Decimals, &item.HotWallet, &item.MinConfirmations, &item.RiskThreshold, &item.UpdatedAt); err == nil {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func (s *PersistentService) SetStablecoinConfig(cfg StablecoinConfig) (StablecoinConfig, error) {
+	cfg.Currency = NormalizeCurrency(cfg.Currency)
+	if cfg.Currency == "" {
+		return StablecoinConfig{}, &APIError{Code: "PAY-010", Message: "invalid currency"}
+	}
+	if cfg.MinConfirmations <= 0 {
+		cfg.MinConfirmations = 1
+	}
+	if _, err := s.store.DB.Exec(`
+INSERT INTO stablecoin_config (currency, enabled, chain_id, rpc_url, token_contract, decimals, hot_wallet, min_confirmations, risk_threshold, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())
+ON DUPLICATE KEY UPDATE
+  enabled = VALUES(enabled), chain_id = VALUES(chain_id), rpc_url = VALUES(rpc_url), token_contract = VALUES(token_contract), decimals = VALUES(decimals), hot_wallet = VALUES(hot_wallet), min_confirmations = VALUES(min_confirmations), risk_threshold = VALUES(risk_threshold), updated_at = UTC_TIMESTAMP()`,
+		cfg.Currency, cfg.Enabled, cfg.ChainID, cfg.RPCURL, cfg.TokenContract, cfg.Decimals, cfg.HotWallet, cfg.MinConfirmations, cfg.RiskThreshold); err != nil {
+		return StablecoinConfig{}, err
+	}
+	cfg.UpdatedAt = time.Now().UTC()
+	return cfg, nil
+}
+
+func (s *PersistentService) GetRechargeConfirmation(rechargeID string) (RechargeConfirmationStatus, error) {
+	rechargeID = strings.TrimSpace(rechargeID)
+	if rechargeID == "" {
+		return RechargeConfirmationStatus{}, &APIError{Code: "PAY-010", Message: "invalid recharge id"}
+	}
+	var c RechargeConfirmationStatus
+	c.UpdatedAt = time.Now().UTC()
+	if err := s.store.DB.QueryRow(`SELECT recharge_id, COALESCE(currency,'GUSD'), status FROM fund_recharge_order WHERE recharge_id = ?`, rechargeID).Scan(&c.RechargeID, &c.Currency, &c.Status); err != nil {
+		return RechargeConfirmationStatus{}, &APIError{Code: "PAY-010", Message: "recharge not found"}
+	}
+	c.Currency = NormalizeCurrency(c.Currency)
+	c.RequiredConfirm = 12
+	_ = s.store.DB.QueryRow(`SELECT min_confirmations FROM stablecoin_config WHERE currency = ?`, c.Currency).Scan(&c.RequiredConfirm)
+	if strings.EqualFold(c.Status, "SETTLED") {
+		c.CurrentConfirm = c.RequiredConfirm
+	} else {
+		c.CurrentConfirm = c.RequiredConfirm / 2
+	}
+	c.Confirmed = c.CurrentConfirm >= c.RequiredConfirm
+	return c, nil
 }
