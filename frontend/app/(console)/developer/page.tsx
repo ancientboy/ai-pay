@@ -196,6 +196,23 @@ export default function DeveloperPage() {
     },
     onError: (err) => showToast("error", toReadableError(err, locale)),
   });
+  function applyStablecoinFromList() {
+    const selected = (stablecoinConfigsQuery.data ?? []).find((item) => item.currency === scCurrency);
+    if (!selected) {
+      showToast("error", "stablecoin config not found");
+      return;
+    }
+    setScEnabled(selected.enabled);
+    setScChainId(selected.chainId ?? "");
+    setScRpcUrl(selected.rpcUrl ?? "");
+    setScTokenContract(selected.tokenContract ?? "");
+    setScDecimals(String(selected.decimals ?? 6));
+    setScHotWallet(selected.hotWallet ?? "");
+    setScMinConfirmations(String(selected.minConfirmations ?? 12));
+    setScRiskThreshold(String(selected.riskThreshold ?? 10000));
+    showToast("info", `loaded ${selected.currency} config`);
+  }
+
   const setStablecoinConfigMutation = useMutation({
     mutationFn: () =>
       setStablecoinConfig({
@@ -580,7 +597,10 @@ export default function DeveloperPage() {
           <input value={scRiskThreshold} onChange={(e)=>setScRiskThreshold(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="riskThreshold" />
           <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={scEnabled} onChange={(e)=>setScEnabled(e.target.checked)} />enabled</label>
         </div>
-        <button onClick={()=>setStablecoinConfigMutation.mutate()} className="mt-3 rounded-md bg-blue-600 px-3 py-2 text-sm text-white">Save Stablecoin Config</button>
+        <div className="mt-3 flex gap-2">
+          <button onClick={applyStablecoinFromList} className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200">Load Selected</button>
+          <button onClick={()=>setStablecoinConfigMutation.mutate()} className="rounded-md bg-blue-600 px-3 py-2 text-sm text-white">Save Stablecoin Config</button>
+        </div>
         <ul className="mt-3 space-y-2 text-xs text-slate-300">
           {(stablecoinConfigsQuery.data ?? []).map((item)=> (
             <li key={item.currency} className="rounded border border-slate-800 p-2">{item.currency} · {item.chainId || '-'} · conf={item.minConfirmations} · {item.enabled ? 'enabled' : 'disabled'}</li>
@@ -605,6 +625,35 @@ export default function DeveloperPage() {
           />
           <button onClick={() => auditLogsQuery.refetch()} className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200">
             {t("developer.refresh")}
+          </button>
+        </div>
+        <div className="mt-2 flex flex-wrap gap-2 text-xs">
+          <button
+            onClick={() => {
+              setAuditAction("risk_config_set");
+              setAuditResource("global");
+            }}
+            className="rounded border border-slate-700 px-2 py-1 text-slate-200"
+          >
+            Risk Config Audit
+          </button>
+          <button
+            onClick={() => {
+              setAuditAction("channel_route_set");
+              setAuditResource("");
+            }}
+            className="rounded border border-slate-700 px-2 py-1 text-slate-200"
+          >
+            Channel Route Audit
+          </button>
+          <button
+            onClick={() => {
+              setAuditAction("");
+              setAuditResource("");
+            }}
+            className="rounded border border-slate-700 px-2 py-1 text-slate-200"
+          >
+            Clear Audit Filters
           </button>
         </div>
         <ul className="mt-3 space-y-2 text-xs text-slate-300">
