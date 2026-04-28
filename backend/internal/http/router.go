@@ -137,6 +137,9 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /developer/stablecoin-config", s.withReadAuth(http.HandlerFunc(s.handleStablecoinConfigList)))
 	mux.Handle("POST /developer/stablecoin-config", s.withAdminAuth(http.HandlerFunc(s.handleStablecoinConfigSet)))
 	mux.Handle("GET /developer/stablecoin-provider/health", s.withReadAuth(http.HandlerFunc(s.handleStablecoinProviderHealth)))
+	mux.Handle("POST /bridge/customer/sync", s.withReadAuth(http.HandlerFunc(s.handleBridgeCustomerSync)))
+	mux.Handle("GET /bridge/customer/status", s.withReadAuth(http.HandlerFunc(s.handleBridgeCustomerStatus)))
+	mux.Handle("POST /bridge/webhook", http.HandlerFunc(s.handleBridgeWebhook))
 	mux.Handle("GET /fund/recharge/confirm", s.withReadAuth(http.HandlerFunc(s.handleRechargeConfirmQuery)))
 	mux.Handle("POST /fund/transfer", s.withM6Funds(s.withAdminAuth(http.HandlerFunc(s.handleFundTransfer))))
 	mux.Handle("POST /fund/withdraw", s.withM6Funds(s.withAdminAuth(http.HandlerFunc(s.handleFundWithdraw))))
@@ -2546,4 +2549,69 @@ func (s *Server) handleStablecoinProviderHealth(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"provider": strings.ToLower(provider), "healthy": true}})
+}
+
+
+type bridgeCustomerSyncReq struct {
+	AgentDID string `json:"agentDid"`
+}
+
+func (s *Server) handleBridgeCustomerSync(w http.ResponseWriter, r *http.Request) {
+	var req bridgeCustomerSyncReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.AgentDID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
+		return
+	}
+	item, err := s.svc.BridgeEnsureCustomer(req.AgentDID)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "bridge customer sync", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handleBridgeCustomerStatus(w http.ResponseWriter, r *http.Request) {
+	agentDID := strings.TrimSpace(r.URL.Query().Get("agentDid"))
+	if agentDID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, agentDID) {
+		return
+	}
+	item, err := s.svc.BridgeGetCustomerStatus(agentDID)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "bridge customer status", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handleBridgeWebhook(w http.ResponseWriter, r *http.Request) {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid body"})
+		return
+	}
+	sig := strings.TrimSpace(r.Header.Get("X-Webhook-Signature"))
+	if err := s.svc.BridgeHandleWebhook(raw, sig); err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "bridge webhook", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
 }

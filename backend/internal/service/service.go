@@ -217,6 +217,14 @@ type RechargeCallback struct {
 	Confirmations  int    `json:"confirmations"`
 }
 
+type BridgeCustomerStatus struct {
+	AgentDID         string    `json:"agentDid"`
+	BridgeCustomerID string    `json:"bridgeCustomerId"`
+	KYCStatus        string    `json:"kycStatus"`
+	LastError        string    `json:"lastError,omitempty"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+}
+
 type ChannelRoute struct {
 	MerchantID string    `json:"merchantId"`
 	Mode       string    `json:"mode"`
@@ -444,6 +452,9 @@ type PaymentService interface {
 	GetRechargeAddress(agentDID string, currency string, mode string) (RechargeAddress, error)
 	HandleRechargeCallback(event RechargeCallback) (RechargeConfirmationStatus, error)
 	CheckWalletProvider(provider string) error
+	BridgeEnsureCustomer(agentDID string) (BridgeCustomerStatus, error)
+	BridgeGetCustomerStatus(agentDID string) (BridgeCustomerStatus, error)
+	BridgeHandleWebhook(rawBody []byte, signatureHeader string) error
 	// M6 funds & payment extensions (gated by FEATURE_M6_FUNDS at HTTP layer).
 	TransferFunds(fromAccountID string, toAccountID string, currency string, amount string, idemKey string) error
 	WithdrawFunds(vaAccountID string, currency string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error)
@@ -2151,5 +2162,26 @@ func (s *Service) CheckWalletProvider(provider string) error {
 	if p == "" {
 		return &APIError{Code: "PAY-010", Message: "invalid provider"}
 	}
+	return nil
+}
+
+
+func (s *Service) BridgeEnsureCustomer(agentDID string) (BridgeCustomerStatus, error) {
+	a := strings.TrimSpace(agentDID)
+	if a == "" {
+		return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "invalid agent did"}
+	}
+	return BridgeCustomerStatus{AgentDID: a, BridgeCustomerID: "mock_" + strings.ReplaceAll(a, ":", "_"), KYCStatus: "approved", UpdatedAt: time.Now().UTC()}, nil
+}
+
+func (s *Service) BridgeGetCustomerStatus(agentDID string) (BridgeCustomerStatus, error) {
+	return s.BridgeEnsureCustomer(agentDID)
+}
+
+func (s *Service) BridgeHandleWebhook(rawBody []byte, signatureHeader string) error {
+	if strings.TrimSpace(signatureHeader) == "" {
+		return &APIError{Code: "PAY-010", Message: "missing bridge webhook signature"}
+	}
+	_ = rawBody
 	return nil
 }

@@ -924,3 +924,22 @@ export function setStablecoinConfig(input: {
 export function checkStablecoinProviderHealth(provider: string) {
   return request<{ provider: string; healthy: boolean }>(`/developer/stablecoin-provider/health?provider=${encodeURIComponent(provider)}`);
 }
+
+export type BridgeCustomerStatus = {
+  agentDid: string;
+  bridgeCustomerId: string;
+  kycStatus: string;
+  lastError?: string;
+  updatedAt: string;
+};
+
+export function syncBridgeCustomer(agentDid: string) {
+  return request<BridgeCustomerStatus>("/bridge/customer/sync", {
+    method: "POST",
+    body: JSON.stringify({ agentDid }),
+  });
+}
+
+export function getBridgeCustomerStatus(agentDid: string) {
+  return request<BridgeCustomerStatus>(`/bridge/customer/status?agentDid=${encodeURIComponent(agentDid)}`);
+}

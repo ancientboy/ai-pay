@@ -2623,3 +2623,42 @@ func (s *PersistentService) CheckWalletProvider(provider string) error {
 	}
 	return nil
 }
+
+
+func (s *PersistentService) BridgeEnsureCustomer(agentDID string) (BridgeCustomerStatus, error) {
+	a := strings.TrimSpace(agentDID)
+	if a == "" {
+		return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "invalid agent did"}
+	}
+	provider := NewBridgeWalletProviderFromEnv()
+	customerID, err := provider.ensureCustomer(a)
+	if err != nil {
+		_, _ = s.store.DB.Exec(`INSERT INTO bridge_customer_map (agent_did, bridge_customer_id, kyc_status, last_error, updated_at) VALUES (?, '', 'error', ?, UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE kyc_status='error', last_error=VALUES(last_error), updated_at=UTC_TIMESTAMP()`, a, err.Error())
+		return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "bridge ensure customer failed"}
+	}
+	_, _ = s.store.DB.Exec(`INSERT INTO bridge_customer_map (agent_did, bridge_customer_id, kyc_status, last_error, updated_at) VALUES (?, ?, 'pending', '', UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE bridge_customer_id=VALUES(bridge_customer_id), updated_at=UTC_TIMESTAMP()`, a, customerID)
+	return s.BridgeGetCustomerStatus(a)
+}
+
+func (s *PersistentService) BridgeGetCustomerStatus(agentDID string) (BridgeCustomerStatus, error) {
+	a := strings.TrimSpace(agentDID)
+	if a == "" {
+		return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "invalid agent did"}
+	}
+	out := BridgeCustomerStatus{AgentDID: a}
+	if err := s.store.DB.QueryRow(`SELECT bridge_customer_id, kyc_status, COALESCE(last_error,''), updated_at FROM bridge_customer_map WHERE agent_did = ?`, a).Scan(&out.BridgeCustomerID, &out.KYCStatus, &out.LastError, &out.UpdatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "bridge customer not found"}
+		}
+		return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "bridge customer query failed"}
+	}
+	return out, nil
+}
+
+func (s *PersistentService) BridgeHandleWebhook(rawBody []byte, signatureHeader string) error {
+	provider := NewBridgeWalletProviderFromEnv()
+	if err := provider.VerifyWebhookSignature(rawBody, signatureHeader); err != nil {
+		return &APIError{Code: "PAY-010", Message: "bridge webhook signature invalid"}
+	}
+	return nil
+}

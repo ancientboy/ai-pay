@@ -22,6 +22,8 @@ import {
   listStablecoinConfigs,
   setStablecoinConfig,
   checkStablecoinProviderHealth,
+  getBridgeCustomerStatus,
+  syncBridgeCustomer,
 } from "@/lib/console-api";
 import { toReadableError } from "@/lib/error-map";
 import { formatStatus } from "@/lib/i18n";
@@ -73,6 +75,8 @@ export default function DeveloperPage() {
   const [scHotWallet, setScHotWallet] = useState("");
   const [scMinConfirmations, setScMinConfirmations] = useState("12");
   const [scRiskThreshold, setScRiskThreshold] = useState("10000");
+  const [bridgeAgentDid, setBridgeAgentDid] = useState("");
+  const [bridgeStatus, setBridgeStatus] = useState<{ agentDid: string; bridgeCustomerId: string; kycStatus: string; lastError?: string; updatedAt: string } | null>(null);
   const pageSize = 10;
 
   const apiKeysQuery = useQuery({
@@ -215,6 +219,21 @@ export default function DeveloperPage() {
     setScRiskThreshold(String(selected.riskThreshold ?? 10000));
     showToast("info", `loaded ${selected.currency} config`);
   }
+
+  const syncBridgeCustomerMutation = useMutation({
+    mutationFn: () => syncBridgeCustomer(bridgeAgentDid.trim()),
+    onSuccess: (data) => {
+      setBridgeStatus(data);
+      showToast("success", `bridge customer synced: ${data.bridgeCustomerId}`);
+    },
+    onError: (err) => showToast("error", toReadableError(err, locale)),
+  });
+
+  const getBridgeCustomerStatusMutation = useMutation({
+    mutationFn: () => getBridgeCustomerStatus(bridgeAgentDid.trim()),
+    onSuccess: (data) => setBridgeStatus(data),
+    onError: (err) => showToast("error", toReadableError(err, locale)),
+  });
 
   const checkStablecoinProviderMutation = useMutation({
     mutationFn: () => checkStablecoinProviderHealth(scProvider),
@@ -618,6 +637,25 @@ export default function DeveloperPage() {
             <li key={item.currency} className="rounded border border-slate-800 p-2">{item.currency} · {item.provider || "mock"} · {item.chainId || "-"} · conf={item.minConfirmations} · {item.enabled ? "enabled" : "disabled"}</li>
           ))}
         </ul>
+      </div>
+
+
+      <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+        <h3 className="text-sm font-medium text-slate-200">Bridge Customer/KYC Sync</h3>
+        <div className="mt-2 flex gap-2">
+          <input value={bridgeAgentDid} onChange={(e)=>setBridgeAgentDid(e.target.value)} className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="agentDid" />
+          <button onClick={()=>syncBridgeCustomerMutation.mutate()} className="rounded-md bg-blue-600 px-3 py-2 text-sm text-white">Sync</button>
+          <button onClick={()=>getBridgeCustomerStatusMutation.mutate()} className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200">Status</button>
+        </div>
+        {bridgeStatus ? (
+          <div className="mt-3 rounded border border-slate-800 p-2 text-xs text-slate-300">
+            <p>agent: {bridgeStatus.agentDid}</p>
+            <p>customer: {bridgeStatus.bridgeCustomerId}</p>
+            <p>kyc: {bridgeStatus.kycStatus}</p>
+            <p>error: {bridgeStatus.lastError || '-'}</p>
+            <p>updated: {bridgeStatus.updatedAt}</p>
+          </div>
+        ) : null}
       </div>
 
       <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">

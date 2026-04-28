@@ -2,11 +2,18 @@ package service
 
 import (
 	"bytes"
+	"crypto"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -127,6 +134,58 @@ func (b *BridgeWalletProvider) createVirtualAccount(customerID string, currency 
 		}
 	}
 	return strings.TrimSpace(vaID), strings.TrimSpace(addr), nil
+}
+
+func (b *BridgeWalletProvider) VerifyWebhookSignature(payload []byte, signatureHeader string) error {
+	parts := strings.Split(strings.TrimSpace(signatureHeader), ",")
+	var tsRaw, sigRaw string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if strings.HasPrefix(p, "t=") {
+			tsRaw = strings.TrimPrefix(p, "t=")
+		}
+		if strings.HasPrefix(p, "v0=") {
+			sigRaw = strings.TrimPrefix(p, "v0=")
+		}
+	}
+	if tsRaw == "" || sigRaw == "" {
+		return fmt.Errorf("invalid signature header")
+	}
+	ts, err := strconv.ParseInt(tsRaw, 10, 64)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UnixMilli()
+	if now-ts > 10*60*1000 {
+		return fmt.Errorf("bridge webhook timestamp too old")
+	}
+	pubKeyPEM := strings.TrimSpace(os.Getenv("BRIDGE_WEBHOOK_PUBLIC_KEY"))
+	if pubKeyPEM == "" {
+		return fmt.Errorf("bridge webhook public key missing")
+	}
+	block, _ := pem.Decode([]byte(pubKeyPEM))
+	if block == nil {
+		return fmt.Errorf("invalid bridge webhook public key pem")
+	}
+	pk, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return err
+	}
+	rsaPK, ok := pk.(*rsa.PublicKey)
+	if !ok {
+		return fmt.Errorf("bridge webhook key must be rsa")
+	}
+	signedPayload := tsRaw + "." + string(payload)
+	h := sha256.Sum256([]byte(signedPayload))
+	h = sha256.Sum256(h[:])
+	sigBytes, err := base64.StdEncoding.DecodeString(sigRaw)
+	if err != nil {
+		return err
+	}
+	if err := rsa.VerifyPKCS1v15(rsaPK, crypto.SHA256, h[:], sigBytes); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (b *BridgeWalletProvider) call(method, path string, body any) (map[string]any, error) {
