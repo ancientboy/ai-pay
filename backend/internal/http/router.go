@@ -150,6 +150,12 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /authorize/session/revoke", s.withM8SelfHosted(http.HandlerFunc(s.handleSessionRevoke)))
 	mux.Handle("POST /payment/sign/request", s.withM8SelfHosted(http.HandlerFunc(s.handlePaymentSignRequest)))
 	mux.Handle("POST /payment/sign/submit", s.withM8SelfHosted(http.HandlerFunc(s.handlePaymentSignSubmit)))
+	mux.HandleFunc("GET /subscription/plans", s.handleSubscriptionPlans)
+	mux.HandleFunc("GET /subscription/current", s.handleSubscriptionCurrent)
+	mux.HandleFunc("GET /billing/invoices", s.handleBillingInvoices)
+	mux.Handle("POST /subscription/change", s.withReadAuth(http.HandlerFunc(s.handleSubscriptionChange)))
+	mux.Handle("GET /admin/subscriptions", s.withAdminAuth(http.HandlerFunc(s.handleAdminSubscriptions)))
+	mux.Handle("POST /admin/subscriptions/adjust", s.withAdminAuth(http.HandlerFunc(s.handleAdminSubscriptionAdjust)))
 	return s.withRequestID(mux)
 }
 
@@ -1637,6 +1643,100 @@ type riskConfigSetReq struct {
 type channelRouteSetReq struct {
 	MerchantID string `json:"merchantId"`
 	Mode       string `json:"mode"`
+}
+
+type subscriptionChangeReq struct {
+	PlanCode string `json:"planCode"`
+}
+
+type adminSubscriptionAdjustReq struct {
+	UserID   string `json:"userId"`
+	PlanCode string `json:"planCode"`
+	Status   string `json:"status"`
+}
+
+func (s *Server) handleSubscriptionPlans(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": s.svc.ListSubscriptionPlans()})
+}
+
+func (s *Server) handleSubscriptionCurrent(w http.ResponseWriter, r *http.Request) {
+	userID := s.requestUserID(r)
+	rec, err := s.svc.GetUserSubscription(userID)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "query current subscription", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": rec})
+}
+
+func (s *Server) handleBillingInvoices(w http.ResponseWriter, r *http.Request) {
+	userID := s.requestUserID(r)
+	limit := 20
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": s.svc.ListUserInvoices(userID, limit)})
+}
+
+func (s *Server) handleSubscriptionChange(w http.ResponseWriter, r *http.Request) {
+	var req subscriptionChangeReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.PlanCode) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	userID := s.requestUserID(r)
+	rec, err := s.svc.ChangeUserSubscription(userID, strings.TrimSpace(req.PlanCode), true)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "change subscription", err)
+		return
+	}
+	s.appendAuditLog(r, "subscription_change", userID, map[string]any{"planCode": req.PlanCode})
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": rec})
+}
+
+func (s *Server) handleAdminSubscriptions(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	offset := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": s.svc.AdminListSubscriptions(limit, offset)})
+}
+
+func (s *Server) handleAdminSubscriptionAdjust(w http.ResponseWriter, r *http.Request) {
+	var req adminSubscriptionAdjustReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.UserID) == "" || strings.TrimSpace(req.PlanCode) == "" || strings.TrimSpace(req.Status) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	rec, err := s.svc.AdminUpdateSubscription(strings.TrimSpace(req.UserID), strings.TrimSpace(req.PlanCode), strings.TrimSpace(req.Status), true)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "adjust subscription", err)
+		return
+	}
+	s.appendAuditLog(r, "subscription_admin_adjust", req.UserID, map[string]any{"planCode": req.PlanCode, "status": req.Status})
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": rec})
 }
 
 func (s *Server) handleWebhookDeliveryReplay(w http.ResponseWriter, r *http.Request) {

@@ -8,10 +8,10 @@ export default async function ConsoleEntryPage() {
   }
   const role = (session.role || "operator").toLowerCase();
   if (role === "admin") {
-    redirect("/dashboard");
+    redirect("/admin-subscriptions");
   }
   if (role === "readonly") {
     redirect("/transactions");
   }
-  redirect("/agents");
+  redirect("/billing");
 }

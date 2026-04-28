@@ -260,6 +260,35 @@ type RiskAuditEntry struct {
 	CreatedAt     time.Time       `json:"createdAt"`
 }
 
+type SubscriptionPlan struct {
+	PlanCode       string `json:"planCode"`
+	PlanName       string `json:"planName"`
+	MonthlyPrice   string `json:"monthlyPrice"`
+	AgentLimit     int    `json:"agentLimit"`
+	MonthlyAPILimit int   `json:"monthlyApiLimit"`
+}
+
+type UserSubscription struct {
+	UserID      string    `json:"userId"`
+	PlanCode    string    `json:"planCode"`
+	Status      string    `json:"status"`
+	AutoRenew   bool      `json:"autoRenew"`
+	CurrentFrom time.Time `json:"currentFrom"`
+	CurrentTo   time.Time `json:"currentTo"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+type BillingInvoice struct {
+	InvoiceID  string    `json:"invoiceId"`
+	UserID     string    `json:"userId"`
+	PlanCode   string    `json:"planCode"`
+	Amount     string    `json:"amount"`
+	Status     string    `json:"status"`
+	PeriodFrom time.Time `json:"periodFrom"`
+	PeriodTo   time.Time `json:"periodTo"`
+	CreatedAt  time.Time `json:"createdAt"`
+}
+
 type Service struct {
 	mu             sync.Mutex
 	agents         map[string]Agent
@@ -300,6 +329,8 @@ type Service struct {
 	m8sessCreateIdem map[string]string
 	m8signReqIdem    map[string]string
 	agentOwners      map[string]string
+	subscriptions    map[string]UserSubscription
+	invoices         []BillingInvoice
 }
 
 type holdRecord struct {
@@ -317,6 +348,12 @@ type PaymentService interface {
 	UpdateAgentPublicKey(did string, newPubKey string, proofMessage string, proofSignature string) error
 	BindAgentOwner(agentDID string, userID string) error
 	AgentOwner(agentDID string) (string, bool, error)
+	ListSubscriptionPlans() []SubscriptionPlan
+	GetUserSubscription(userID string) (UserSubscription, error)
+	ChangeUserSubscription(userID string, planCode string, autoRenew bool) (UserSubscription, error)
+	ListUserInvoices(userID string, limit int) []BillingInvoice
+	AdminListSubscriptions(limit int, offset int) []UserSubscription
+	AdminUpdateSubscription(userID string, planCode string, status string, autoRenew bool) (UserSubscription, error)
 	CreateAccount(agentDID string) Account
 	Recharge(va string, amount string, idemKey string) error
 	SetAuthorizeRule(agentDID string, single string, daily string, merchants []string) error
@@ -417,6 +454,8 @@ func New() *Service {
 		m8sessCreateIdem: map[string]string{},
 		m8signReqIdem:    map[string]string{},
 		agentOwners:      map[string]string{},
+		subscriptions:    map[string]UserSubscription{},
+		invoices:         []BillingInvoice{},
 	}
 }
 
@@ -445,6 +484,143 @@ func (s *Service) AgentOwner(agentDID string) (string, bool, error) {
 	defer s.mu.Unlock()
 	owner, ok := s.agentOwners[strings.TrimSpace(agentDID)]
 	return owner, ok, nil
+}
+
+func (s *Service) ListSubscriptionPlans() []SubscriptionPlan {
+	return []SubscriptionPlan{
+		{PlanCode: "starter", PlanName: "Starter", MonthlyPrice: "0.00", AgentLimit: 20, MonthlyAPILimit: 100000},
+		{PlanCode: "growth", PlanName: "Growth", MonthlyPrice: "299.00", AgentLimit: 200, MonthlyAPILimit: 5000000},
+		{PlanCode: "enterprise", PlanName: "Enterprise", MonthlyPrice: "0.00", AgentLimit: 0, MonthlyAPILimit: 0},
+	}
+}
+
+func (s *Service) GetUserSubscription(userID string) (UserSubscription, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := strings.TrimSpace(userID)
+	if key == "" {
+		return UserSubscription{}, &APIError{Code: "PAY-010", Message: "invalid user"}
+	}
+	if item, ok := s.subscriptions[key]; ok {
+		return item, nil
+	}
+	now := time.Now().UTC()
+	item := UserSubscription{
+		UserID:      key,
+		PlanCode:    "starter",
+		Status:      "ACTIVE",
+		AutoRenew:   true,
+		CurrentFrom: now,
+		CurrentTo:   now.AddDate(0, 1, 0),
+		UpdatedAt:   now,
+	}
+	s.subscriptions[key] = item
+	return item, nil
+}
+
+func (s *Service) ChangeUserSubscription(userID string, planCode string, autoRenew bool) (UserSubscription, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	user := strings.TrimSpace(userID)
+	plan := strings.ToLower(strings.TrimSpace(planCode))
+	if user == "" || plan == "" {
+		return UserSubscription{}, &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	valid := map[string]bool{"starter": true, "growth": true, "enterprise": true}
+	if !valid[plan] {
+		return UserSubscription{}, &APIError{Code: "PAY-010", Message: "plan not found"}
+	}
+	now := time.Now().UTC()
+	item := UserSubscription{
+		UserID:      user,
+		PlanCode:    plan,
+		Status:      "ACTIVE",
+		AutoRenew:   autoRenew,
+		CurrentFrom: now,
+		CurrentTo:   now.AddDate(0, 1, 0),
+		UpdatedAt:   now,
+	}
+	s.subscriptions[user] = item
+	s.invoices = append([]BillingInvoice{{
+		InvoiceID:  fmt.Sprintf("inv_%d", len(s.invoices)+1),
+		UserID:     user,
+		PlanCode:   plan,
+		Amount:     map[string]string{"starter": "0.00", "growth": "299.00", "enterprise": "0.00"}[plan],
+		Status:     "PAID",
+		PeriodFrom: now,
+		PeriodTo:   now.AddDate(0, 1, 0),
+		CreatedAt:  now,
+	}}, s.invoices...)
+	return item, nil
+}
+
+func (s *Service) ListUserInvoices(userID string, limit int) []BillingInvoice {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	user := strings.TrimSpace(userID)
+	if user == "" {
+		return nil
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	out := make([]BillingInvoice, 0, limit)
+	for _, item := range s.invoices {
+		if item.UserID != user {
+			continue
+		}
+		out = append(out, item)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func (s *Service) AdminListSubscriptions(limit int, offset int) []UserSubscription {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows := make([]UserSubscription, 0, len(s.subscriptions))
+	for _, item := range s.subscriptions {
+		rows = append(rows, item)
+	}
+	if offset >= len(rows) {
+		return []UserSubscription{}
+	}
+	end := offset + limit
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[offset:end]
+}
+
+func (s *Service) AdminUpdateSubscription(userID string, planCode string, status string, autoRenew bool) (UserSubscription, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	user := strings.TrimSpace(userID)
+	plan := strings.ToLower(strings.TrimSpace(planCode))
+	st := strings.ToUpper(strings.TrimSpace(status))
+	if user == "" || plan == "" || st == "" {
+		return UserSubscription{}, &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	now := time.Now().UTC()
+	item := UserSubscription{
+		UserID:      user,
+		PlanCode:    plan,
+		Status:      st,
+		AutoRenew:   autoRenew,
+		CurrentFrom: now,
+		CurrentTo:   now.AddDate(0, 1, 0),
+		UpdatedAt:   now,
+	}
+	s.subscriptions[user] = item
+	return item, nil
 }
 
 func (s *Service) SetAgentPublicKey(did string, pubKey string) error {

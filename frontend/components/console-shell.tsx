@@ -24,10 +24,12 @@ export function ConsoleShell({
     { href: "/console", label: t("nav.home") },
     { href: "/dashboard", label: t("nav.dashboard") },
     { href: "/agents", label: t("nav.agents") },
+    { href: "/billing", label: t("nav.billing") },
     { href: "/authorize", label: t("nav.authorize") },
     { href: "/recharge", label: t("nav.recharge") },
     { href: "/transactions", label: t("nav.transactions") },
     { href: "/self-hosted", label: t("nav.selfHosted") },
+    ...(currentRole === "admin" ? [{ href: "/admin-subscriptions", label: t("nav.adminSubscriptions") }] : []),
     ...(canManageDeveloper ? [{ href: "/developer", label: t("nav.developer") }] : []),
     { href: "/settings", label: t("nav.settings") },
   ];

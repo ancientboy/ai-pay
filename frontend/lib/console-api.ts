@@ -415,8 +415,87 @@ export type PaymentSignRequestRecord = {
   createdAt: string;
 };
 
+export type SubscriptionPlan = {
+  code: string;
+  name: string;
+  monthlyPrice: number;
+  currency: string;
+  description: string;
+};
+
+export type UserSubscription = {
+  userId: string;
+  planCode: string;
+  status: string;
+  startedAt: string;
+  currentPeriodEnd: string;
+  autoRenew: boolean;
+  updatedAt: string;
+};
+
+export type BillingInvoice = {
+  invoiceId: string;
+  userId: string;
+  planCode: string;
+  amount: number;
+  currency: string;
+  status: string;
+  dueAt: string;
+  paidAt?: string;
+  createdAt: string;
+};
+
 export function listApiKeys() {
   return request<DeveloperAPIKey[]>("/developer/api-keys");
+}
+
+export function listSubscriptionPlans() {
+  return request<SubscriptionPlan[]>("/billing/plans");
+}
+
+export function getMySubscription() {
+  return request<UserSubscription>("/billing/subscription/current");
+}
+
+export function updateMySubscription(input: { planCode: string; autoRenew: boolean }) {
+  return request<UserSubscription>("/billing/subscription/update", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function renewMySubscription() {
+  return request<UserSubscription>("/billing/subscription/renew", {
+    method: "POST",
+    body: JSON.stringify({}),
+    idempotencyKey: `billing-renew-ui-${Date.now()}`,
+  });
+}
+
+export function listMyInvoices(limit = 20) {
+  return request<BillingInvoice[]>(
+    `/billing/invoices?limit=${encodeURIComponent(String(limit))}`,
+  );
+}
+
+export function adminListSubscriptions(limit = 50, offset = 0) {
+  return request<UserSubscription[]>(
+    `/admin/subscriptions?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(
+      String(offset),
+    )}`,
+  );
+}
+
+export function adminAdjustSubscription(input: {
+  userId: string;
+  planCode: string;
+  autoRenew: boolean;
+  status?: string;
+}) {
+  return request<UserSubscription>("/admin/subscriptions/adjust", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export function createApiKey(name: string) {
