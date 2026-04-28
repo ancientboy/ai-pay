@@ -882,3 +882,38 @@ export function queryRechargeConfirm(rechargeId: string) {
     updatedAt: string;
   }>(`/fund/recharge/confirm?rechargeId=${encodeURIComponent(rechargeId)}`);
 }
+
+
+export type StablecoinConfig = {
+  currency: "GUSD" | "USDC" | "USDT";
+  enabled: boolean;
+  chainId: string;
+  rpcUrl: string;
+  tokenContract: string;
+  decimals: number;
+  hotWallet: string;
+  minConfirmations: number;
+  riskThreshold: number;
+  updatedAt: string;
+};
+
+export function listStablecoinConfigs() {
+  return request<StablecoinConfig[]>('/developer/stablecoin-config');
+}
+
+export function setStablecoinConfig(input: {
+  currency: "GUSD" | "USDC" | "USDT";
+  enabled: boolean;
+  chainId: string;
+  rpcUrl: string;
+  tokenContract: string;
+  decimals: number;
+  hotWallet: string;
+  minConfirmations: number;
+  riskThreshold: string;
+}) {
+  return request<StablecoinConfig>('/developer/stablecoin-config', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}

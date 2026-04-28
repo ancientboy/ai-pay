@@ -19,6 +19,8 @@ import {
   replayWebhookDelivery,
   setChannelRoute,
   setRiskConfig,
+  listStablecoinConfigs,
+  setStablecoinConfig,
 } from "@/lib/console-api";
 import { toReadableError } from "@/lib/error-map";
 import { formatStatus } from "@/lib/i18n";
@@ -60,6 +62,15 @@ export default function DeveloperPage() {
   const [routeMode, setRouteMode] = useState<"SETTLE" | "ASYNC" | "FAIL">("SETTLE");
   const [auditAction, setAuditAction] = useState("");
   const [auditResource, setAuditResource] = useState("");
+  const [scCurrency, setScCurrency] = useState<"GUSD" | "USDC" | "USDT">("GUSD");
+  const [scEnabled, setScEnabled] = useState(true);
+  const [scChainId, setScChainId] = useState("eth-mainnet");
+  const [scRpcUrl, setScRpcUrl] = useState("");
+  const [scTokenContract, setScTokenContract] = useState("");
+  const [scDecimals, setScDecimals] = useState("6");
+  const [scHotWallet, setScHotWallet] = useState("");
+  const [scMinConfirmations, setScMinConfirmations] = useState("12");
+  const [scRiskThreshold, setScRiskThreshold] = useState("10000");
   const pageSize = 10;
 
   const apiKeysQuery = useQuery({
@@ -95,6 +106,10 @@ export default function DeveloperPage() {
   const channelRoutesQuery = useQuery({
     queryKey: ["developer", "channelRoutes"],
     queryFn: listChannelRoutes,
+  });
+  const stablecoinConfigsQuery = useQuery({
+    queryKey: ["developer", "stablecoinConfigs"],
+    queryFn: listStablecoinConfigs,
   });
   const auditLogsQuery = useQuery({
     queryKey: ["developer", "auditLogs", auditAction, auditResource],
@@ -178,6 +193,25 @@ export default function DeveloperPage() {
       showToast("success", t("developer.channelRouteSaved"));
       queryClient.invalidateQueries({ queryKey: ["developer", "channelRoutes"] });
       queryClient.invalidateQueries({ queryKey: ["developer", "auditLogs"] });
+    },
+    onError: (err) => showToast("error", toReadableError(err, locale)),
+  });
+  const setStablecoinConfigMutation = useMutation({
+    mutationFn: () =>
+      setStablecoinConfig({
+        currency: scCurrency,
+        enabled: scEnabled,
+        chainId: scChainId,
+        rpcUrl: scRpcUrl,
+        tokenContract: scTokenContract,
+        decimals: Number(scDecimals) || 6,
+        hotWallet: scHotWallet,
+        minConfirmations: Number(scMinConfirmations) || 12,
+        riskThreshold: scRiskThreshold,
+      }),
+    onSuccess: () => {
+      showToast("success", "stablecoin config saved");
+      queryClient.invalidateQueries({ queryKey: ["developer", "stablecoinConfigs"] });
     },
     onError: (err) => showToast("error", toReadableError(err, locale)),
   });
@@ -528,6 +562,30 @@ export default function DeveloperPage() {
             ))}
           </ul>
         </div>
+      </div>
+
+
+      <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+        <h3 className="text-sm font-medium text-slate-200">Stablecoin Config</h3>
+        <div className="mt-2 grid gap-2 md:grid-cols-3">
+          <select value={scCurrency} onChange={(e)=>setScCurrency(e.target.value as "GUSD" | "USDC" | "USDT")} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm">
+            <option value="GUSD">GUSD</option><option value="USDC">USDC</option><option value="USDT">USDT</option>
+          </select>
+          <input value={scChainId} onChange={(e)=>setScChainId(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="chainId" />
+          <input value={scRpcUrl} onChange={(e)=>setScRpcUrl(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="rpcUrl" />
+          <input value={scTokenContract} onChange={(e)=>setScTokenContract(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="tokenContract" />
+          <input value={scDecimals} onChange={(e)=>setScDecimals(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="decimals" />
+          <input value={scHotWallet} onChange={(e)=>setScHotWallet(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="hotWallet" />
+          <input value={scMinConfirmations} onChange={(e)=>setScMinConfirmations(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="minConfirmations" />
+          <input value={scRiskThreshold} onChange={(e)=>setScRiskThreshold(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="riskThreshold" />
+          <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={scEnabled} onChange={(e)=>setScEnabled(e.target.checked)} />enabled</label>
+        </div>
+        <button onClick={()=>setStablecoinConfigMutation.mutate()} className="mt-3 rounded-md bg-blue-600 px-3 py-2 text-sm text-white">Save Stablecoin Config</button>
+        <ul className="mt-3 space-y-2 text-xs text-slate-300">
+          {(stablecoinConfigsQuery.data ?? []).map((item)=> (
+            <li key={item.currency} className="rounded border border-slate-800 p-2">{item.currency} · {item.chainId || '-'} · conf={item.minConfirmations} · {item.enabled ? 'enabled' : 'disabled'}</li>
+          ))}
+        </ul>
       </div>
 
       <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
