@@ -16,8 +16,9 @@ import (
 )
 
 type PersistentService struct {
-	store          *storage.Store
-	walletProvider WalletProvider
+	store           *storage.Store
+	walletProvider  WalletProvider
+	providerRouter  ProviderRouter
 }
 
 type scanRows interface {
@@ -25,7 +26,7 @@ type scanRows interface {
 }
 
 func NewPersistent(store *storage.Store) *PersistentService {
-	return &PersistentService{store: store, walletProvider: &MockWalletProvider{}}
+	return &PersistentService{store: store, walletProvider: &MockWalletProvider{}, providerRouter: NewDefaultProviderRouter()}
 }
 
 func (s *PersistentService) RegisterAgent(did string) Agent {
@@ -2445,7 +2446,7 @@ SELECT agent_did, merchant_id, amount, status, expires_at, session_id FROM payme
 
 
 func (s *PersistentService) ListStablecoinConfigs() []StablecoinConfig {
-	rows, err := s.store.DB.Query(`SELECT currency, enabled, chain_id, rpc_url, token_contract, decimals, hot_wallet, min_confirmations, risk_threshold, updated_at FROM stablecoin_config ORDER BY currency`)
+	rows, err := s.store.DB.Query(`SELECT currency, provider, enabled, chain_id, rpc_url, token_contract, decimals, hot_wallet, min_confirmations, risk_threshold, updated_at FROM stablecoin_config ORDER BY currency`)
 	if err != nil {
 		return []StablecoinConfig{}
 	}
@@ -2453,7 +2454,7 @@ func (s *PersistentService) ListStablecoinConfigs() []StablecoinConfig {
 	out := make([]StablecoinConfig, 0)
 	for rows.Next() {
 		var item StablecoinConfig
-		if err := rows.Scan(&item.Currency, &item.Enabled, &item.ChainID, &item.RPCURL, &item.TokenContract, &item.Decimals, &item.HotWallet, &item.MinConfirmations, &item.RiskThreshold, &item.UpdatedAt); err == nil {
+		if err := rows.Scan(&item.Currency, &item.Provider, &item.Enabled, &item.ChainID, &item.RPCURL, &item.TokenContract, &item.Decimals, &item.HotWallet, &item.MinConfirmations, &item.RiskThreshold, &item.UpdatedAt); err == nil {
 			out = append(out, item)
 		}
 	}
@@ -2465,15 +2466,18 @@ func (s *PersistentService) SetStablecoinConfig(cfg StablecoinConfig) (Stablecoi
 	if cfg.Currency == "" {
 		return StablecoinConfig{}, &APIError{Code: "PAY-010", Message: "invalid currency"}
 	}
+	if strings.TrimSpace(cfg.Provider) == "" {
+		cfg.Provider = "mock"
+	}
 	if cfg.MinConfirmations <= 0 {
 		cfg.MinConfirmations = 1
 	}
 	if _, err := s.store.DB.Exec(`
-INSERT INTO stablecoin_config (currency, enabled, chain_id, rpc_url, token_contract, decimals, hot_wallet, min_confirmations, risk_threshold, updated_at)
+INSERT INTO stablecoin_config (currency, provider, enabled, chain_id, rpc_url, token_contract, decimals, hot_wallet, min_confirmations, risk_threshold, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())
 ON DUPLICATE KEY UPDATE
-  enabled = VALUES(enabled), chain_id = VALUES(chain_id), rpc_url = VALUES(rpc_url), token_contract = VALUES(token_contract), decimals = VALUES(decimals), hot_wallet = VALUES(hot_wallet), min_confirmations = VALUES(min_confirmations), risk_threshold = VALUES(risk_threshold), updated_at = UTC_TIMESTAMP()`,
-		cfg.Currency, cfg.Enabled, cfg.ChainID, cfg.RPCURL, cfg.TokenContract, cfg.Decimals, cfg.HotWallet, cfg.MinConfirmations, cfg.RiskThreshold); err != nil {
+  provider = VALUES(provider), enabled = VALUES(enabled), chain_id = VALUES(chain_id), rpc_url = VALUES(rpc_url), token_contract = VALUES(token_contract), decimals = VALUES(decimals), hot_wallet = VALUES(hot_wallet), min_confirmations = VALUES(min_confirmations), risk_threshold = VALUES(risk_threshold), updated_at = UTC_TIMESTAMP()`,
+		cfg.Currency, cfg.Provider, cfg.Enabled, cfg.ChainID, cfg.RPCURL, cfg.TokenContract, cfg.Decimals, cfg.HotWallet, cfg.MinConfirmations, cfg.RiskThreshold); err != nil {
 		return StablecoinConfig{}, err
 	}
 	cfg.UpdatedAt = time.Now().UTC()
@@ -2578,10 +2582,13 @@ func (s *PersistentService) ensureWalletAccountAddress(agentDID string, currency
 	if err != nil && err != sql.ErrNoRows {
 		return "", err
 	}
-	provider := s.walletProvider
-	if provider == nil {
-		provider = &MockWalletProvider{}
+	providerName := "mock"
+	_ = s.store.DB.QueryRow(`SELECT COALESCE(provider,'mock') FROM stablecoin_config WHERE currency = ? LIMIT 1`, ccy).Scan(&providerName)
+	router := s.providerRouter
+	if router == nil {
+		router = NewDefaultProviderRouter()
 	}
+	provider := router.ResolveProvider(providerName)
 	providerAccountID, createdAddress, createErr := provider.CreateAddress(agent, ccy, chain, m)
 	if createErr != nil {
 		return "", createErr

@@ -63,6 +63,7 @@ export default function DeveloperPage() {
   const [auditAction, setAuditAction] = useState("");
   const [auditResource, setAuditResource] = useState("");
   const [scCurrency, setScCurrency] = useState<"GUSD" | "USDC" | "USDT">("GUSD");
+  const [scProvider, setScProvider] = useState("mock");
   const [scEnabled, setScEnabled] = useState(true);
   const [scChainId, setScChainId] = useState("eth-mainnet");
   const [scRpcUrl, setScRpcUrl] = useState("");
@@ -202,6 +203,7 @@ export default function DeveloperPage() {
       showToast("error", "stablecoin config not found");
       return;
     }
+    setScProvider(selected.provider || "mock");
     setScEnabled(selected.enabled);
     setScChainId(selected.chainId ?? "");
     setScRpcUrl(selected.rpcUrl ?? "");
@@ -217,6 +219,7 @@ export default function DeveloperPage() {
     mutationFn: () =>
       setStablecoinConfig({
         currency: scCurrency,
+        provider: scProvider,
         enabled: scEnabled,
         chainId: scChainId,
         rpcUrl: scRpcUrl,
@@ -588,6 +591,7 @@ export default function DeveloperPage() {
           <select value={scCurrency} onChange={(e)=>setScCurrency(e.target.value as "GUSD" | "USDC" | "USDT")} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm">
             <option value="GUSD">GUSD</option><option value="USDC">USDC</option><option value="USDT">USDT</option>
           </select>
+          <input value={scProvider} onChange={(e)=>setScProvider(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="provider (mock/fireblocks/cobo)" />
           <input value={scChainId} onChange={(e)=>setScChainId(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="chainId" />
           <input value={scRpcUrl} onChange={(e)=>setScRpcUrl(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="rpcUrl" />
           <input value={scTokenContract} onChange={(e)=>setScTokenContract(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="tokenContract" />
@@ -603,7 +607,7 @@ export default function DeveloperPage() {
         </div>
         <ul className="mt-3 space-y-2 text-xs text-slate-300">
           {(stablecoinConfigsQuery.data ?? []).map((item)=> (
-            <li key={item.currency} className="rounded border border-slate-800 p-2">{item.currency} · {item.chainId || '-'} · conf={item.minConfirmations} · {item.enabled ? 'enabled' : 'disabled'}</li>
+            <li key={item.currency} className="rounded border border-slate-800 p-2">{item.currency} · {item.provider || "mock"} · {item.chainId || "-"} · conf={item.minConfirmations} · {item.enabled ? "enabled" : "disabled"}</li>
           ))}
         </ul>
       </div>

@@ -179,6 +179,7 @@ type RiskConfig struct {
 
 type StablecoinConfig struct {
 	Currency         string    `json:"currency"`
+	Provider         string    `json:"provider"`
 	Enabled          bool      `json:"enabled"`
 	ChainID          string    `json:"chainId"`
 	RPCURL           string    `json:"rpcUrl"`
@@ -509,9 +510,9 @@ func New() *Service {
 		subscriptions:    map[string]UserSubscription{},
 		invoices:         []BillingInvoice{},
 		stablecoinCfgs: map[string]StablecoinConfig{
-			"GUSD": {Currency: "GUSD", Enabled: true, ChainID: "eth-mainnet", Decimals: 2, MinConfirmations: 6, RiskThreshold: 10000, UpdatedAt: time.Now().UTC()},
-			"USDC": {Currency: "USDC", Enabled: true, ChainID: "eth-mainnet", Decimals: 6, MinConfirmations: 12, RiskThreshold: 10000, UpdatedAt: time.Now().UTC()},
-			"USDT": {Currency: "USDT", Enabled: true, ChainID: "eth-mainnet", Decimals: 6, MinConfirmations: 12, RiskThreshold: 10000, UpdatedAt: time.Now().UTC()},
+			"GUSD": {Currency: "GUSD", Provider: "mock", Enabled: true, ChainID: "eth-mainnet", Decimals: 2, MinConfirmations: 6, RiskThreshold: 10000, UpdatedAt: time.Now().UTC()},
+			"USDC": {Currency: "USDC", Provider: "mock", Enabled: true, ChainID: "eth-mainnet", Decimals: 6, MinConfirmations: 12, RiskThreshold: 10000, UpdatedAt: time.Now().UTC()},
+			"USDT": {Currency: "USDT", Provider: "mock", Enabled: true, ChainID: "eth-mainnet", Decimals: 6, MinConfirmations: 12, RiskThreshold: 10000, UpdatedAt: time.Now().UTC()},
 		},
 	}
 }
@@ -2056,6 +2057,9 @@ func (s *Service) SetStablecoinConfig(cfg StablecoinConfig) (StablecoinConfig, e
 		return StablecoinConfig{}, &APIError{Code: "PAY-010", Message: "invalid currency"}
 	}
 	cfg.Currency = c
+	if strings.TrimSpace(cfg.Provider) == "" {
+		cfg.Provider = "mock"
+	}
 	if cfg.Decimals < 0 {
 		return StablecoinConfig{}, &APIError{Code: "PAY-010", Message: "invalid decimals"}
 	}

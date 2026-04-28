@@ -375,6 +375,7 @@ export type DeveloperWebhookDeliveryStats = {
 };
 
 export type RiskConfig = {
+  provider: string;
   enabled: boolean;
   singleAmountLimit: number;
   blockedMerchants: string[];
@@ -886,6 +887,7 @@ export function queryRechargeConfirm(rechargeId: string) {
 
 export type StablecoinConfig = {
   currency: "GUSD" | "USDC" | "USDT";
+  provider: string;
   enabled: boolean;
   chainId: string;
   rpcUrl: string;
@@ -903,6 +905,7 @@ export function listStablecoinConfigs() {
 
 export function setStablecoinConfig(input: {
   currency: "GUSD" | "USDC" | "USDT";
+  provider: string;
   enabled: boolean;
   chainId: string;
   rpcUrl: string;

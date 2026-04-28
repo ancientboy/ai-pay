@@ -26,3 +26,33 @@ func (m *MockWalletProvider) CreateAddress(agentDID string, currency string, cha
 	addr := fmt.Sprintf("0x%s", strings.ToUpper(fmt.Sprintf("%x", id))[:40])
 	return id, addr, nil
 }
+
+
+type ProviderRouter interface {
+	ResolveProvider(provider string) WalletProvider
+}
+
+type DefaultProviderRouter struct {
+	providers map[string]WalletProvider
+}
+
+func NewDefaultProviderRouter() *DefaultProviderRouter {
+	m := map[string]WalletProvider{}
+	mock := &MockWalletProvider{}
+	m[mock.Name()] = mock
+	return &DefaultProviderRouter{providers: m}
+}
+
+func (r *DefaultProviderRouter) ResolveProvider(provider string) WalletProvider {
+	if r == nil {
+		return &MockWalletProvider{}
+	}
+	key := strings.ToLower(strings.TrimSpace(provider))
+	if p, ok := r.providers[key]; ok {
+		return p
+	}
+	if p, ok := r.providers["mock"]; ok {
+		return p
+	}
+	return &MockWalletProvider{}
+}

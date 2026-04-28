@@ -2415,6 +2415,7 @@ func callbackDigest(body []byte, ts, nonce string) string {
 
 type stablecoinConfigSetReq struct {
 	Currency         string `json:"currency"`
+	Provider         string `json:"provider"`
 	Enabled          bool   `json:"enabled"`
 	ChainID          string `json:"chainId"`
 	RPCURL           string `json:"rpcUrl"`
@@ -2444,7 +2445,7 @@ func (s *Server) handleStablecoinConfigSet(w http.ResponseWriter, r *http.Reques
 		}
 		threshold = v
 	}
-	item, err := s.svc.SetStablecoinConfig(service.StablecoinConfig{Currency: req.Currency, Enabled: req.Enabled, ChainID: req.ChainID, RPCURL: req.RPCURL, TokenContract: req.TokenContract, Decimals: req.Decimals, HotWallet: req.HotWallet, MinConfirmations: req.MinConfirmations, RiskThreshold: threshold})
+	item, err := s.svc.SetStablecoinConfig(service.StablecoinConfig{Currency: req.Currency, Provider: req.Provider, Enabled: req.Enabled, ChainID: req.ChainID, RPCURL: req.RPCURL, TokenContract: req.TokenContract, Decimals: req.Decimals, HotWallet: req.HotWallet, MinConfirmations: req.MinConfirmations, RiskThreshold: threshold})
 	if err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
 			writeAPIError(w, apiErr)
