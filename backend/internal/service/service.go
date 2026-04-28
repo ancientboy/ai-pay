@@ -200,6 +200,22 @@ type RechargeConfirmationStatus struct {
 	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
+type RechargeAddress struct {
+	Mode        string `json:"mode"`
+	AgentDID    string `json:"agentDid"`
+	Currency    string `json:"currency"`
+	ChainID     string `json:"chainId"`
+	Address     string `json:"address"`
+	IsSelfHosted bool  `json:"isSelfHosted"`
+}
+
+type RechargeCallback struct {
+	RechargeID     string `json:"rechargeId"`
+	Currency       string `json:"currency"`
+	Status         string `json:"status"`
+	Confirmations  int    `json:"confirmations"`
+}
+
 type ChannelRoute struct {
 	MerchantID string    `json:"merchantId"`
 	Mode       string    `json:"mode"`
@@ -424,6 +440,8 @@ type PaymentService interface {
 	ListStablecoinConfigs() []StablecoinConfig
 	SetStablecoinConfig(cfg StablecoinConfig) (StablecoinConfig, error)
 	GetRechargeConfirmation(rechargeID string) (RechargeConfirmationStatus, error)
+	GetRechargeAddress(agentDID string, currency string, mode string) (RechargeAddress, error)
+	HandleRechargeCallback(event RechargeCallback) (RechargeConfirmationStatus, error)
 	// M6 funds & payment extensions (gated by FEATURE_M6_FUNDS at HTTP layer).
 	TransferFunds(fromAccountID string, toAccountID string, currency string, amount string, idemKey string) error
 	WithdrawFunds(vaAccountID string, currency string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error)
@@ -2071,4 +2089,53 @@ func (s *Service) GetRechargeConfirmation(rechargeID string) (RechargeConfirmati
 		}
 	}
 	return RechargeConfirmationStatus{}, &APIError{Code: "PAY-010", Message: "recharge not found"}
+}
+
+
+func (s *Service) GetRechargeAddress(agentDID string, currency string, mode string) (RechargeAddress, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ccy := NormalizeCurrency(currency)
+	if ccy == "" {
+		return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "invalid currency"}
+	}
+	m := strings.ToLower(strings.TrimSpace(mode))
+	if m == "" {
+		m = "platform"
+	}
+	cfg, ok := s.stablecoinCfgs[ccy]
+	if !ok {
+		return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "currency config missing"}
+	}
+	if m == "self_hosted" {
+		wb, ok := s.walletBindings[strings.TrimSpace(agentDID)]
+		if !ok || strings.TrimSpace(wb.WalletAddress) == "" {
+			return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "self hosted wallet not bound"}
+		}
+		return RechargeAddress{Mode: m, AgentDID: strings.TrimSpace(agentDID), Currency: ccy, ChainID: cfg.ChainID, Address: wb.WalletAddress, IsSelfHosted: true}, nil
+	}
+	return RechargeAddress{Mode: "platform", AgentDID: strings.TrimSpace(agentDID), Currency: ccy, ChainID: cfg.ChainID, Address: cfg.HotWallet, IsSelfHosted: false}, nil
+}
+
+func (s *Service) HandleRechargeCallback(event RechargeCallback) (RechargeConfirmationStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := strings.TrimSpace(event.RechargeID)
+	if id == "" {
+		return RechargeConfirmationStatus{}, &APIError{Code: "PAY-010", Message: "invalid recharge id"}
+	}
+	status := strings.ToUpper(strings.TrimSpace(event.Status))
+	if status == "" {
+		status = "PENDING"
+	}
+	for i := range s.recharges {
+		if s.recharges[i].RechargeID == id {
+			if c := NormalizeCurrency(event.Currency); c != "" {
+				s.recharges[i].Currency = c
+			}
+			s.recharges[i].Status = status
+			break
+		}
+	}
+	return s.GetRechargeConfirmation(id)
 }

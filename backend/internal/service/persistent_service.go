@@ -2500,3 +2500,48 @@ func (s *PersistentService) GetRechargeConfirmation(rechargeID string) (Recharge
 	c.Confirmed = c.CurrentConfirm >= c.RequiredConfirm
 	return c, nil
 }
+
+
+func (s *PersistentService) GetRechargeAddress(agentDID string, currency string, mode string) (RechargeAddress, error) {
+	ccy := NormalizeCurrency(currency)
+	if ccy == "" {
+		return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "invalid currency"}
+	}
+	m := strings.ToLower(strings.TrimSpace(mode))
+	if m == "" {
+		m = "platform"
+	}
+	addr := ""
+	if m == "self_hosted" {
+		if err := s.store.DB.QueryRow(`SELECT wallet_address FROM self_host_wallet WHERE agent_did = ?`, strings.TrimSpace(agentDID)).Scan(&addr); err != nil || strings.TrimSpace(addr) == "" {
+			return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "self hosted wallet not bound"}
+		}
+	} else {
+		if err := s.store.DB.QueryRow(`SELECT hot_wallet FROM stablecoin_config WHERE currency = ?`, ccy).Scan(&addr); err != nil {
+			return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "platform wallet not configured"}
+		}
+		m = "platform"
+	}
+	chainID := ""
+	_ = s.store.DB.QueryRow(`SELECT chain_id FROM stablecoin_config WHERE currency = ?`, ccy).Scan(&chainID)
+	return RechargeAddress{Mode: m, AgentDID: strings.TrimSpace(agentDID), Currency: ccy, ChainID: chainID, Address: strings.TrimSpace(addr), IsSelfHosted: m == "self_hosted"}, nil
+}
+
+func (s *PersistentService) HandleRechargeCallback(event RechargeCallback) (RechargeConfirmationStatus, error) {
+	id := strings.TrimSpace(event.RechargeID)
+	if id == "" {
+		return RechargeConfirmationStatus{}, &APIError{Code: "PAY-010", Message: "invalid recharge id"}
+	}
+	status := strings.ToUpper(strings.TrimSpace(event.Status))
+	if status == "" {
+		status = "PENDING"
+	}
+	currency := NormalizeCurrency(event.Currency)
+	if currency == "" {
+		currency = "GUSD"
+	}
+	if _, err := s.store.DB.Exec(`UPDATE fund_recharge_order SET status = ?, currency = ?, updated_at = UTC_TIMESTAMP() WHERE recharge_id = ?`, status, currency, id); err != nil {
+		return RechargeConfirmationStatus{}, &APIError{Code: "PAY-010", Message: "update recharge callback failed"}
+	}
+	return s.GetRechargeConfirmation(id)
+}

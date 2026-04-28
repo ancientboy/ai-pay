@@ -99,6 +99,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /account/create", s.handleCreateAccount)
 	mux.HandleFunc("GET /agent/list", s.handleAgentList)
 	mux.HandleFunc("POST /fund/recharge", s.handleRecharge)
+	mux.Handle("GET /fund/recharge/address", s.withReadAuth(http.HandlerFunc(s.handleRechargeAddressQuery)))
+	mux.Handle("POST /fund/recharge/callback", s.withCallbackToken(http.HandlerFunc(s.handleRechargeCallback)))
 	mux.HandleFunc("GET /fund/recharge/list", s.handleRechargeList)
 	mux.HandleFunc("POST /authorize/payment/set", s.handleAuthorizeSet)
 	mux.HandleFunc("POST /authorize/payment/update", s.handleAuthorizeUpdate)
@@ -2467,6 +2469,61 @@ func (s *Server) handleRechargeConfirmQuery(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		writeInternalError(w, r, "recharge confirmation query", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+
+type rechargeAddressReq struct {
+	AgentDID string `json:"agentDid"`
+	Currency string `json:"currency"`
+	Mode     string `json:"mode"`
+}
+
+type rechargeCallbackReq struct {
+	RechargeID    string `json:"rechargeId"`
+	Currency      string `json:"currency"`
+	Status        string `json:"status"`
+	Confirmations int    `json:"confirmations"`
+}
+
+func (s *Server) handleRechargeAddressQuery(w http.ResponseWriter, r *http.Request) {
+	agentDID := strings.TrimSpace(r.URL.Query().Get("agentDid"))
+	currency := strings.TrimSpace(r.URL.Query().Get("currency"))
+	mode := strings.TrimSpace(r.URL.Query().Get("mode"))
+	if agentDID == "" || service.NormalizeCurrency(currency) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, agentDID) {
+		return
+	}
+	item, err := s.svc.GetRechargeAddress(agentDID, currency, mode)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "query recharge address", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handleRechargeCallback(w http.ResponseWriter, r *http.Request) {
+	var req rechargeCallbackReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.RechargeID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	item, err := s.svc.HandleRechargeCallback(service.RechargeCallback{RechargeID: req.RechargeID, Currency: req.Currency, Status: req.Status, Confirmations: req.Confirmations})
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "recharge callback", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
