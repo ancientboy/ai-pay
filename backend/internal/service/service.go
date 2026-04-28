@@ -386,6 +386,7 @@ type Service struct {
 	subscriptions    map[string]UserSubscription
 	invoices         []BillingInvoice
 	stablecoinCfgs   map[string]StablecoinConfig
+	bridgeCustomers  map[string]BridgeCustomerStatus
 }
 
 type holdRecord struct {
@@ -526,6 +527,7 @@ func New() *Service {
 			"USDC": {Currency: "USDC", Provider: "mock", Enabled: true, ChainID: "eth-mainnet", Decimals: 6, MinConfirmations: 12, RiskThreshold: 10000, UpdatedAt: time.Now().UTC()},
 			"USDT": {Currency: "USDT", Provider: "mock", Enabled: true, ChainID: "eth-mainnet", Decimals: 6, MinConfirmations: 12, RiskThreshold: 10000, UpdatedAt: time.Now().UTC()},
 		},
+		bridgeCustomers: map[string]BridgeCustomerStatus{},
 	}
 }
 
@@ -2171,17 +2173,35 @@ func (s *Service) BridgeEnsureCustomer(agentDID string) (BridgeCustomerStatus, e
 	if a == "" {
 		return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "invalid agent did"}
 	}
-	return BridgeCustomerStatus{AgentDID: a, BridgeCustomerID: "mock_" + strings.ReplaceAll(a, ":", "_"), KYCStatus: "approved", UpdatedAt: time.Now().UTC()}, nil
+	provider := NewBridgeWalletProviderFromEnv()
+	customerID, err := provider.ensureCustomer(a)
+	now := time.Now().UTC()
+	if err != nil {
+		out := BridgeCustomerStatus{AgentDID: a, KYCStatus: "error", LastError: err.Error(), UpdatedAt: now}
+		s.mu.Lock(); s.bridgeCustomers[a] = out; s.mu.Unlock()
+		return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "bridge ensure customer failed"}
+	}
+	out := BridgeCustomerStatus{AgentDID: a, BridgeCustomerID: customerID, KYCStatus: "pending", UpdatedAt: now}
+	s.mu.Lock(); s.bridgeCustomers[a] = out; s.mu.Unlock()
+	return out, nil
 }
 
 func (s *Service) BridgeGetCustomerStatus(agentDID string) (BridgeCustomerStatus, error) {
-	return s.BridgeEnsureCustomer(agentDID)
+	a := strings.TrimSpace(agentDID)
+	if a == "" {
+		return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "invalid agent did"}
+	}
+	s.mu.Lock(); defer s.mu.Unlock()
+	if st, ok := s.bridgeCustomers[a]; ok {
+		return st, nil
+	}
+	return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "bridge customer not found"}
 }
 
 func (s *Service) BridgeHandleWebhook(rawBody []byte, signatureHeader string) error {
-	if strings.TrimSpace(signatureHeader) == "" {
-		return &APIError{Code: "PAY-010", Message: "missing bridge webhook signature"}
+	provider := NewBridgeWalletProviderFromEnv()
+	if err := provider.VerifyWebhookSignature(rawBody, signatureHeader); err != nil {
+		return &APIError{Code: "PAY-010", Message: "bridge webhook signature invalid"}
 	}
-	_ = rawBody
 	return nil
 }

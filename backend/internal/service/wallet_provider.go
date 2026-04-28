@@ -51,10 +51,23 @@ type BridgeWalletProvider struct {
 
 func NewBridgeWalletProviderFromEnv() *BridgeWalletProvider {
 	base := strings.TrimSpace(os.Getenv("BRIDGE_API_BASE_URL"))
+	key := strings.TrimSpace(os.Getenv("BRIDGE_API_KEY"))
 	if base == "" {
+		if strings.HasPrefix(strings.ToLower(key), "sk-test") {
+			base = "https://api.sandbox.bridge.xyz/v0"
+		} else {
+			base = "https://api.bridge.xyz/v0"
+		}
+	}
+	if strings.HasPrefix(strings.ToLower(key), "sk-test") && strings.Contains(strings.ToLower(base), "api.bridge.xyz") {
+		// Sandbox keys cannot call production host; auto-correct to reduce misconfiguration.
+		base = "https://api.sandbox.bridge.xyz/v0"
+	}
+	if !strings.HasPrefix(strings.ToLower(key), "sk-test") && strings.Contains(strings.ToLower(base), "api.sandbox.bridge.xyz") {
+		// Production keys should use production host unless explicitly overridden.
 		base = "https://api.bridge.xyz/v0"
 	}
-	return &BridgeWalletProvider{BaseURL: base, APIKey: strings.TrimSpace(os.Getenv("BRIDGE_API_KEY")), Client: &http.Client{Timeout: 15 * time.Second}}
+	return &BridgeWalletProvider{BaseURL: base, APIKey: key, Client: &http.Client{Timeout: 15 * time.Second}}
 }
 
 func (b *BridgeWalletProvider) Name() string { return "bridge" }
