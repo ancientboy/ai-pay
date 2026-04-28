@@ -114,6 +114,10 @@
 - 签名请求全链路可审计（requestId + signatureRequestId）
 - 先灰度企业账号，默认不开给全部租户
 
+### 状态
+
+**已实现：** `FEATURE_M8_SELF_HOSTED` 控制；迁移 `014_add_m8_self_host.sql`。`/payment/sign/request` 返回 `signId`（即 signatureRequestId）；HTTP 层记录 `requestId`；持久化模式下会话与签名请求落库。
+
 ## 4. 每个里程碑的统一工程约束
 
 - OpenAPI 先行：新增接口必须先更新 `openapi.yaml` 再实现代码。

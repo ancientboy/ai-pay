@@ -1934,3 +1934,209 @@ SELECT id, category, agent_did, merchant_id, transaction_id, detail_json, create
 	}
 	return out
 }
+
+func (s *PersistentService) BindWallet(agentDID string, walletAddress string, label string) error {
+	agentDID = strings.TrimSpace(agentDID)
+	walletAddress = strings.TrimSpace(walletAddress)
+	if agentDID == "" || walletAddress == "" {
+		return &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	var exists int
+	if err := s.store.DB.QueryRow(`SELECT COUNT(1) FROM agent_did WHERE did = ?`, agentDID).Scan(&exists); err != nil || exists == 0 {
+		return &APIError{Code: "PAY-010", Message: "agent not found"}
+	}
+	_, err := s.store.DB.Exec(`
+INSERT INTO self_host_wallet (agent_did, wallet_address, label, updated_at)
+VALUES (?, ?, ?, UTC_TIMESTAMP())
+ON DUPLICATE KEY UPDATE wallet_address = VALUES(wallet_address), label = VALUES(label), updated_at = UTC_TIMESTAMP()`,
+		agentDID, walletAddress, strings.TrimSpace(label))
+	return err
+}
+
+func (s *PersistentService) UnbindWallet(agentDID string) error {
+	_, err := s.store.DB.Exec(`DELETE FROM self_host_wallet WHERE agent_did = ?`, strings.TrimSpace(agentDID))
+	return err
+}
+
+func (s *PersistentService) CreateAuthSession(agentDID string, ttlMinutes int, idemKey string) (AuthSession, error) {
+	if strings.TrimSpace(idemKey) == "" {
+		return AuthSession{}, &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
+	if ttlMinutes <= 0 {
+		ttlMinutes = 60
+	}
+	if ttlMinutes > 1440 {
+		ttlMinutes = 1440
+	}
+	agentDID = strings.TrimSpace(agentDID)
+	ctx := context.Background()
+	idem := "idem:m8_sess_create:" + idemKey
+	if found, err := s.store.Redis.Get(ctx, idem).Result(); err == nil && found != "" {
+		var st AuthSession
+		if scanErr := s.store.DB.QueryRow(`
+SELECT session_id, agent_did, status, expires_at, created_at FROM auth_session_record WHERE session_id = ?`, found).
+			Scan(&st.SessionID, &st.AgentDID, &st.Status, &st.ExpiresAt, &st.CreatedAt); scanErr == nil && st.SessionID != "" {
+			return st, nil
+		}
+	} else if err != nil && err != redis.Nil {
+		return AuthSession{}, err
+	}
+	var exists int
+	if err := s.store.DB.QueryRow(`SELECT COUNT(1) FROM agent_did WHERE did = ?`, agentDID).Scan(&exists); err != nil || exists == 0 {
+		return AuthSession{}, &APIError{Code: "PAY-010", Message: "agent not found"}
+	}
+	sid := fmt.Sprintf("sess_%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	exp := now.Add(time.Duration(ttlMinutes) * time.Minute)
+	if _, err := s.store.DB.Exec(`
+INSERT INTO auth_session_record (session_id, agent_did, status, expires_at, created_at)
+VALUES (?, ?, 'ACTIVE', ?, UTC_TIMESTAMP())`, sid, agentDID, exp); err != nil {
+		return AuthSession{}, err
+	}
+	if err := s.store.Redis.Set(ctx, idem, sid, 24*time.Hour).Err(); err != nil {
+		return AuthSession{}, err
+	}
+	return AuthSession{SessionID: sid, AgentDID: agentDID, Status: "ACTIVE", ExpiresAt: exp, CreatedAt: now}, nil
+}
+
+func (s *PersistentService) RevokeAuthSession(agentDID string, sessionID string, idemKey string) error {
+	if strings.TrimSpace(idemKey) == "" {
+		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
+	ctx := context.Background()
+	idem := "idem:m8_sess_revoke:" + idemKey
+	if found, err := s.store.Redis.Get(ctx, idem).Result(); err == nil && found != "" {
+		return nil
+	} else if err != nil && err != redis.Nil {
+		return err
+	}
+	res, err := s.store.DB.Exec(`
+UPDATE auth_session_record SET status = 'REVOKED' WHERE session_id = ? AND agent_did = ?`,
+		strings.TrimSpace(sessionID), strings.TrimSpace(agentDID))
+	if err != nil {
+		return err
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return &APIError{Code: "PAY-010", Message: "session not found"}
+	}
+	return s.store.Redis.Set(ctx, idem, "1", 24*time.Hour).Err()
+}
+
+func (s *PersistentService) m8AuthSessionActive(agentDID string, sessionID string, now time.Time) bool {
+	if strings.TrimSpace(sessionID) == "" {
+		return true
+	}
+	var status string
+	var exp time.Time
+	err := s.store.DB.QueryRow(`
+SELECT status, expires_at FROM auth_session_record WHERE session_id = ? AND agent_did = ?`,
+		strings.TrimSpace(sessionID), strings.TrimSpace(agentDID)).Scan(&status, &exp)
+	if err != nil {
+		return false
+	}
+	return strings.ToUpper(status) == "ACTIVE" && now.Before(exp.UTC())
+}
+
+func (s *PersistentService) RequestPaymentSign(agentDID string, merchantID string, amount string, sessionID string, idemKey string) (PaymentSignRequestRecord, error) {
+	if strings.TrimSpace(idemKey) == "" {
+		return PaymentSignRequestRecord{}, &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
+	if _, err := parseAmount(amount); err != nil {
+		return PaymentSignRequestRecord{}, &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	agentDID = strings.TrimSpace(agentDID)
+	merchantID = strings.TrimSpace(merchantID)
+	ctx := context.Background()
+	idem := "idem:m8_sign_req:" + idemKey
+	if found, err := s.store.Redis.Get(ctx, idem).Result(); err == nil && found != "" {
+		var rec PaymentSignRequestRecord
+		var sess sql.NullString
+		if scanErr := s.store.DB.QueryRow(`
+SELECT sign_id, agent_did, merchant_id, CAST(amount AS CHAR), session_id, status, expires_at, created_at
+FROM payment_sign_request WHERE sign_id = ?`, found).Scan(
+			&rec.SignID, &rec.AgentDID, &rec.MerchantID, &rec.Amount, &sess, &rec.Status, &rec.ExpiresAt, &rec.CreatedAt,
+		); scanErr == nil && rec.SignID != "" {
+			if sess.Valid {
+				rec.SessionID = sess.String
+			}
+			return rec, nil
+		}
+	} else if err != nil && err != redis.Nil {
+		return PaymentSignRequestRecord{}, err
+	}
+	var exists int
+	if err := s.store.DB.QueryRow(`SELECT COUNT(1) FROM agent_did WHERE did = ?`, agentDID).Scan(&exists); err != nil || exists == 0 {
+		return PaymentSignRequestRecord{}, &APIError{Code: "PAY-010", Message: "agent not found"}
+	}
+	if sid := strings.TrimSpace(sessionID); sid != "" && !s.m8AuthSessionActive(agentDID, sid, time.Now().UTC()) {
+		return PaymentSignRequestRecord{}, &APIError{Code: "PAY-002", Message: "session invalid or expired"}
+	}
+	signID := fmt.Sprintf("sig_%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	exp := now.Add(15 * time.Minute)
+	sessPtr := strings.TrimSpace(sessionID)
+	var sessAny any
+	if sessPtr == "" {
+		sessAny = nil
+	} else {
+		sessAny = sessPtr
+	}
+	if _, err := s.store.DB.Exec(`
+INSERT INTO payment_sign_request (sign_id, agent_did, merchant_id, amount, status, session_id, expires_at, created_at)
+VALUES (?, ?, ?, ?, 'PENDING', ?, ?, UTC_TIMESTAMP())`, signID, agentDID, merchantID, strings.TrimSpace(amount), sessAny, exp); err != nil {
+		return PaymentSignRequestRecord{}, err
+	}
+	if err := s.store.Redis.Set(ctx, idem, signID, 24*time.Hour).Err(); err != nil {
+		return PaymentSignRequestRecord{}, err
+	}
+	return PaymentSignRequestRecord{
+		SignID: signID, AgentDID: agentDID, MerchantID: merchantID, Amount: strings.TrimSpace(amount),
+		SessionID: sessPtr, Status: "PENDING", ExpiresAt: exp, CreatedAt: now,
+	}, nil
+}
+
+func (s *PersistentService) SubmitSignedPayment(signID string, req PayRequest) (PayResponse, *APIError) {
+	signID = strings.TrimSpace(signID)
+	var agentDID, merchantID string
+	var amt float64
+	var status string
+	var expiresAt time.Time
+	var sessionID sql.NullString
+	err := s.store.DB.QueryRow(`
+SELECT agent_did, merchant_id, amount, status, expires_at, session_id FROM payment_sign_request WHERE sign_id = ?`, signID).
+		Scan(&agentDID, &merchantID, &amt, &status, &expiresAt, &sessionID)
+	if err == sql.ErrNoRows {
+		return PayResponse{}, &APIError{Code: "PAY-010", Message: "sign request not found"}
+	}
+	if err != nil {
+		return PayResponse{}, &APIError{Code: "PAY-010", Message: "sign request load failed"}
+	}
+	if strings.ToUpper(status) != "PENDING" {
+		return PayResponse{}, &APIError{Code: "PAY-010", Message: "sign request not pending"}
+	}
+	if time.Now().UTC().After(expiresAt.UTC()) {
+		_, _ = s.store.DB.Exec(`UPDATE payment_sign_request SET status='EXPIRED' WHERE sign_id=?`, signID)
+		return PayResponse{}, &APIError{Code: "PAY-010", Message: "sign request expired"}
+	}
+	reqAmt, err := parseAmount(req.Amount)
+	if err != nil || math.Abs(reqAmt-amt) > 1e-9 {
+		return PayResponse{}, &APIError{Code: "PAY-010", Message: "sign request mismatch"}
+	}
+	if strings.TrimSpace(req.PayerDID) != agentDID || strings.TrimSpace(req.MerchantID) != merchantID {
+		return PayResponse{}, &APIError{Code: "PAY-010", Message: "sign request mismatch"}
+	}
+	sid := ""
+	if sessionID.Valid {
+		sid = sessionID.String
+	}
+	if sid != "" && !s.m8AuthSessionActive(agentDID, sid, time.Now().UTC()) {
+		return PayResponse{}, &APIError{Code: "PAY-002", Message: "session invalid or expired"}
+	}
+
+	resp, apiErr := s.Pay(req)
+	if apiErr == nil {
+		_, _ = s.store.DB.Exec(`UPDATE payment_sign_request SET status='COMPLETED' WHERE sign_id=?`, signID)
+	}
+	return resp, apiErr
+}

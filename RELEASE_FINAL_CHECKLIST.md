@@ -28,6 +28,7 @@
    - …（直至 `011_add_risk_and_channel_route.sql`，完整列表见 `backend/RELEASE_RUNBOOK.md`）
    - `012_add_m6_fund_and_preview.sql`（若启用里程碑 M6：`FEATURE_M6_FUNDS=true`）
    - `013_add_m7_card_kyc_audit.sql`（若启用里程碑 M7：`FEATURE_M7_CARD_RISK=true`）
+   - `014_add_m8_self_host.sql`（若启用里程碑 M8：`FEATURE_M8_SELF_HOSTED=true`）
 
 ## 二、核心能力验收
 
