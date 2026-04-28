@@ -11,6 +11,8 @@ import {
   listRecharges,
   listVATransfers,
   queryInterest,
+  queryRechargeAddress,
+  queryRechargeConfirm,
   recharge,
   setVATopupConfig,
   transferVA,
@@ -21,10 +23,14 @@ import { getValidationSchemas } from "@/lib/validation";
 
 const RECHARGE_DRAFT_KEY = "ai-pay.recharge.draft.v1";
 
+type CurrencyCode = "GUSD" | "USDC" | "USDT";
+
 type RechargeDraft = {
   vaAccountId: string;
   vaCardNo: string;
   amount: string;
+  currency: CurrencyCode;
+  rechargeMode: "platform" | "self_hosted";
 };
 
 type RecoverableError = {
@@ -35,21 +41,23 @@ type RecoverableError = {
 
 function loadRechargeDraft(): RechargeDraft {
   if (typeof window === "undefined") {
-    return { vaAccountId: "", vaCardNo: "", amount: "100" };
+    return { vaAccountId: "", vaCardNo: "", amount: "100", currency: "GUSD", rechargeMode: "platform" };
   }
   try {
     const raw = window.localStorage.getItem(RECHARGE_DRAFT_KEY);
     if (!raw) {
-      return { vaAccountId: "", vaCardNo: "", amount: "100" };
+      return { vaAccountId: "", vaCardNo: "", amount: "100", currency: "GUSD", rechargeMode: "platform" };
     }
     const parsed = JSON.parse(raw) as RechargeDraft;
     return {
       vaAccountId: parsed.vaAccountId ?? "",
       vaCardNo: parsed.vaCardNo ?? "",
       amount: parsed.amount ?? "100",
+      currency: (parsed.currency as CurrencyCode) ?? "GUSD",
+      rechargeMode: parsed.rechargeMode ?? "platform",
     };
   } catch {
-    return { vaAccountId: "", vaCardNo: "", amount: "100" };
+    return { vaAccountId: "", vaCardNo: "", amount: "100", currency: "GUSD", rechargeMode: "platform" };
   }
 }
 
@@ -81,6 +89,8 @@ export default function RechargePage() {
   const [vaAccountId, setVaAccountId] = useState(draft.vaAccountId);
   const [vaCardNo, setVaCardNo] = useState(draft.vaCardNo);
   const [amount, setAmount] = useState(draft.amount);
+  const [currency, setCurrency] = useState<CurrencyCode>(draft.currency);
+  const [rechargeMode, setRechargeMode] = useState<"platform" | "self_hosted">(draft.rechargeMode);
   const [message, setMessage] = useState("");
   const [errorDetails, setErrorDetails] = useState<RecoverableError | null>(null);
   const [interestAccountId, setInterestAccountId] = useState("");
@@ -115,6 +125,24 @@ export default function RechargePage() {
     toAccountId: string;
     amount: string;
     at: string;
+  } | null>(null);
+  const [rechargeAddressResult, setRechargeAddressResult] = useState<{
+    mode: string;
+    agentDid: string;
+    currency: string;
+    chainId: string;
+    address: string;
+    isSelfHosted: boolean;
+  } | null>(null);
+  const [confirmRechargeId, setConfirmRechargeId] = useState("");
+  const [confirmResult, setConfirmResult] = useState<{
+    rechargeId: string;
+    currency: string;
+    requiredConfirmations: number;
+    currentConfirmations: number;
+    confirmed: boolean;
+    status: string;
+    updatedAt: string;
   } | null>(null);
   const [selected, setSelected] = useState<{
     rechargeId: string;
@@ -151,15 +179,16 @@ export default function RechargePage() {
   });
 
   useEffect(() => {
-    const draft: RechargeDraft = { vaAccountId, vaCardNo, amount };
+    const draft: RechargeDraft = { vaAccountId, vaCardNo, amount, currency, rechargeMode };
     window.localStorage.setItem(RECHARGE_DRAFT_KEY, JSON.stringify(draft));
-  }, [vaAccountId, vaCardNo, amount]);
+  }, [vaAccountId, vaCardNo, amount, currency, rechargeMode]);
 
   const mutation = useMutation({
     mutationFn: () =>
       recharge({
         vaAccountId: vaAccountId.trim() || undefined,
         vaCardNo: vaCardNo.trim() || undefined,
+        currency,
         amount,
       }),
     onSuccess: () => {
@@ -184,12 +213,42 @@ export default function RechargePage() {
     },
   });
 
+  const rechargeAddressMutation = useMutation({
+    mutationFn: () => queryRechargeAddress({ agentDid: (agentsQuery.data ?? [])[0]?.agentDid ?? "", currency, mode: rechargeMode }),
+    onSuccess: (data) => {
+      setRechargeAddressResult(data);
+      setMessage(`Recharge address ready: ${data.address}`);
+      setErrorDetails(null);
+    },
+    onError: (err) => {
+      const msg = toReadableError(err, locale);
+      setMessage(msg);
+      setErrorDetails(err instanceof ApiClientError ? { message: msg, code: err.code, requestId: err.requestId } : { message: msg });
+      showToast("error", msg);
+    },
+  });
+
+  const rechargeConfirmMutation = useMutation({
+    mutationFn: () => queryRechargeConfirm(confirmRechargeId),
+    onSuccess: (data) => {
+      setConfirmResult(data);
+      setMessage(`Confirmations: ${data.currentConfirmations}/${data.requiredConfirmations}`);
+      setErrorDetails(null);
+    },
+    onError: (err) => {
+      const msg = toReadableError(err, locale);
+      setMessage(msg);
+      setErrorDetails(err instanceof ApiClientError ? { message: msg, code: err.code, requestId: err.requestId } : { message: msg });
+      showToast("error", msg);
+    },
+  });
+
   const interestMutation = useMutation({
     mutationFn: () => queryInterest(interestAccountId),
     onSuccess: (data) => {
       setInterestResult(data);
       setMessage(
-        `${t("recharge.accruedInterest")}: ${data.accruedInterest.toFixed(6)} GUSD · ${t("recharge.annualRate")}: ${(
+        `${t("recharge.accruedInterest")}: ${data.accruedInterest.toFixed(6)} {currency} · ${t("recharge.annualRate")}: ${(
           data.annualRate * 100
         ).toFixed(2)}%`,
       );
@@ -426,6 +485,29 @@ export default function RechargePage() {
             />
           </label>
           <label className="mt-3 block text-sm text-slate-300">
+            Currency
+            <select
+              value={currency}
+              onChange={(e) => setCurrency(e.target.value as CurrencyCode)}
+              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+            >
+              <option value="GUSD">GUSD</option>
+              <option value="USDC">USDC</option>
+              <option value="USDT">USDT</option>
+            </select>
+          </label>
+          <label className="mt-3 block text-sm text-slate-300">
+            Recharge Mode
+            <select
+              value={rechargeMode}
+              onChange={(e) => setRechargeMode(e.target.value as "platform" | "self_hosted")}
+              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+            >
+              <option value="platform">platform</option>
+              <option value="self_hosted">self_hosted</option>
+            </select>
+          </label>
+          <label className="mt-3 block text-sm text-slate-300">
             {t("recharge.amount")}
             <input
               value={amount}
@@ -500,7 +582,7 @@ export default function RechargePage() {
               <div className="mt-3 rounded-md border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-200">
                 <p>{t("recharge.interestAccountId")}: {interestResult.accountId}</p>
                 <p>{t("recharge.annualRate")}: {(interestResult.annualRate * 100).toFixed(2)}%</p>
-                <p>{t("recharge.accruedInterest")}: {interestResult.accruedInterest.toFixed(6)} GUSD</p>
+                <p>{t("recharge.accruedInterest")}: {interestResult.accruedInterest.toFixed(6)} {currency}</p>
                 <p>{t("recharge.asOf")}: {interestResult.asOf}</p>
               </div>
             ) : null}
@@ -682,6 +764,52 @@ export default function RechargePage() {
             </ul>
           </div>
 
+
+          <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <h3 className="text-sm font-medium text-slate-200">Recharge Address</h3>
+            <button
+              type="button"
+              onClick={() => rechargeAddressMutation.mutate()}
+              className="mt-3 rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200"
+            >
+              Query Address
+            </button>
+            {rechargeAddressResult ? (
+              <div className="mt-3 rounded-md border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-200">
+                <p>Mode: {rechargeAddressResult.mode}</p>
+                <p>Currency: {rechargeAddressResult.currency}</p>
+                <p>Chain: {rechargeAddressResult.chainId || "N/A"}</p>
+                <p>Address: {rechargeAddressResult.address || "N/A"}</p>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+            <h3 className="text-sm font-medium text-slate-200">Recharge Confirmations</h3>
+            <div className="mt-2 flex gap-2">
+              <input
+                value={confirmRechargeId}
+                onChange={(e) => setConfirmRechargeId(e.target.value)}
+                placeholder="rechargeId"
+                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+              />
+              <button
+                type="button"
+                onClick={() => rechargeConfirmMutation.mutate()}
+                className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200"
+              >
+                Query
+              </button>
+            </div>
+            {confirmResult ? (
+              <div className="mt-3 rounded-md border border-slate-700 bg-slate-950/60 p-3 text-xs text-slate-200">
+                <p>ID: {confirmResult.rechargeId}</p>
+                <p>{confirmResult.currency} {confirmResult.currentConfirmations}/{confirmResult.requiredConfirmations}</p>
+                <p>Status: {confirmResult.status}</p>
+              </div>
+            ) : null}
+          </div>
+
           <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
             <h3 className="text-sm font-medium text-slate-200">{t("recharge.recent")}</h3>
             <ul className="mt-3 space-y-2 text-sm text-slate-300">
@@ -691,7 +819,7 @@ export default function RechargePage() {
                   className="cursor-pointer rounded px-2 py-1 hover:bg-slate-800/40"
                   onClick={() => setSelected(item)}
                 >
-                  {item.rechargeId} - {formatStatus(locale, item.status)} - {item.amount} GUSD ({item.vaAccountId})
+                  {item.rechargeId} - {formatStatus(locale, item.status)} - {item.amount} {currency} ({item.vaAccountId})
                 </li>
               ))}
               {(rechargesQuery.data ?? []).length === 0 ? (
@@ -760,7 +888,7 @@ export default function RechargePage() {
               {(transferHistoryQuery.data ?? []).map((item) => (
                 <li key={item.transferId} className="rounded border border-slate-800 p-2">
                   <p className="font-mono text-xs">{item.transferId}</p>
-                  <p>{item.amount} GUSD · {formatStatus(locale, item.status)}</p>
+                  <p>{item.amount} {currency} · {formatStatus(locale, item.status)}</p>
                   <p className="text-xs text-slate-500">{item.fromAccountId} -&gt; {item.toAccountId}</p>
                   <p className="text-xs text-slate-500">{item.createdAt}</p>
                 </li>
@@ -832,7 +960,7 @@ export default function RechargePage() {
                         : t("recharge.timelineTypeTransferIn")}
                   </p>
                   <p className="font-mono text-xs">{item.id}</p>
-                  <p>{item.amount} GUSD · {formatStatus(locale, item.status)}</p>
+                  <p>{item.amount} {currency} · {formatStatus(locale, item.status)}</p>
                   <p className="text-xs text-slate-500">{item.subtitle}</p>
                   <p className="text-xs text-slate-500">{item.createdAt}</p>
                 </li>

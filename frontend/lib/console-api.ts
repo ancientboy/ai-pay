@@ -852,3 +852,33 @@ export function createDeveloperWebhook(input: { url: string; event: string }) {
 }
 export const listDeveloperWebhookDeliveries = listWebhookDeliveries;
 export const getDeveloperWebhookDeliveryStats = getWebhookDeliveryStats;
+
+
+export function queryRechargeAddress(input: {
+  agentDid: string;
+  currency: "GUSD" | "USDC" | "USDT";
+  mode: "platform" | "self_hosted";
+}) {
+  return request<{
+    mode: string;
+    agentDid: string;
+    currency: string;
+    chainId: string;
+    address: string;
+    isSelfHosted: boolean;
+  }>(
+    `/fund/recharge/address?agentDid=${encodeURIComponent(input.agentDid)}&currency=${encodeURIComponent(input.currency)}&mode=${encodeURIComponent(input.mode)}`,
+  );
+}
+
+export function queryRechargeConfirm(rechargeId: string) {
+  return request<{
+    rechargeId: string;
+    currency: string;
+    requiredConfirmations: number;
+    currentConfirmations: number;
+    confirmed: boolean;
+    status: string;
+    updatedAt: string;
+  }>(`/fund/recharge/confirm?rechargeId=${encodeURIComponent(rechargeId)}`);
+}
