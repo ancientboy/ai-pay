@@ -25,6 +25,8 @@
   - `004_add_account_hold.sql`
   - `005_add_agent_did_pub_key.sql`
   - `006_add_pay_order_hold_id.sql`
+  - …（直至 `011_add_risk_and_channel_route.sql`，完整列表见 `backend/RELEASE_RUNBOOK.md`）
+  - `012_add_m6_fund_and_preview.sql`（若启用里程碑 M6：`FEATURE_M6_FUNDS=true`）
 
 ## 二、核心能力验收
 

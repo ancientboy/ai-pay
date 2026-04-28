@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -1303,3 +1304,331 @@ func merchantInWhitelist(raw string, merchant string) bool {
 }
 
 func formatAmount(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
+
+func (s *PersistentService) TransferFunds(fromAccountID string, toAccountID string, amount string, idemKey string) error {
+	if strings.TrimSpace(idemKey) == "" {
+		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
+	amountV, err := parseAmount(amount)
+	if err != nil || amountV <= 0 {
+		return &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	fromID := strings.TrimSpace(fromAccountID)
+	toID := strings.TrimSpace(toAccountID)
+	if fromID == "" || toID == "" || fromID == toID {
+		return &APIError{Code: "PAY-010", Message: "invalid account id"}
+	}
+	ctx := context.Background()
+	idem := "idem:fund_transfer:" + idemKey
+	if found, err := s.store.Redis.Get(ctx, idem).Result(); err == nil && found != "" {
+		return nil
+	} else if err != nil && err != redis.Nil {
+		return err
+	}
+	tx, err := s.store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`
+UPDATE asset_va_account
+SET balance = balance - ?
+WHERE va_account_id = ? AND balance >= ?`, amountV, fromID, amountV)
+	if err != nil {
+		return err
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return &APIError{Code: "PAY-003", Message: "agent va insufficient balance"}
+	}
+	res, err = tx.Exec(`
+UPDATE asset_va_account
+SET balance = balance + ?
+WHERE va_account_id = ?`, amountV, toID)
+	if err != nil {
+		return err
+	}
+	affected, _ = res.RowsAffected()
+	if affected == 0 {
+		return &APIError{Code: "PAY-010", Message: "account not found"}
+	}
+	tid := fmt.Sprintf("ft_%d", time.Now().UnixNano())
+	if _, err := tx.Exec(`
+INSERT INTO fund_transfer_order (transfer_id, from_va_account_id, to_va_account_id, amount, status, idem_key, created_at)
+VALUES (?, ?, ?, ?, 'SETTLED', ?, UTC_TIMESTAMP())`, tid, fromID, toID, amountV, idemKey); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return s.store.Redis.Set(ctx, idem, tid, 24*time.Hour).Err()
+}
+
+func (s *PersistentService) WithdrawFunds(vaAccountID string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error) {
+	if strings.TrimSpace(idemKey) == "" {
+		return WithdrawRecord{}, &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
+	amountV, err := parseAmount(amount)
+	if err != nil || amountV <= 0 {
+		return WithdrawRecord{}, &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	rail = strings.TrimSpace(rail)
+	if rail == "" {
+		return WithdrawRecord{}, &APIError{Code: "PAY-010", Message: "rail required"}
+	}
+	vaID := strings.TrimSpace(vaAccountID)
+	ctx := context.Background()
+	idem := "idem:fund_withdraw:" + idemKey
+	if found, err := s.store.Redis.Get(ctx, idem).Result(); err == nil && found != "" {
+		var rec WithdrawRecord
+		_ = s.store.DB.QueryRow(`
+SELECT withdraw_id, va_account_id, amount, rail, destination_hint, status, idem_key, created_at
+FROM fund_withdraw_order WHERE withdraw_id = ?`, found).Scan(
+			&rec.WithdrawID, &rec.VAAccountID, &rec.Amount, &rec.Rail, &rec.DestinationHint, &rec.Status, &rec.IdempotencyKey, &rec.CreatedAt,
+		)
+		if rec.WithdrawID != "" {
+			return rec, nil
+		}
+	} else if err != nil && err != redis.Nil {
+		return WithdrawRecord{}, err
+	}
+	tx, err := s.store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return WithdrawRecord{}, err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`
+UPDATE asset_va_account
+SET balance = balance - ?
+WHERE va_account_id = ? AND balance >= ?`, amountV, vaID, amountV)
+	if err != nil {
+		return WithdrawRecord{}, err
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return WithdrawRecord{}, &APIError{Code: "PAY-003", Message: "agent va insufficient balance"}
+	}
+	wid := fmt.Sprintf("fw_%d", time.Now().UnixNano())
+	if _, err := tx.Exec(`
+INSERT INTO fund_withdraw_order (withdraw_id, va_account_id, amount, rail, destination_hint, status, idem_key, created_at)
+VALUES (?, ?, ?, ?, ?, 'PROCESSING', ?, UTC_TIMESTAMP())`, wid, vaID, amountV, rail, strings.TrimSpace(destinationHint), idemKey); err != nil {
+		return WithdrawRecord{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return WithdrawRecord{}, err
+	}
+	if err := s.store.Redis.Set(ctx, idem, wid, 24*time.Hour).Err(); err != nil {
+		return WithdrawRecord{}, err
+	}
+	rec := WithdrawRecord{
+		WithdrawID:      wid,
+		VAAccountID:     vaID,
+		Amount:          amountV,
+		Rail:            rail,
+		DestinationHint: strings.TrimSpace(destinationHint),
+		Status:          "PROCESSING",
+		IdempotencyKey:  idemKey,
+		CreatedAt:       time.Now().UTC(),
+	}
+	return rec, nil
+}
+
+func (s *PersistentService) DebitPreview(agentDID string, merchantID string, amount string) (DebitPreview, error) {
+	v, err := parseAmount(amount)
+	if err != nil || v <= 0 {
+		return DebitPreview{}, &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	agentDID = strings.TrimSpace(agentDID)
+	merchantID = strings.TrimSpace(merchantID)
+	if agentDID == "" || merchantID == "" {
+		return DebitPreview{}, &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	var single, daily float64
+	var whiteList string
+	var status string
+	err = s.store.DB.QueryRow(`
+SELECT single_limit, daily_limit, whitelist, status
+FROM pay_authorize_rule WHERE agent_did = ?`, agentDID).Scan(&single, &daily, &whiteList, &status)
+	if err == sql.ErrNoRows {
+		return DebitPreview{}, &APIError{Code: "PAY-002", Message: "missing authorization rule"}
+	}
+	if err != nil {
+		return DebitPreview{}, &APIError{Code: "PAY-010", Message: "query rule failed"}
+	}
+	if strings.ToUpper(strings.TrimSpace(status)) != "ACTIVE" {
+		return DebitPreview{}, &APIError{Code: "PAY-002", Message: "authorization rule inactive"}
+	}
+	if v > single {
+		return DebitPreview{}, &APIError{Code: "PAY-002", Message: "single limit exceeded"}
+	}
+	var todaySpent float64
+	if err := s.store.DB.QueryRow(`
+SELECT COALESCE(SUM(amount), 0)
+FROM pay_order
+WHERE agent_did = ?
+  AND status = 'SETTLED'
+  AND created_at >= UTC_DATE()
+  AND created_at < UTC_DATE() + INTERVAL 1 DAY`, agentDID).Scan(&todaySpent); err != nil {
+		return DebitPreview{}, &APIError{Code: "PAY-010", Message: "query daily spent failed"}
+	}
+	if todaySpent+v > daily {
+		return DebitPreview{}, &APIError{Code: "PAY-002", Message: "daily limit exceeded"}
+	}
+	if !merchantInWhitelist(whiteList, merchantID) {
+		return DebitPreview{}, &APIError{Code: "PAY-002", Message: "merchant not whitelisted"}
+	}
+	if riskErr := s.evaluateP2Risk(merchantID, v); riskErr != nil {
+		return DebitPreview{}, riskErr
+	}
+	const feeRate = 0.003
+	fee := v * feeRate
+	now := time.Now().UTC()
+	expires := now.Add(15 * time.Minute)
+	previewID := fmt.Sprintf("prv_%d", now.UnixNano())
+	_, err = s.store.DB.Exec(`
+INSERT INTO payment_debit_preview (preview_id, agent_did, merchant_id, amount, fee_rate, fee_amount, net_to_merchant, fx_rate, expires_at, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, UTC_TIMESTAMP())`,
+		previewID, agentDID, merchantID, v, feeRate, fee, v-fee, expires)
+	if err != nil {
+		return DebitPreview{}, err
+	}
+	return DebitPreview{
+		PreviewID:     previewID,
+		AgentDID:      agentDID,
+		MerchantID:    merchantID,
+		Amount:        v,
+		FeeRate:       feeRate,
+		FeeAmount:     fee,
+		NetToMerchant: v - fee,
+		FxRate:        1,
+		ExpiresAt:     expires,
+		CreatedAt:     now,
+	}, nil
+}
+
+func (s *PersistentService) TransferX402Outbound(vaAccountID string, toAddress string, amount string, referenceTransactionID string, idemKey string) error {
+	v, err := parseAmount(amount)
+	if err != nil || v <= 0 {
+		return &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	if strings.TrimSpace(idemKey) == "" {
+		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
+	ref := strings.TrimSpace(referenceTransactionID)
+	toAddress = strings.TrimSpace(toAddress)
+	if ref == "" || toAddress == "" {
+		return &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	ctx := context.Background()
+	idem := "idem:x402_out:" + idemKey
+	if found, err := s.store.Redis.Get(ctx, idem).Result(); err == nil && found != "" {
+		return nil
+	} else if err != nil && err != redis.Nil {
+		return err
+	}
+	var orderAmount float64
+	var orderStatus string
+	var agentDID string
+	if err := s.store.DB.QueryRow(`
+SELECT amount, status, agent_did FROM pay_order WHERE order_id = ?`, ref).Scan(&orderAmount, &orderStatus, &agentDID); err == sql.ErrNoRows {
+		return &APIError{Code: "PAY-010", Message: "reference transaction not found"}
+	} else if err != nil {
+		return err
+	}
+	if orderStatus != "SETTLED" {
+		return &APIError{Code: "PAY-010", Message: "reference transaction not settled"}
+	}
+	if math.Abs(orderAmount-v) > 1e-9 {
+		return &APIError{Code: "PAY-010", Message: "amount must match reference payment"}
+	}
+	vaID := strings.TrimSpace(vaAccountID)
+	var accAgent string
+	if err := s.store.DB.QueryRow(`SELECT agent_did FROM asset_va_account WHERE va_account_id = ?`, vaID).Scan(&accAgent); err == sql.ErrNoRows {
+		return &APIError{Code: "PAY-010", Message: "account not found"}
+	} else if err != nil {
+		return err
+	}
+	if accAgent != agentDID {
+		return &APIError{Code: "PAY-010", Message: "account does not match payer"}
+	}
+	tx, err := s.store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`
+UPDATE asset_va_account
+SET balance = balance - ?
+WHERE va_account_id = ? AND agent_did = ? AND balance >= ?`, v, vaID, agentDID, v)
+	if err != nil {
+		return err
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return &APIError{Code: "PAY-003", Message: "agent va insufficient balance"}
+	}
+	xid := fmt.Sprintf("xo_%d", time.Now().UnixNano())
+	if _, err := tx.Exec(`
+INSERT INTO x402_outbound_transfer (transfer_id, va_account_id, to_address, amount, reference_transaction_id, status, idem_key, created_at)
+VALUES (?, ?, ?, ?, ?, 'SETTLED', ?, UTC_TIMESTAMP())`, xid, vaID, toAddress, v, ref, idemKey); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return s.store.Redis.Set(ctx, idem, xid, 24*time.Hour).Err()
+}
+
+func (s *PersistentService) CheckX402Settlement(transactionID string) (map[string]any, error) {
+	transactionID = strings.TrimSpace(transactionID)
+	if transactionID == "" {
+		return nil, &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	var status string
+	var amount float64
+	var merchantID string
+	var createdAt time.Time
+	err := s.store.DB.QueryRow(`
+SELECT status, amount, merchant_id, created_at FROM pay_order WHERE order_id = ?`, transactionID).Scan(&status, &amount, &merchantID, &createdAt)
+	if err == sql.ErrNoRows {
+		return nil, &APIError{Code: "PAY-010", Message: "not found"}
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{
+		"transactionId": transactionID,
+		"status":        status,
+		"amount":        amount,
+		"merchantId":    merchantID,
+	}
+	switch status {
+	case "SETTLED":
+		out["settled"] = true
+		out["settledAt"] = createdAt.UTC().Format(time.RFC3339)
+		out["chainTxHash"] = "sandbox:0x" + fmt.Sprintf("%x", transactionID)
+	case "SETTLING":
+		out["settled"] = false
+	default:
+		out["settled"] = false
+	}
+	return out, nil
+}
+
+func (s *PersistentService) RefundApply(transactionID string, reason string, idemKey string) error {
+	if strings.TrimSpace(idemKey) == "" {
+		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
+	ctx := context.Background()
+	idem := "idem:refund_apply:" + idemKey
+	if found, err := s.store.Redis.Get(ctx, idem).Result(); err == nil && found != "" {
+		return nil
+	} else if err != nil && err != redis.Nil {
+		return err
+	}
+	innerKey := fmt.Sprintf("apply_%s_%s", strings.TrimSpace(transactionID), idemKey)
+	if err := s.Refund(transactionID, innerKey); err != nil {
+		return err
+	}
+	return s.store.Redis.Set(ctx, idem, transactionID, 24*time.Hour).Err()
+}

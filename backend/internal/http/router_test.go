@@ -1274,6 +1274,86 @@ func seedServiceForPay() *service.Service {
 	return svc
 }
 
+func TestM6EndpointsDisabledWithoutFlag(t *testing.T) {
+	t.Setenv("FEATURE_M6_FUNDS", "")
+	svc := service.New()
+	server := NewServerForTest(svc, time.Now, 100, 100)
+	req := httptest.NewRequest(http.MethodPost, "/payment/x402/check", bytes.NewReader(mustJSONAny(t, map[string]string{"transactionId": "txn_x"})))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when M6 disabled, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestM6FundTransferRequiresAdminAuth(t *testing.T) {
+	t.Setenv("FEATURE_M6_FUNDS", "1")
+	svc := service.New()
+	pub1, _, _ := ed25519.GenerateKey(rand.Reader)
+	agent1 := "did:gusd:agent:m6_a"
+	_ = svc.RegisterAgent(agent1)
+	_ = svc.SetAgentPublicKey(agent1, base64.StdEncoding.EncodeToString(pub1))
+	acc1 := svc.CreateAccount(agent1)
+	_ = svc.Recharge(acc1.VAAccountID, "50", "m6-rch-1")
+
+	pub2, _, _ := ed25519.GenerateKey(rand.Reader)
+	agent2 := "did:gusd:agent:m6_b"
+	_ = svc.RegisterAgent(agent2)
+	_ = svc.SetAgentPublicKey(agent2, base64.StdEncoding.EncodeToString(pub2))
+	acc2 := svc.CreateAccount(agent2)
+
+	server := NewServerForTest(svc, time.Now, 100, 100)
+	server.SetAdminBearerToken("admin-m6")
+
+	body := map[string]string{
+		"fromAccountId": acc1.VAAccountID,
+		"toAccountId":   acc2.VAAccountID,
+		"amount":        "10",
+	}
+	req := httptest.NewRequest(http.MethodPost, "/fund/transfer", bytes.NewReader(mustJSONAny(t, body)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "idem-m6-ft-1")
+	rr := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without admin token got %d", rr.Code)
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/fund/transfer", bytes.NewReader(mustJSONAny(t, body)))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Idempotency-Key", "idem-m6-ft-1")
+	req2.Header.Set("Authorization", "Bearer admin-m6")
+	rr2 := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rr2, req2)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("expected 200 got %d body=%s", rr2.Code, rr2.Body.String())
+	}
+}
+
+func TestM6DebitPreviewRejectsBadSignature(t *testing.T) {
+	t.Setenv("FEATURE_M6_FUNDS", "1")
+	svc := seedServiceForPay()
+	server := NewServerForTest(svc, func() time.Time { return time.Date(2026, 4, 22, 9, 0, 0, 0, time.UTC) }, 100, 100)
+	ts := time.Date(2026, 4, 22, 9, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	idem := "idem-debit-prev-bad"
+	body := map[string]string{
+		"agentDid":   "did:gusd:agent:test_http",
+		"merchantId": "m1",
+		"amount":     "1",
+		"signature":  "bad",
+	}
+	req := httptest.NewRequest(http.MethodPost, "/payment/debit/preview", bytes.NewReader(mustJSONAny(t, body)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", idem)
+	req.Header.Set("X-Sign-Timestamp", ts)
+	rr := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 bad signature got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func performPay(server *Server, idem string) int {
 	body := map[string]string{
 		"payerDid":   "did:gusd:agent:test_http",

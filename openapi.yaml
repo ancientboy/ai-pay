@@ -2,7 +2,10 @@ openapi: 3.0.3
 info:
   title: AI Pay MVP API
   version: 1.0.0
-  description: OpenAPI contract for currently implemented backend endpoints.
+  description: |
+    OpenAPI contract for backend endpoints.
+    Milestone M6 (`/fund/transfer`, `/fund/withdraw`, `/payment/debit/preview`, `/payment/x402/check`, `/payment/x402/transfer`, `/payment/refund/apply`)
+    requires environment variable FEATURE_M6_FUNDS=true (or 1). When disabled, those routes return 404 with code PAY-011.
 servers:
   - url: http://127.0.0.1:8080
     description: Local backend server
@@ -11,6 +14,7 @@ tags:
   - name: agent
   - name: account
   - name: recharge
+  - name: funds
   - name: authorize
   - name: payment
   - name: metrics
@@ -169,6 +173,76 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RechargeListResponse"
+  /fund/transfer:
+    post:
+      tags: [funds]
+      summary: Transfer balance between VA accounts (M6)
+      description: Requires FEATURE_M6_FUNDS and admin bearer token.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/AdminAuthorization"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FundTransferRequest"
+      responses:
+        "200":
+          description: Transfer completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: M6 disabled or not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /fund/withdraw:
+    post:
+      tags: [funds]
+      summary: Submit fiat withdrawal request (M6)
+      description: Debits VA balance immediately; external payout is asynchronous in MVP.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/AdminAuthorization"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FundWithdrawRequest"
+      responses:
+        "200":
+          description: Withdrawal recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FundWithdrawResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: M6 disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /authorize/payment/set:
     post:
       tags: [authorize]
@@ -372,6 +446,121 @@ paths:
                 $ref: "#/components/schemas/PaymentStatusResponse"
         "404":
           description: Transaction not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /payment/debit/preview:
+    post:
+      tags: [payment]
+      summary: Debit fee preview snapshot (M6)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/SignTimestamp"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DebitPreviewRequest"
+      responses:
+        "200":
+          description: Preview created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DebitPreviewResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: M6 disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /payment/x402/check:
+    post:
+      tags: [payment]
+      summary: Check x402 settlement status (M6)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/X402CheckRequest"
+      responses:
+        "200":
+          description: Settlement info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/X402CheckResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: Not found or M6 disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /payment/x402/transfer:
+    post:
+      tags: [payment]
+      summary: On-chain outbound transfer after reference payment (M6)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/AdminAuthorization"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/X402OutboundTransferRequest"
+      responses:
+        "200":
+          description: Transfer recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: M6 disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /payment/refund/apply:
+    post:
+      tags: [payment]
+      summary: Signed refund apply for settled payments (M6)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/SignTimestamp"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefundApplyRequest"
+      responses:
+        "200":
+          description: Refund processed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: M6 disabled
           content:
             application/json:
               schema:
@@ -1642,3 +1831,140 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ChannelRoute"
+    FundTransferRequest:
+      type: object
+      required: [fromAccountId, toAccountId, amount]
+      properties:
+        fromAccountId:
+          type: string
+        toAccountId:
+          type: string
+        amount:
+          type: string
+    FundWithdrawRequest:
+      type: object
+      required: [vaAccountId, amount, rail]
+      properties:
+        vaAccountId:
+          type: string
+        amount:
+          type: string
+        rail:
+          type: string
+          description: Bank rail identifier (implementation-defined).
+        destinationHint:
+          type: string
+    WithdrawRecord:
+      type: object
+      properties:
+        withdrawId:
+          type: string
+        vaAccountId:
+          type: string
+        amount:
+          type: number
+        rail:
+          type: string
+        destinationHint:
+          type: string
+        status:
+          type: string
+        idempotencyKey:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    FundWithdrawResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          $ref: "#/components/schemas/WithdrawRecord"
+    DebitPreviewRequest:
+      type: object
+      required: [agentDid, merchantId, amount, signature]
+      properties:
+        agentDid:
+          type: string
+        merchantId:
+          type: string
+        amount:
+          type: string
+        signature:
+          type: string
+          description: Base64 Ed25519 signature over UTF-8 string debit_preview|agentDid|merchantId|amount|Idempotency-Key|X-Sign-Timestamp
+    DebitPreview:
+      type: object
+      properties:
+        previewId:
+          type: string
+        agentDid:
+          type: string
+        merchantId:
+          type: string
+        amount:
+          type: number
+        feeRate:
+          type: number
+        feeAmount:
+          type: number
+        netToMerchant:
+          type: number
+        fxRate:
+          type: number
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+    DebitPreviewResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          $ref: "#/components/schemas/DebitPreview"
+    X402CheckRequest:
+      type: object
+      required: [transactionId]
+      properties:
+        transactionId:
+          type: string
+    X402CheckResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
+    X402OutboundTransferRequest:
+      type: object
+      required: [vaAccountId, toAddress, amount, referenceTransactionId]
+      properties:
+        vaAccountId:
+          type: string
+        toAddress:
+          type: string
+        amount:
+          type: string
+        referenceTransactionId:
+          type: string
+    RefundApplyRequest:
+      type: object
+      required: [agentDid, transactionId, signature]
+      properties:
+        agentDid:
+          type: string
+        transactionId:
+          type: string
+        reason:
+          type: string
+        signature:
+          type: string
+          description: Base64 Ed25519 signature over UTF-8 string refund_apply|transactionId|Idempotency-Key|X-Sign-Timestamp
