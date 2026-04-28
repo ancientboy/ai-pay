@@ -91,13 +91,13 @@ func TestMVP8EndpointsFlow(t *testing.T) {
 	}
 
 	// 6) status
-	statusResp := performRequest(t, handler, http.MethodGet, "/payment/status/query?transactionId="+txID, nil, nil)
+	statusResp := performRequest(t, handler, http.MethodGet, "/payment/status/query?transactionId="+txID, nil, authHeaders)
 	if statusResp.Code != http.StatusOK {
 		t.Fatalf("status query status=%d", statusResp.Code)
 	}
 
 	// 7) balance
-	balanceResp := performRequest(t, handler, http.MethodGet, "/account/balance/query?accountId="+vaID, nil, nil)
+	balanceResp := performRequest(t, handler, http.MethodGet, "/account/balance/query?accountId="+vaID, nil, authHeaders)
 	if balanceResp.Code != http.StatusOK {
 		t.Fatalf("balance query status=%d", balanceResp.Code)
 	}
@@ -111,7 +111,7 @@ func TestMVP8EndpointsFlow(t *testing.T) {
 	}
 
 	// 8) ledger
-	ledgerResp := performRequest(t, handler, http.MethodGet, "/account/ledger/query?accountId="+vaID, nil, nil)
+	ledgerResp := performRequest(t, handler, http.MethodGet, "/account/ledger/query?accountId="+vaID, nil, authHeaders)
 	if ledgerResp.Code != http.StatusOK {
 		t.Fatalf("ledger query status=%d", ledgerResp.Code)
 	}

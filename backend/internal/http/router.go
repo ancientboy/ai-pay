@@ -295,6 +295,9 @@ func (s *Server) handleRecharge(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	if !s.ensureAccountOwnedByRef(w, r, accountRef) {
+		return
+	}
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if idem == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
@@ -313,6 +316,9 @@ func (s *Server) handleRecharge(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRechargeList(w http.ResponseWriter, r *http.Request) {
 	va := strings.TrimSpace(r.URL.Query().Get("accountId"))
+	if va != "" && !s.ensureAccountOwnedByRef(w, r, va) {
+		return
+	}
 	limit := 20
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
 		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
@@ -320,6 +326,9 @@ func (s *Server) handleRechargeList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	list := s.svc.ListRecharges(va, limit)
+	if va == "" {
+		list = s.filterRechargesByOwner(list, s.requestUserID(r))
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": list})
 }
 
@@ -504,6 +513,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"code": "PAY-010", "message": "not found"})
 		return
 	}
+	if !s.ensureAgentOwned(w, r, tx.PayerDID) {
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": tx})
 }
 
@@ -575,6 +587,9 @@ func (s *Server) handleRefund(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleBalance(w http.ResponseWriter, r *http.Request) {
 	va := r.URL.Query().Get("accountId")
+	if !s.ensureAccountOwnedByRef(w, r, va) {
+		return
+	}
 	balance, err := s.svc.BalanceByVA(va)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"code": "PAY-010", "message": "not found"})
@@ -587,6 +602,9 @@ func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request) {
 	va := r.URL.Query().Get("accountId")
 	if va == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAccountOwnedByRef(w, r, va) {
 		return
 	}
 	ledger := s.svc.LedgerByVA(va)
@@ -608,6 +626,9 @@ func (s *Server) handleInterest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	if !s.ensureAccountOwnedByRef(w, r, accountID) {
+		return
+	}
 	quote, err := s.svc.QueryInterest(accountID)
 	if err != nil {
 		writeInternalError(w, r, "query interest", err)
@@ -623,6 +644,9 @@ func (s *Server) handleVATopupConfigSet(w http.ResponseWriter, r *http.Request) 
 		!isNonNegativeDecimal(req.ThresholdAmount) ||
 		!isPositiveDecimal(req.TargetAmount) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAccountOwnedByRef(w, r, req.AccountID) {
 		return
 	}
 	item, err := s.svc.SetVATopupConfig(req.AccountID, req.AutoTopupEnabled, req.ThresholdAmount, req.TargetAmount)
@@ -648,6 +672,9 @@ func (s *Server) handleVATopupConfigGet(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	if !s.ensureAccountOwnedByRef(w, r, accountID) {
+		return
+	}
 	item, err := s.svc.GetVATopupConfig(accountID)
 	if err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
@@ -669,6 +696,9 @@ func (s *Server) handleVATransfer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	if !s.ensureAccountOwnedByRef(w, r, req.FromAccountID) || !s.ensureAccountOwnedByRef(w, r, req.ToAccountID) {
+		return
+	}
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if idem == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
@@ -688,6 +718,9 @@ func (s *Server) handleVATransfer(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleVATransferList(w http.ResponseWriter, r *http.Request) {
 	accountID := strings.TrimSpace(r.URL.Query().Get("accountId"))
+	if accountID != "" && !s.ensureAccountOwnedByRef(w, r, accountID) {
+		return
+	}
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	startTime := strings.TrimSpace(r.URL.Query().Get("startTime"))
 	endTime := strings.TrimSpace(r.URL.Query().Get("endTime"))
@@ -716,6 +749,9 @@ func (s *Server) handleVATransferList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	items := s.svc.ListVATransfers(accountID, status, startTime, endTime, limit, offset)
+	if accountID == "" {
+		items = s.filterVATransfersByOwner(items, s.requestUserID(r))
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": items})
 }
 
@@ -732,6 +768,9 @@ func (s *Server) handleFundTransfer(w http.ResponseWriter, r *http.Request) {
 		strings.TrimSpace(req.ToAccountID) == "" ||
 		!isPositiveDecimal(req.Amount) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAccountOwnedByRef(w, r, req.FromAccountID) || !s.ensureAccountOwnedByRef(w, r, req.ToAccountID) {
 		return
 	}
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
@@ -766,6 +805,9 @@ func (s *Server) handleFundWithdraw(w http.ResponseWriter, r *http.Request) {
 		!isPositiveDecimal(req.Amount) ||
 		strings.TrimSpace(req.Rail) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAccountOwnedByRef(w, r, req.VAAccountID) {
 		return
 	}
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
@@ -872,6 +914,9 @@ func (s *Server) handleX402Transfer(w http.ResponseWriter, r *http.Request) {
 		strings.TrimSpace(req.ReferenceTransactionID) == "" ||
 		!isPositiveDecimal(req.Amount) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAccountOwnedByRef(w, r, req.VAAccountID) {
 		return
 	}
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
@@ -1135,6 +1180,9 @@ func (s *Server) handleRiskKYCVerify(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRiskAuditQuery(w http.ResponseWriter, r *http.Request) {
 	agentDID := strings.TrimSpace(r.URL.Query().Get("agentDid"))
+	if agentDID != "" && !s.ensureAgentOwned(w, r, agentDID) {
+		return
+	}
 	merchantID := strings.TrimSpace(r.URL.Query().Get("merchantId"))
 	limit := 50
 	offset := 0
@@ -1149,6 +1197,9 @@ func (s *Server) handleRiskAuditQuery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	items := s.svc.RiskAuditQuery(agentDID, merchantID, limit, offset)
+	if agentDID == "" {
+		items = s.filterRiskAuditsByOwner(items, s.requestUserID(r))
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": items})
 }
 
@@ -2041,6 +2092,84 @@ func (s *Server) filterAgentsByOwner(items []service.AgentSummary, userID string
 		}
 	}
 	return out
+}
+
+func (s *Server) accountToAgentDID(accountRef string) string {
+	ref := strings.TrimSpace(accountRef)
+	if ref == "" {
+		return ""
+	}
+	for _, item := range s.svc.ListAgents() {
+		if strings.TrimSpace(item.VAAccountID) == ref || strings.TrimSpace(item.VACardNo) == ref {
+			return strings.TrimSpace(item.AgentDID)
+		}
+	}
+	return ""
+}
+
+func (s *Server) ensureAccountOwnedByRef(w http.ResponseWriter, r *http.Request, accountRef string) bool {
+	agentDID := s.accountToAgentDID(accountRef)
+	if agentDID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "account not found"})
+		return false
+	}
+	return s.ensureAgentOwned(w, r, agentDID)
+}
+
+func (s *Server) filterRechargesByOwner(items []service.RechargeOrder, userID string) []service.RechargeOrder {
+	if strings.TrimSpace(userID) == "" {
+		return []service.RechargeOrder{}
+	}
+	out := make([]service.RechargeOrder, 0, len(items))
+	for _, item := range items {
+		if agent := s.accountToAgentDID(item.VAAccountID); agent != "" && s.isAgentOwnedByUser(agent, userID) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func (s *Server) filterVATransfersByOwner(items []service.VATransferRecord, userID string) []service.VATransferRecord {
+	if strings.TrimSpace(userID) == "" {
+		return []service.VATransferRecord{}
+	}
+	out := make([]service.VATransferRecord, 0, len(items))
+	for _, item := range items {
+		fromAgent := s.accountToAgentDID(item.FromAccountID)
+		toAgent := s.accountToAgentDID(item.ToAccountID)
+		if (fromAgent != "" && s.isAgentOwnedByUser(fromAgent, userID)) || (toAgent != "" && s.isAgentOwnedByUser(toAgent, userID)) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func (s *Server) filterRiskAuditsByOwner(items []service.RiskAuditEntry, userID string) []service.RiskAuditEntry {
+	if strings.TrimSpace(userID) == "" {
+		return []service.RiskAuditEntry{}
+	}
+	out := make([]service.RiskAuditEntry, 0, len(items))
+	for _, item := range items {
+		if s.isAgentOwnedByUser(strings.TrimSpace(item.AgentDID), userID) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func (s *Server) isAgentOwnedByUser(agentDID, userID string) bool {
+	agent := strings.TrimSpace(agentDID)
+	if agent == "" || strings.TrimSpace(userID) == "" {
+		return false
+	}
+	s.agentOwnersMu.RLock()
+	owner, ok := s.agentOwners[agent]
+	s.agentOwnersMu.RUnlock()
+	if ok {
+		return owner == userID
+	}
+	// Compatibility path: if this agent has not been bound yet, treat as not visible in list filters.
+	return false
 }
 
 func (s *Server) appendAuditLog(r *http.Request, action string, resource string, detail map[string]any) {

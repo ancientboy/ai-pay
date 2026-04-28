@@ -417,6 +417,7 @@ func TestAgentAndRechargeList(t *testing.T) {
 	}
 
 	rechargeReq := httptest.NewRequest(http.MethodGet, "/fund/recharge/list?accountId="+acc.VAAccountID, nil)
+	rechargeReq.Header.Set("X-User-Id", "did:gusd:agent:list1")
 	rechargeResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rechargeResp, rechargeReq)
 	if rechargeResp.Code != http.StatusOK {
@@ -438,6 +439,7 @@ func TestRechargeByVACardNo(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/fund/recharge", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "rch-http-card-1")
+	req.Header.Set("X-User-Id", "did:gusd:agent:card-http")
 	rr := httptest.NewRecorder()
 	server.Routes().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -445,6 +447,7 @@ func TestRechargeByVACardNo(t *testing.T) {
 	}
 
 	balanceReq := httptest.NewRequest(http.MethodGet, "/account/balance/query?accountId="+acc.VAAccountID, nil)
+	balanceReq.Header.Set("X-User-Id", "did:gusd:agent:card-http")
 	balanceResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(balanceResp, balanceReq)
 	if balanceResp.Code != http.StatusOK {
@@ -640,6 +643,7 @@ func TestVAInterestAndTopupConfigEndpoints(t *testing.T) {
 	server := NewServerForTest(svc, time.Now, 100, 100)
 
 	interestReq := httptest.NewRequest(http.MethodGet, "/account/interest/query?accountId="+acc.VAAccountID, nil)
+	interestReq.Header.Set("X-User-Id", "did:gusd:agent:week2-interest")
 	interestResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(interestResp, interestReq)
 	if interestResp.Code != http.StatusOK {
@@ -654,6 +658,7 @@ func TestVAInterestAndTopupConfigEndpoints(t *testing.T) {
 	}
 	setReq := httptest.NewRequest(http.MethodPost, "/account/va/topup/config", bytes.NewReader(mustJSONAny(t, setBody)))
 	setReq.Header.Set("Content-Type", "application/json")
+	setReq.Header.Set("X-User-Id", "did:gusd:agent:week2-interest")
 	setResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(setResp, setReq)
 	if setResp.Code != http.StatusOK {
@@ -661,6 +666,7 @@ func TestVAInterestAndTopupConfigEndpoints(t *testing.T) {
 	}
 
 	getReq := httptest.NewRequest(http.MethodGet, "/account/va/topup/config?accountId="+acc.VAAccountID, nil)
+	getReq.Header.Set("X-User-Id", "did:gusd:agent:week2-interest")
 	getResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(getResp, getReq)
 	if getResp.Code != http.StatusOK {
@@ -685,6 +691,7 @@ func TestVATransferEndpointWithIdempotency(t *testing.T) {
 	req1 := httptest.NewRequest(http.MethodPost, "/account/va/transfer", bytes.NewReader(mustJSONMap(t, transferBody)))
 	req1.Header.Set("Content-Type", "application/json")
 	req1.Header.Set("Idempotency-Key", "idem-http-week2-transfer-1")
+	req1.Header.Set("X-User-Id", "did:gusd:agent:week2-transfer-a")
 	resp1 := httptest.NewRecorder()
 	server.Routes().ServeHTTP(resp1, req1)
 	if resp1.Code != http.StatusOK {
@@ -694,6 +701,7 @@ func TestVATransferEndpointWithIdempotency(t *testing.T) {
 	req2 := httptest.NewRequest(http.MethodPost, "/account/va/transfer", bytes.NewReader(mustJSONMap(t, transferBody)))
 	req2.Header.Set("Content-Type", "application/json")
 	req2.Header.Set("Idempotency-Key", "idem-http-week2-transfer-1")
+	req2.Header.Set("X-User-Id", "did:gusd:agent:week2-transfer-a")
 	resp2 := httptest.NewRecorder()
 	server.Routes().ServeHTTP(resp2, req2)
 	if resp2.Code != http.StatusOK {
@@ -710,6 +718,7 @@ func TestVATransferEndpointWithIdempotency(t *testing.T) {
 	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/account/va/transfer/list?accountId="+accA.VAAccountID+"&status=SETTLED&limit=10&offset=0", nil)
+	listReq.Header.Set("X-User-Id", "did:gusd:agent:week2-transfer-a")
 	listResp := httptest.NewRecorder()
 	server.Routes().ServeHTTP(listResp, listReq)
 	if listResp.Code != http.StatusOK {
@@ -734,6 +743,7 @@ func TestVATransferEndpointWithIdempotency(t *testing.T) {
 		nil,
 	)
 	timeResp := httptest.NewRecorder()
+	timeReq.Header.Set("X-User-Id", "did:gusd:agent:week2-transfer-a")
 	server.Routes().ServeHTTP(timeResp, timeReq)
 	if timeResp.Code != http.StatusOK {
 		t.Fatalf("va transfer list with time window expected 200 got %d", timeResp.Code)
@@ -750,6 +760,7 @@ func TestVATransferEndpointWithIdempotency(t *testing.T) {
 		nil,
 	)
 	invalidTimeResp := httptest.NewRecorder()
+	invalidTimeReq.Header.Set("X-User-Id", "did:gusd:agent:week2-transfer-a")
 	server.Routes().ServeHTTP(invalidTimeResp, invalidTimeReq)
 	if invalidTimeResp.Code != http.StatusBadRequest {
 		t.Fatalf("invalid startTime expected 400 got %d", invalidTimeResp.Code)
