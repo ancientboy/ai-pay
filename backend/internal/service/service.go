@@ -443,6 +443,7 @@ type PaymentService interface {
 	GetRechargeConfirmation(rechargeID string) (RechargeConfirmationStatus, error)
 	GetRechargeAddress(agentDID string, currency string, mode string) (RechargeAddress, error)
 	HandleRechargeCallback(event RechargeCallback) (RechargeConfirmationStatus, error)
+	CheckWalletProvider(provider string) error
 	// M6 funds & payment extensions (gated by FEATURE_M6_FUNDS at HTTP layer).
 	TransferFunds(fromAccountID string, toAccountID string, currency string, amount string, idemKey string) error
 	WithdrawFunds(vaAccountID string, currency string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error)
@@ -2057,8 +2058,9 @@ func (s *Service) SetStablecoinConfig(cfg StablecoinConfig) (StablecoinConfig, e
 		return StablecoinConfig{}, &APIError{Code: "PAY-010", Message: "invalid currency"}
 	}
 	cfg.Currency = c
-	if strings.TrimSpace(cfg.Provider) == "" {
-		cfg.Provider = "mock"
+	cfg.Provider = NormalizeWalletProvider(cfg.Provider)
+	if cfg.Provider == "" {
+		return StablecoinConfig{}, &APIError{Code: "PAY-010", Message: "invalid provider"}
 	}
 	if cfg.Decimals < 0 {
 		return StablecoinConfig{}, &APIError{Code: "PAY-010", Message: "invalid decimals"}
@@ -2142,4 +2144,12 @@ func (s *Service) HandleRechargeCallback(event RechargeCallback) (RechargeConfir
 		}
 	}
 	return s.GetRechargeConfirmation(id)
+}
+
+func (s *Service) CheckWalletProvider(provider string) error {
+	p := NormalizeWalletProvider(provider)
+	if p == "" {
+		return &APIError{Code: "PAY-010", Message: "invalid provider"}
+	}
+	return nil
 }

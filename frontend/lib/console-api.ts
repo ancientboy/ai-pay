@@ -920,3 +920,7 @@ export function setStablecoinConfig(input: {
     body: JSON.stringify(input),
   });
 }
+
+export function checkStablecoinProviderHealth(provider: string) {
+  return request<{ provider: string; healthy: boolean }>(`/developer/stablecoin-provider/health?provider=${encodeURIComponent(provider)}`);
+}

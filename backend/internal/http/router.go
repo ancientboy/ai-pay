@@ -136,6 +136,7 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("DELETE /developer/channel-routes", s.withAdminAuth(http.HandlerFunc(s.handleChannelRouteDelete)))
 	mux.Handle("GET /developer/stablecoin-config", s.withReadAuth(http.HandlerFunc(s.handleStablecoinConfigList)))
 	mux.Handle("POST /developer/stablecoin-config", s.withAdminAuth(http.HandlerFunc(s.handleStablecoinConfigSet)))
+	mux.Handle("GET /developer/stablecoin-provider/health", s.withReadAuth(http.HandlerFunc(s.handleStablecoinProviderHealth)))
 	mux.Handle("GET /fund/recharge/confirm", s.withReadAuth(http.HandlerFunc(s.handleRechargeConfirmQuery)))
 	mux.Handle("POST /fund/transfer", s.withM6Funds(s.withAdminAuth(http.HandlerFunc(s.handleFundTransfer))))
 	mux.Handle("POST /fund/withdraw", s.withM6Funds(s.withAdminAuth(http.HandlerFunc(s.handleFundWithdraw))))
@@ -2528,4 +2529,21 @@ func (s *Server) handleRechargeCallback(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handleStablecoinProviderHealth(w http.ResponseWriter, r *http.Request) {
+	provider := strings.TrimSpace(r.URL.Query().Get("provider"))
+	if provider == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if err := s.svc.CheckWalletProvider(provider); err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "provider health check", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"provider": strings.ToLower(provider), "healthy": true}})
 }

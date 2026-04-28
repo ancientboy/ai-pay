@@ -21,6 +21,7 @@ import {
   setRiskConfig,
   listStablecoinConfigs,
   setStablecoinConfig,
+  checkStablecoinProviderHealth,
 } from "@/lib/console-api";
 import { toReadableError } from "@/lib/error-map";
 import { formatStatus } from "@/lib/i18n";
@@ -214,6 +215,12 @@ export default function DeveloperPage() {
     setScRiskThreshold(String(selected.riskThreshold ?? 10000));
     showToast("info", `loaded ${selected.currency} config`);
   }
+
+  const checkStablecoinProviderMutation = useMutation({
+    mutationFn: () => checkStablecoinProviderHealth(scProvider),
+    onSuccess: () => showToast("success", `provider ${scProvider} healthy`),
+    onError: (err) => showToast("error", toReadableError(err, locale)),
+  });
 
   const setStablecoinConfigMutation = useMutation({
     mutationFn: () =>
@@ -603,6 +610,7 @@ export default function DeveloperPage() {
         </div>
         <div className="mt-3 flex gap-2">
           <button onClick={applyStablecoinFromList} className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200">Load Selected</button>
+          <button onClick={()=>checkStablecoinProviderMutation.mutate()} className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200">Check Provider</button>
           <button onClick={()=>setStablecoinConfigMutation.mutate()} className="rounded-md bg-blue-600 px-3 py-2 text-sm text-white">Save Stablecoin Config</button>
         </div>
         <ul className="mt-3 space-y-2 text-xs text-slate-300">

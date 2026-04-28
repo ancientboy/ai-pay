@@ -2466,8 +2466,9 @@ func (s *PersistentService) SetStablecoinConfig(cfg StablecoinConfig) (Stablecoi
 	if cfg.Currency == "" {
 		return StablecoinConfig{}, &APIError{Code: "PAY-010", Message: "invalid currency"}
 	}
-	if strings.TrimSpace(cfg.Provider) == "" {
-		cfg.Provider = "mock"
+	cfg.Provider = NormalizeWalletProvider(cfg.Provider)
+	if cfg.Provider == "" {
+		return StablecoinConfig{}, &APIError{Code: "PAY-010", Message: "invalid provider"}
 	}
 	if cfg.MinConfirmations <= 0 {
 		cfg.MinConfirmations = 1
@@ -2606,4 +2607,19 @@ ON DUPLICATE KEY UPDATE
 		return "", err
 	}
 	return strings.TrimSpace(createdAddress), nil
+}
+
+func (s *PersistentService) CheckWalletProvider(provider string) error {
+	p := NormalizeWalletProvider(provider)
+	if p == "" {
+		return &APIError{Code: "PAY-010", Message: "invalid provider"}
+	}
+	router := s.providerRouter
+	if router == nil {
+		router = NewDefaultProviderRouter()
+	}
+	if err := router.HealthCheck(p); err != nil {
+		return &APIError{Code: "PAY-010", Message: "provider health check failed"}
+	}
+	return nil
 }
