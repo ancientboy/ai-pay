@@ -16,7 +16,8 @@ import (
 )
 
 type PersistentService struct {
-	store *storage.Store
+	store          *storage.Store
+	walletProvider WalletProvider
 }
 
 type scanRows interface {
@@ -24,7 +25,7 @@ type scanRows interface {
 }
 
 func NewPersistent(store *storage.Store) *PersistentService {
-	return &PersistentService{store: store}
+	return &PersistentService{store: store, walletProvider: &MockWalletProvider{}}
 }
 
 func (s *PersistentService) RegisterAgent(did string) Agent {
@@ -2512,18 +2513,29 @@ func (s *PersistentService) GetRechargeAddress(agentDID string, currency string,
 		m = "platform"
 	}
 	addr := ""
+	chainID := ""
+	_ = s.store.DB.QueryRow(`SELECT chain_id FROM stablecoin_config WHERE currency = ?`, ccy).Scan(&chainID)
+	if strings.TrimSpace(chainID) == "" {
+		chainID = "unknown-chain"
+	}
 	if m == "self_hosted" {
 		if err := s.store.DB.QueryRow(`SELECT wallet_address FROM self_host_wallet WHERE agent_did = ?`, strings.TrimSpace(agentDID)).Scan(&addr); err != nil || strings.TrimSpace(addr) == "" {
 			return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "self hosted wallet not bound"}
 		}
 	} else {
-		if err := s.store.DB.QueryRow(`SELECT hot_wallet FROM stablecoin_config WHERE currency = ?`, ccy).Scan(&addr); err != nil {
-			return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "platform wallet not configured"}
+		var configuredHotWallet string
+		_ = s.store.DB.QueryRow(`SELECT hot_wallet FROM stablecoin_config WHERE currency = ?`, ccy).Scan(&configuredHotWallet)
+		generatedAddr, genErr := s.ensureWalletAccountAddress(agentDID, ccy, chainID, "platform")
+		if genErr != nil {
+			return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "platform wallet allocate failed"}
+		}
+		if strings.TrimSpace(configuredHotWallet) != "" {
+			addr = strings.TrimSpace(configuredHotWallet)
+		} else {
+			addr = generatedAddr
 		}
 		m = "platform"
 	}
-	chainID := ""
-	_ = s.store.DB.QueryRow(`SELECT chain_id FROM stablecoin_config WHERE currency = ?`, ccy).Scan(&chainID)
 	return RechargeAddress{Mode: m, AgentDID: strings.TrimSpace(agentDID), Currency: ccy, ChainID: chainID, Address: strings.TrimSpace(addr), IsSelfHosted: m == "self_hosted"}, nil
 }
 
@@ -2544,4 +2556,47 @@ func (s *PersistentService) HandleRechargeCallback(event RechargeCallback) (Rech
 		return RechargeConfirmationStatus{}, &APIError{Code: "PAY-010", Message: "update recharge callback failed"}
 	}
 	return s.GetRechargeConfirmation(id)
+}
+
+
+func (s *PersistentService) ensureWalletAccountAddress(agentDID string, currency string, chainID string, mode string) (string, error) {
+	agent := strings.TrimSpace(agentDID)
+	ccy := NormalizeCurrency(currency)
+	chain := strings.TrimSpace(chainID)
+	m := strings.ToLower(strings.TrimSpace(mode))
+	if m == "" {
+		m = "platform"
+	}
+	if agent == "" || ccy == "" || chain == "" {
+		return "", &APIError{Code: "PAY-010", Message: "invalid wallet account request"}
+	}
+	var addr string
+	err := s.store.DB.QueryRow(`SELECT address FROM wallet_account WHERE agent_did = ? AND currency = ? AND chain_id = ? AND mode = ? LIMIT 1`, agent, ccy, chain, m).Scan(&addr)
+	if err == nil && strings.TrimSpace(addr) != "" {
+		return strings.TrimSpace(addr), nil
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return "", err
+	}
+	provider := s.walletProvider
+	if provider == nil {
+		provider = &MockWalletProvider{}
+	}
+	providerAccountID, createdAddress, createErr := provider.CreateAddress(agent, ccy, chain, m)
+	if createErr != nil {
+		return "", createErr
+	}
+	if _, err := s.store.DB.Exec(`
+INSERT INTO wallet_account (agent_did, currency, chain_id, mode, provider, provider_account_id, address, status, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', UTC_TIMESTAMP(), UTC_TIMESTAMP())
+ON DUPLICATE KEY UPDATE
+  provider = VALUES(provider),
+  provider_account_id = VALUES(provider_account_id),
+  address = VALUES(address),
+  status = 'ACTIVE',
+  updated_at = UTC_TIMESTAMP()`,
+		agent, ccy, chain, m, provider.Name(), providerAccountID, createdAddress); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(createdAddress), nil
 }
