@@ -396,6 +396,35 @@ export type AuditLog = {
   createdAt: string;
 };
 
+export type RiskDecision = {
+  decision: "ALLOW" | "BLOCK" | string;
+  code?: string;
+  message?: string;
+  agentDid: string;
+  merchantId: string;
+  amount: number;
+  transactionId?: string;
+};
+
+export type PartyKYC = {
+  agentDid: string;
+  status: string;
+  tier: string;
+  externalReference: string;
+  verifiedAt: string;
+  updatedAt: string;
+};
+
+export type RiskAuditEntry = {
+  id: number;
+  category: string;
+  agentDid: string;
+  merchantId: string;
+  transactionId: string;
+  detail: Record<string, unknown>;
+  createdAt: string;
+};
+
 export function listApiKeys() {
   return request<DeveloperAPIKey[]>("/developer/api-keys");
 }
@@ -510,6 +539,75 @@ export function listAuditLogs(input?: { action?: string; resource?: string; limi
   }
   const suffix = query.toString();
   return request<AuditLog[]>(`/developer/audit-logs${suffix ? `?${suffix}` : ""}`);
+}
+
+function buildKYCVerifySignPayload(
+  agentDid: string,
+  idempotencyKey: string,
+  signTimestamp: string,
+): string {
+  return `kyc_verify|${agentDid}|${idempotencyKey}|${signTimestamp}`;
+}
+
+export function riskTransactionCheck(input: {
+  agentDid: string;
+  merchantId: string;
+  amount: string;
+  transactionId?: string;
+}) {
+  return request<RiskDecision>("/risk/transaction/check", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function riskKYCVerify(input: { agentDid: string; documentReference?: string }) {
+  const idempotencyKey = `risk-kyc-ui-${Date.now()}`;
+  const signTimestamp = new Date().toISOString();
+  return (async () => {
+    let signature = "sig";
+    try {
+      signature = await signAgentPayload(
+        input.agentDid,
+        buildKYCVerifySignPayload(input.agentDid, idempotencyKey, signTimestamp),
+      );
+    } catch {
+      // Compatibility fallback for legacy agents without DID key pair.
+    }
+    return request<PartyKYC>("/risk/kyc/verify", {
+      method: "POST",
+      body: JSON.stringify({
+        agentDid: input.agentDid,
+        documentReference: input.documentReference ?? "",
+        signature,
+      }),
+      idempotencyKey,
+      signTimestamp,
+    });
+  })();
+}
+
+export function riskAuditQuery(input?: {
+  agentDid?: string;
+  merchantId?: string;
+  limit?: number;
+  offset?: number;
+}) {
+  const query = new URLSearchParams();
+  if (input?.agentDid?.trim()) {
+    query.set("agentDid", input.agentDid.trim());
+  }
+  if (input?.merchantId?.trim()) {
+    query.set("merchantId", input.merchantId.trim());
+  }
+  if (input?.limit && Number.isFinite(input.limit) && input.limit > 0) {
+    query.set("limit", String(input.limit));
+  }
+  if (typeof input?.offset === "number" && Number.isFinite(input.offset) && input.offset >= 0) {
+    query.set("offset", String(input.offset));
+  }
+  const suffix = query.toString();
+  return request<RiskAuditEntry[]>(`/risk/audit/query${suffix ? `?${suffix}` : ""}`);
 }
 
 // Backward-compatible aliases for pages using older names.
