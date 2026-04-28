@@ -5,20 +5,32 @@ import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import { LocaleSwitcher } from "@/components/locale-switcher";
 import { useLocale } from "@/components/locale-provider";
+import { SessionClaims } from "@/lib/session";
 
-export function ConsoleShell({ children }: { children: React.ReactNode }) {
+export function ConsoleShell({
+  session,
+  children,
+}: {
+  session: SessionClaims | null;
+  children: React.ReactNode;
+}) {
   const { t } = useLocale();
   const router = useRouter();
   const pathname = usePathname();
   const [loggingOut, setLoggingOut] = useState(false);
-  const defaultRole = process.env.NEXT_PUBLIC_AI_PAY_DEFAULT_ROLE ?? "operator";
-  const canManageDeveloper = defaultRole !== "readonly";
+  const currentRole = (session?.role || "operator").toLowerCase();
+  const canManageDeveloper = currentRole !== "readonly";
   const navItems = [
+    { href: "/console", label: t("nav.home") },
     { href: "/dashboard", label: t("nav.dashboard") },
     { href: "/agents", label: t("nav.agents") },
+    { href: "/kyc", label: t("nav.kyc") },
+    { href: "/billing", label: t("nav.billing") },
     { href: "/authorize", label: t("nav.authorize") },
     { href: "/recharge", label: t("nav.recharge") },
     { href: "/transactions", label: t("nav.transactions") },
+    { href: "/self-hosted", label: t("nav.selfHosted") },
+    ...(currentRole === "admin" ? [{ href: "/admin-subscriptions", label: t("nav.adminSubscriptions") }] : []),
     ...(canManageDeveloper ? [{ href: "/developer", label: t("nav.developer") }] : []),
     { href: "/settings", label: t("nav.settings") },
   ];
@@ -57,7 +69,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
             </div>
             <div className="flex items-center gap-3">
               <div className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">
-                {t("app.role")}: {defaultRole}
+                {t("app.role")}: {currentRole}
               </div>
               <LocaleSwitcher />
               <div className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">

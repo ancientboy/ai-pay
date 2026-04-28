@@ -30,6 +30,7 @@ type Account struct {
 	VAAccountID   string
 	VACardNo      string
 	AgentDID      string
+	Currency      string
 	Balance       float64
 	FrozenBalance float64
 }
@@ -45,6 +46,7 @@ type Transaction struct {
 	ID        string
 	PayerDID  string
 	Merchant  string
+	Currency  string
 	Amount    float64
 	Fee       float64
 	NetAmount float64
@@ -56,6 +58,7 @@ type Transaction struct {
 type PayRequest struct {
 	PayerDID       string
 	MerchantID     string
+	Currency       string
 	Amount         string
 	IdempotencyKey string
 	Signature      string
@@ -71,6 +74,7 @@ type AgentSummary struct {
 	VAAccountID   string  `json:"vaAccountId"`
 	VACardNo      string  `json:"vaCardNo"`
 	WalletAddress string  `json:"walletAddress"`
+	Currency      string  `json:"currency"`
 	Balance       float64 `json:"balance"`
 	Status        string  `json:"status"`
 }
@@ -78,6 +82,7 @@ type AgentSummary struct {
 type RechargeOrder struct {
 	RechargeID  string    `json:"rechargeId"`
 	VAAccountID string    `json:"vaAccountId"`
+	Currency    string    `json:"currency"`
 	Amount      float64   `json:"amount"`
 	Status      string    `json:"status"`
 	CreatedAt   time.Time `json:"createdAt"`
@@ -165,10 +170,60 @@ type AuditLog struct {
 }
 
 type RiskConfig struct {
-	Enabled           bool      `json:"enabled"`
-	SingleAmountLimit float64   `json:"singleAmountLimit"`
-	BlockedMerchants  []string  `json:"blockedMerchants"`
-	UpdatedAt         time.Time `json:"updatedAt"`
+	Enabled                bool               `json:"enabled"`
+	SingleAmountLimit      float64            `json:"singleAmountLimit"`
+	SingleAmountLimitByCcy map[string]float64 `json:"singleAmountLimitByCurrency"`
+	BlockedMerchants       []string           `json:"blockedMerchants"`
+	UpdatedAt              time.Time          `json:"updatedAt"`
+}
+
+type StablecoinConfig struct {
+	Currency         string    `json:"currency"`
+	Provider         string    `json:"provider"`
+	Enabled          bool      `json:"enabled"`
+	ChainID          string    `json:"chainId"`
+	RPCURL           string    `json:"rpcUrl"`
+	TokenContract    string    `json:"tokenContract"`
+	Decimals         int       `json:"decimals"`
+	HotWallet        string    `json:"hotWallet"`
+	MinConfirmations int       `json:"minConfirmations"`
+	RiskThreshold    float64   `json:"riskThreshold"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+}
+
+type RechargeConfirmationStatus struct {
+	RechargeID       string    `json:"rechargeId"`
+	Currency         string    `json:"currency"`
+	RequiredConfirm  int       `json:"requiredConfirmations"`
+	CurrentConfirm   int       `json:"currentConfirmations"`
+	Confirmed        bool      `json:"confirmed"`
+	Status           string    `json:"status"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+}
+
+type RechargeAddress struct {
+	Mode        string `json:"mode"`
+	AgentDID    string `json:"agentDid"`
+	Currency    string `json:"currency"`
+	ChainID     string `json:"chainId"`
+	Address     string `json:"address"`
+	IsSelfHosted bool  `json:"isSelfHosted"`
+}
+
+type RechargeCallback struct {
+	RechargeID     string `json:"rechargeId"`
+	Currency       string `json:"currency"`
+	Status         string `json:"status"`
+	Confirmations  int    `json:"confirmations"`
+}
+
+type BridgeCustomerStatus struct {
+	AgentDID         string    `json:"agentDid"`
+	BridgeCustomerID string    `json:"bridgeCustomerId"`
+	KYCStatus        string    `json:"kycStatus"`
+	KYCLink          string    `json:"kycLink,omitempty"`
+	LastError        string    `json:"lastError,omitempty"`
+	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
 type ChannelRoute struct {
@@ -260,6 +315,35 @@ type RiskAuditEntry struct {
 	CreatedAt     time.Time       `json:"createdAt"`
 }
 
+type SubscriptionPlan struct {
+	PlanCode       string `json:"planCode"`
+	PlanName       string `json:"planName"`
+	MonthlyPrice   string `json:"monthlyPrice"`
+	AgentLimit     int    `json:"agentLimit"`
+	MonthlyAPILimit int   `json:"monthlyApiLimit"`
+}
+
+type UserSubscription struct {
+	UserID      string    `json:"userId"`
+	PlanCode    string    `json:"planCode"`
+	Status      string    `json:"status"`
+	AutoRenew   bool      `json:"autoRenew"`
+	CurrentFrom time.Time `json:"currentFrom"`
+	CurrentTo   time.Time `json:"currentTo"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+type BillingInvoice struct {
+	InvoiceID  string    `json:"invoiceId"`
+	UserID     string    `json:"userId"`
+	PlanCode   string    `json:"planCode"`
+	Amount     string    `json:"amount"`
+	Status     string    `json:"status"`
+	PeriodFrom time.Time `json:"periodFrom"`
+	PeriodTo   time.Time `json:"periodTo"`
+	CreatedAt  time.Time `json:"createdAt"`
+}
+
 type Service struct {
 	mu             sync.Mutex
 	agents         map[string]Agent
@@ -299,6 +383,11 @@ type Service struct {
 	m8signReqs       map[string]m8signReq
 	m8sessCreateIdem map[string]string
 	m8signReqIdem    map[string]string
+	agentOwners      map[string]string
+	subscriptions    map[string]UserSubscription
+	invoices         []BillingInvoice
+	stablecoinCfgs   map[string]StablecoinConfig
+	bridgeCustomers  map[string]BridgeCustomerStatus
 }
 
 type holdRecord struct {
@@ -314,8 +403,16 @@ type PaymentService interface {
 	AgentPublicKey(did string) (string, error)
 	VerifyAgentSignature(did string, message string, signature string) error
 	UpdateAgentPublicKey(did string, newPubKey string, proofMessage string, proofSignature string) error
+	BindAgentOwner(agentDID string, userID string) error
+	AgentOwner(agentDID string) (string, bool, error)
+	ListSubscriptionPlans() []SubscriptionPlan
+	GetUserSubscription(userID string) (UserSubscription, error)
+	ChangeUserSubscription(userID string, planCode string, autoRenew bool) (UserSubscription, error)
+	ListUserInvoices(userID string, limit int) []BillingInvoice
+	AdminListSubscriptions(limit int, offset int) []UserSubscription
+	AdminUpdateSubscription(userID string, planCode string, status string, autoRenew bool) (UserSubscription, error)
 	CreateAccount(agentDID string) Account
-	Recharge(va string, amount string, idemKey string) error
+	Recharge(va string, currency string, amount string, idemKey string) error
 	SetAuthorizeRule(agentDID string, single string, daily string, merchants []string) error
 	UpdateAuthorizeRule(agentDID string, single string, daily string, merchants []string) error
 	FreezeAuthorizeRule(agentDID string) error
@@ -325,8 +422,8 @@ type PaymentService interface {
 	Unfreeze(transactionID string, idemKey string) error
 	Refund(transactionID string, idemKey string) error
 	QueryStatus(txID string) (Transaction, error)
-	BalanceByVA(va string) (float64, error)
-	LedgerByVA(va string) []Transaction
+	BalanceByVA(va string, currency string) (float64, error)
+	LedgerByVA(va string, currency string) []Transaction
 	ListAgents() []AgentSummary
 	ListRecharges(va string, limit int) []RechargeOrder
 	OverviewMetrics() (OverviewMetrics, error)
@@ -342,20 +439,30 @@ type PaymentService interface {
 	QueryInterest(accountID string) (InterestQuote, error)
 	SetVATopupConfig(accountID string, autoTopup bool, threshold string, target string) (VATopupConfig, error)
 	GetVATopupConfig(accountID string) (VATopupConfig, error)
-	TransferVA(fromAccountID string, toAccountID string, amount string, idemKey string) error
+	TransferVA(fromAccountID string, toAccountID string, currency string, amount string, idemKey string) error
 	ListVATransfers(accountID string, status string, startTime string, endTime string, limit int, offset int) []VATransferRecord
 	AppendAuditLog(actor string, role string, action string, resource string, requestID string, detail map[string]any) error
 	ListAuditLogs(action string, resource string, limit int, offset int) []AuditLog
 	GetRiskConfig() RiskConfig
-	SetRiskConfig(enabled bool, singleAmountLimit string, blockedMerchants []string) (RiskConfig, error)
+	SetRiskConfig(enabled bool, singleAmountLimit string, singleLimitByCurrency map[string]string, blockedMerchants []string) (RiskConfig, error)
 	ListChannelRoutes() []ChannelRoute
 	SetChannelRoute(merchantID string, mode string) (ChannelRoute, error)
 	DeleteChannelRoute(merchantID string) error
+	ListStablecoinConfigs() []StablecoinConfig
+	SetStablecoinConfig(cfg StablecoinConfig) (StablecoinConfig, error)
+	GetRechargeConfirmation(rechargeID string) (RechargeConfirmationStatus, error)
+	GetRechargeAddress(agentDID string, currency string, mode string) (RechargeAddress, error)
+	HandleRechargeCallback(event RechargeCallback) (RechargeConfirmationStatus, error)
+	CheckWalletProvider(provider string) error
+	BridgeEnsureCustomer(agentDID string) (BridgeCustomerStatus, error)
+	BridgeGetCustomerStatus(agentDID string) (BridgeCustomerStatus, error)
+	BridgeGetCustomerKYCLink(agentDID string, endorsement string, redirectURI string) (string, error)
+	BridgeHandleWebhook(rawBody []byte, signatureHeader string) error
 	// M6 funds & payment extensions (gated by FEATURE_M6_FUNDS at HTTP layer).
-	TransferFunds(fromAccountID string, toAccountID string, amount string, idemKey string) error
-	WithdrawFunds(vaAccountID string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error)
+	TransferFunds(fromAccountID string, toAccountID string, currency string, amount string, idemKey string) error
+	WithdrawFunds(vaAccountID string, currency string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error)
 	DebitPreview(agentDID string, merchantID string, amount string) (DebitPreview, error)
-	TransferX402Outbound(vaAccountID string, toAddress string, amount string, referenceTransactionID string, idemKey string) error
+	TransferX402Outbound(vaAccountID string, toAddress string, currency string, amount string, referenceTransactionID string, idemKey string) error
 	CheckX402Settlement(transactionID string) (map[string]any, error)
 	RefundApply(transactionID string, reason string, idemKey string) error
 	// M7 card + risk + party KYC (gated by FEATURE_M7_CARD_RISK at HTTP layer).
@@ -398,6 +505,7 @@ func New() *Service {
 		riskConfig: RiskConfig{
 			Enabled:           true,
 			SingleAmountLimit: 1000,
+			SingleAmountLimitByCcy: map[string]float64{"GUSD": 1000, "USDC": 1000, "USDT": 1000},
 			BlockedMerchants:  []string{"m_risk_block"},
 			UpdatedAt:         time.Now().UTC(),
 		},
@@ -413,6 +521,15 @@ func New() *Service {
 		m8signReqs:       map[string]m8signReq{},
 		m8sessCreateIdem: map[string]string{},
 		m8signReqIdem:    map[string]string{},
+		agentOwners:      map[string]string{},
+		subscriptions:    map[string]UserSubscription{},
+		invoices:         []BillingInvoice{},
+		stablecoinCfgs: map[string]StablecoinConfig{
+			"GUSD": {Currency: "GUSD", Provider: "mock", Enabled: true, ChainID: "eth-mainnet", Decimals: 2, MinConfirmations: 6, RiskThreshold: 10000, UpdatedAt: time.Now().UTC()},
+			"USDC": {Currency: "USDC", Provider: "mock", Enabled: true, ChainID: "eth-mainnet", Decimals: 6, MinConfirmations: 12, RiskThreshold: 10000, UpdatedAt: time.Now().UTC()},
+			"USDT": {Currency: "USDT", Provider: "mock", Enabled: true, ChainID: "eth-mainnet", Decimals: 6, MinConfirmations: 12, RiskThreshold: 10000, UpdatedAt: time.Now().UTC()},
+		},
+		bridgeCustomers: map[string]BridgeCustomerStatus{},
 	}
 }
 
@@ -422,6 +539,162 @@ func (s *Service) RegisterAgent(did string) Agent {
 	a := Agent{DID: did}
 	s.agents[did] = a
 	return a
+}
+
+func (s *Service) BindAgentOwner(agentDID string, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	agent := strings.TrimSpace(agentDID)
+	user := strings.TrimSpace(userID)
+	if agent == "" || user == "" {
+		return nil
+	}
+	s.agentOwners[agent] = user
+	return nil
+}
+
+func (s *Service) AgentOwner(agentDID string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	owner, ok := s.agentOwners[strings.TrimSpace(agentDID)]
+	return owner, ok, nil
+}
+
+func (s *Service) ListSubscriptionPlans() []SubscriptionPlan {
+	return []SubscriptionPlan{
+		{PlanCode: "starter", PlanName: "Starter", MonthlyPrice: "0.00", AgentLimit: 20, MonthlyAPILimit: 100000},
+		{PlanCode: "growth", PlanName: "Growth", MonthlyPrice: "299.00", AgentLimit: 200, MonthlyAPILimit: 5000000},
+		{PlanCode: "enterprise", PlanName: "Enterprise", MonthlyPrice: "0.00", AgentLimit: 0, MonthlyAPILimit: 0},
+	}
+}
+
+func (s *Service) GetUserSubscription(userID string) (UserSubscription, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := strings.TrimSpace(userID)
+	if key == "" {
+		return UserSubscription{}, &APIError{Code: "PAY-010", Message: "invalid user"}
+	}
+	if item, ok := s.subscriptions[key]; ok {
+		return item, nil
+	}
+	now := time.Now().UTC()
+	item := UserSubscription{
+		UserID:      key,
+		PlanCode:    "starter",
+		Status:      "ACTIVE",
+		AutoRenew:   true,
+		CurrentFrom: now,
+		CurrentTo:   now.AddDate(0, 1, 0),
+		UpdatedAt:   now,
+	}
+	s.subscriptions[key] = item
+	return item, nil
+}
+
+func (s *Service) ChangeUserSubscription(userID string, planCode string, autoRenew bool) (UserSubscription, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	user := strings.TrimSpace(userID)
+	plan := strings.ToLower(strings.TrimSpace(planCode))
+	if user == "" || plan == "" {
+		return UserSubscription{}, &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	valid := map[string]bool{"starter": true, "growth": true, "enterprise": true}
+	if !valid[plan] {
+		return UserSubscription{}, &APIError{Code: "PAY-010", Message: "plan not found"}
+	}
+	now := time.Now().UTC()
+	item := UserSubscription{
+		UserID:      user,
+		PlanCode:    plan,
+		Status:      "ACTIVE",
+		AutoRenew:   autoRenew,
+		CurrentFrom: now,
+		CurrentTo:   now.AddDate(0, 1, 0),
+		UpdatedAt:   now,
+	}
+	s.subscriptions[user] = item
+	s.invoices = append([]BillingInvoice{{
+		InvoiceID:  fmt.Sprintf("inv_%d", len(s.invoices)+1),
+		UserID:     user,
+		PlanCode:   plan,
+		Amount:     map[string]string{"starter": "0.00", "growth": "299.00", "enterprise": "0.00"}[plan],
+		Status:     "PAID",
+		PeriodFrom: now,
+		PeriodTo:   now.AddDate(0, 1, 0),
+		CreatedAt:  now,
+	}}, s.invoices...)
+	return item, nil
+}
+
+func (s *Service) ListUserInvoices(userID string, limit int) []BillingInvoice {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	user := strings.TrimSpace(userID)
+	if user == "" {
+		return nil
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	out := make([]BillingInvoice, 0, limit)
+	for _, item := range s.invoices {
+		if item.UserID != user {
+			continue
+		}
+		out = append(out, item)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func (s *Service) AdminListSubscriptions(limit int, offset int) []UserSubscription {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows := make([]UserSubscription, 0, len(s.subscriptions))
+	for _, item := range s.subscriptions {
+		rows = append(rows, item)
+	}
+	if offset >= len(rows) {
+		return []UserSubscription{}
+	}
+	end := offset + limit
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[offset:end]
+}
+
+func (s *Service) AdminUpdateSubscription(userID string, planCode string, status string, autoRenew bool) (UserSubscription, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	user := strings.TrimSpace(userID)
+	plan := strings.ToLower(strings.TrimSpace(planCode))
+	st := strings.ToUpper(strings.TrimSpace(status))
+	if user == "" || plan == "" || st == "" {
+		return UserSubscription{}, &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	now := time.Now().UTC()
+	item := UserSubscription{
+		UserID:      user,
+		PlanCode:    plan,
+		Status:      st,
+		AutoRenew:   autoRenew,
+		CurrentFrom: now,
+		CurrentTo:   now.AddDate(0, 1, 0),
+		UpdatedAt:   now,
+	}
+	s.subscriptions[user] = item
+	return item, nil
 }
 
 func (s *Service) SetAgentPublicKey(did string, pubKey string) error {
@@ -493,6 +766,7 @@ func (s *Service) CreateAccount(agentDID string) Account {
 		VAAccountID:   fmt.Sprintf("va_%d", len(s.accounts)+1),
 		VACardNo:      generateVACardNo(len(s.accounts) + 1),
 		AgentDID:      agentDID,
+		Currency:      "GUSD",
 		Balance:       0,
 		FrozenBalance: 0,
 	}
@@ -503,10 +777,14 @@ func (s *Service) CreateAccount(agentDID string) Account {
 	return *a
 }
 
-func (s *Service) Recharge(va string, amount string, idemKey string) error {
+func (s *Service) Recharge(va string, currency string, amount string, idemKey string) error {
 	v, err := parseAmount(amount)
 	if err != nil || v <= 0 {
 		return &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	curr := NormalizeCurrency(currency)
+	if curr == "" {
+		return &APIError{Code: "PAY-010", Message: "invalid currency"}
 	}
 	if idemKey == "" {
 		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
@@ -523,11 +801,15 @@ func (s *Service) Recharge(va string, amount string, idemKey string) error {
 	if !ok {
 		return &APIError{Code: "PAY-010", Message: "account not found"}
 	}
+	if acc.Currency != curr {
+		return &APIError{Code: "PAY-010", Message: "currency mismatch"}
+	}
 	acc.Balance += v
 	s.recharges = append([]RechargeOrder{
 		{
 			RechargeID:  fmt.Sprintf("rch_%d", len(s.recharges)+1),
 			VAAccountID: va,
+			Currency:    curr,
 			Amount:      v,
 			Status:      "SETTLED",
 			CreatedAt:   time.Now().UTC(),
@@ -615,6 +897,10 @@ func (s *Service) ActivateAuthorizeRule(agentDID string) error {
 }
 
 func (s *Service) Pay(req PayRequest) (PayResponse, *APIError) {
+	curr := NormalizeCurrency(req.Currency)
+	if curr == "" {
+		return PayResponse{}, &APIError{Code: "PAY-010", Message: "invalid currency"}
+	}
 	if req.Signature == "" {
 		return PayResponse{}, &APIError{Code: "PAY-001", Message: "signature required"}
 	}
@@ -647,7 +933,7 @@ func (s *Service) Pay(req PayRequest) (PayResponse, *APIError) {
 	if _, ok := rule.Whitelist[req.MerchantID]; !ok {
 		return PayResponse{}, &APIError{Code: "PAY-002", Message: "merchant not whitelisted"}
 	}
-	if riskErr := s.evaluateP2Risk(req.MerchantID, amount); riskErr != nil {
+	if riskErr := s.evaluateP2Risk(req.MerchantID, req.Currency, amount); riskErr != nil {
 		return PayResponse{}, riskErr
 	}
 
@@ -690,6 +976,7 @@ func (s *Service) Pay(req PayRequest) (PayResponse, *APIError) {
 		ID:        txID,
 		PayerDID:  req.PayerDID,
 		Merchant:  req.MerchantID,
+		Currency:  curr,
 		Amount:    amount,
 		Fee:       fee,
 		NetAmount: amount - fee,
@@ -810,26 +1097,37 @@ func (s *Service) Refund(transactionID string, idemKey string) error {
 	return nil
 }
 
-func (s *Service) BalanceByVA(va string) (float64, error) {
+func (s *Service) BalanceByVA(va string, currency string) (float64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	curr := NormalizeCurrency(currency)
+	if curr == "" {
+		return 0, errors.New("invalid currency")
+	}
 	acc, ok := s.accountsByVA[va]
 	if !ok {
 		return 0, errors.New("not found")
 	}
+	if acc.Currency != curr {
+		return 0, errors.New("currency mismatch")
+	}
 	return acc.Balance, nil
 }
 
-func (s *Service) LedgerByVA(va string) []Transaction {
+func (s *Service) LedgerByVA(va string, currency string) []Transaction {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	curr := NormalizeCurrency(currency)
+	if curr == "" {
+		return nil
+	}
 	acc, ok := s.accountsByVA[va]
 	if !ok {
 		return nil
 	}
 	result := make([]Transaction, 0)
 	for _, tx := range s.orders {
-		if tx.PayerDID == acc.AgentDID {
+		if tx.PayerDID == acc.AgentDID && tx.Currency == curr {
 			result = append(result, tx)
 		}
 	}
@@ -882,6 +1180,7 @@ func (s *Service) ListAgents() []AgentSummary {
 			VAAccountID:   acc.VAAccountID,
 			VACardNo:      acc.VACardNo,
 			WalletAddress: acc.WalletAddress,
+			Currency:      acc.Currency,
 			Balance:       acc.Balance,
 			Status:        "ACTIVE",
 		})
@@ -908,12 +1207,29 @@ func (s *Service) ListRecharges(va string, limit int) []RechargeOrder {
 	return out
 }
 
+func NormalizeCurrency(raw string) string {
+	c := strings.ToUpper(strings.TrimSpace(raw))
+	switch c {
+	case "", "GUSD":
+		return "GUSD"
+	case "USDC", "USDT":
+		return c
+	default:
+		return ""
+	}
+}
+
 func parseAmount(v string) (float64, error) {
 	n, err := strconv.ParseFloat(v, 64)
 	if err != nil {
 		return 0, err
 	}
 	return n, nil
+}
+
+func amountMinor(amount float64, decimals int) int64 {
+	factor := math.Pow10(decimals)
+	return int64(math.Round(amount * factor))
 }
 
 func calcFee(amount float64) float64 {
@@ -1239,7 +1555,7 @@ func (s *Service) GetVATopupConfig(accountID string) (VATopupConfig, error) {
 	}, nil
 }
 
-func (s *Service) TransferVA(fromAccountID string, toAccountID string, amount string, idemKey string) error {
+func (s *Service) TransferVA(fromAccountID string, toAccountID string, currency string, amount string, idemKey string) error {
 	v, err := parseAmount(amount)
 	if err != nil || v <= 0 {
 		return &APIError{Code: "PAY-010", Message: "invalid amount"}
@@ -1384,7 +1700,7 @@ func (s *Service) GetRiskConfig() RiskConfig {
 	return out
 }
 
-func (s *Service) SetRiskConfig(enabled bool, singleAmountLimit string, blockedMerchants []string) (RiskConfig, error) {
+func (s *Service) SetRiskConfig(enabled bool, singleAmountLimit string, singleLimitByCurrency map[string]string, blockedMerchants []string) (RiskConfig, error) {
 	limit, err := parseAmount(singleAmountLimit)
 	if err != nil || limit <= 0 {
 		return RiskConfig{}, &APIError{Code: "PAY-010", Message: "invalid singleAmountLimit"}
@@ -1447,7 +1763,7 @@ func (s *Service) DeleteChannelRoute(merchantID string) error {
 	return nil
 }
 
-func (s *Service) TransferFunds(fromAccountID string, toAccountID string, amount string, idemKey string) error {
+func (s *Service) TransferFunds(fromAccountID string, toAccountID string, currency string, amount string, idemKey string) error {
 	v, err := parseAmount(amount)
 	if err != nil || v <= 0 {
 		return &APIError{Code: "PAY-010", Message: "invalid amount"}
@@ -1488,7 +1804,7 @@ func (s *Service) TransferFunds(fromAccountID string, toAccountID string, amount
 	return nil
 }
 
-func (s *Service) WithdrawFunds(vaAccountID string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error) {
+func (s *Service) WithdrawFunds(vaAccountID string, currency string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error) {
 	v, err := parseAmount(amount)
 	if err != nil || v <= 0 {
 		return WithdrawRecord{}, &APIError{Code: "PAY-010", Message: "invalid amount"}
@@ -1566,7 +1882,7 @@ func (s *Service) DebitPreview(agentDID string, merchantID string, amount string
 	if _, ok := rule.Whitelist[merchantID]; !ok {
 		return DebitPreview{}, &APIError{Code: "PAY-002", Message: "merchant not whitelisted"}
 	}
-	if riskErr := evaluateRiskWithConfig(s.riskConfig, merchantID, v); riskErr != nil {
+	if riskErr := evaluateRiskWithConfig(s.riskConfig, "GUSD", merchantID, v); riskErr != nil {
 		return DebitPreview{}, riskErr
 	}
 	const feeRate = 0.003
@@ -1588,7 +1904,7 @@ func (s *Service) DebitPreview(agentDID string, merchantID string, amount string
 	return pv, nil
 }
 
-func (s *Service) TransferX402Outbound(vaAccountID string, toAddress string, amount string, referenceTransactionID string, idemKey string) error {
+func (s *Service) TransferX402Outbound(vaAccountID string, toAddress string, currency string, amount string, referenceTransactionID string, idemKey string) error {
 	v, err := parseAmount(amount)
 	if err != nil || v <= 0 {
 		return &APIError{Code: "PAY-010", Message: "invalid amount"}
@@ -1736,4 +2052,199 @@ func (s *Service) enqueueWebhookDelivery(event, dedupeKey string, payload map[st
 		}
 		s.webhookDeliver = append([]WebhookDelivery{item}, s.webhookDeliver...)
 	}
+}
+
+
+func (s *Service) ListStablecoinConfigs() []StablecoinConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]StablecoinConfig, 0, len(s.stablecoinCfgs))
+	for _, v := range s.stablecoinCfgs {
+		out = append(out, v)
+	}
+	return out
+}
+
+func (s *Service) SetStablecoinConfig(cfg StablecoinConfig) (StablecoinConfig, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := NormalizeCurrency(cfg.Currency)
+	if c == "" {
+		return StablecoinConfig{}, &APIError{Code: "PAY-010", Message: "invalid currency"}
+	}
+	cfg.Currency = c
+	cfg.Provider = NormalizeWalletProvider(cfg.Provider)
+	if cfg.Provider == "" {
+		return StablecoinConfig{}, &APIError{Code: "PAY-010", Message: "invalid provider"}
+	}
+	if cfg.Decimals < 0 {
+		return StablecoinConfig{}, &APIError{Code: "PAY-010", Message: "invalid decimals"}
+	}
+	if cfg.MinConfirmations <= 0 {
+		cfg.MinConfirmations = 1
+	}
+	cfg.UpdatedAt = time.Now().UTC()
+	s.stablecoinCfgs[c] = cfg
+	return cfg, nil
+}
+
+func (s *Service) GetRechargeConfirmation(rechargeID string) (RechargeConfirmationStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rechargeID = strings.TrimSpace(rechargeID)
+	if rechargeID == "" {
+		return RechargeConfirmationStatus{}, &APIError{Code: "PAY-010", Message: "invalid recharge id"}
+	}
+	for _, r := range s.recharges {
+		if r.RechargeID == rechargeID {
+			cfg, ok := s.stablecoinCfgs[NormalizeCurrency(r.Currency)]
+			req := 12
+			if ok && cfg.MinConfirmations > 0 {
+				req = cfg.MinConfirmations
+			}
+			cur := req
+			if strings.EqualFold(r.Status, "PENDING") {
+				cur = req / 2
+			}
+			return RechargeConfirmationStatus{RechargeID: r.RechargeID, Currency: NormalizeCurrency(r.Currency), RequiredConfirm: req, CurrentConfirm: cur, Confirmed: cur >= req, Status: r.Status, UpdatedAt: time.Now().UTC()}, nil
+		}
+	}
+	return RechargeConfirmationStatus{}, &APIError{Code: "PAY-010", Message: "recharge not found"}
+}
+
+
+func (s *Service) GetRechargeAddress(agentDID string, currency string, mode string) (RechargeAddress, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ccy := NormalizeCurrency(currency)
+	if ccy == "" {
+		return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "invalid currency"}
+	}
+	m := strings.ToLower(strings.TrimSpace(mode))
+	if m == "" {
+		m = "platform"
+	}
+	cfg, ok := s.stablecoinCfgs[ccy]
+	if !ok {
+		return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "currency config missing"}
+	}
+	if m == "self_hosted" {
+		wb, ok := s.walletBindings[strings.TrimSpace(agentDID)]
+		if !ok || strings.TrimSpace(wb.WalletAddress) == "" {
+			return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "self hosted wallet not bound"}
+		}
+		return RechargeAddress{Mode: m, AgentDID: strings.TrimSpace(agentDID), Currency: ccy, ChainID: cfg.ChainID, Address: wb.WalletAddress, IsSelfHosted: true}, nil
+	}
+	addr := strings.TrimSpace(cfg.HotWallet)
+	if addr == "" && NormalizeWalletProvider(cfg.Provider) == "bridge" {
+		provider := NewBridgeWalletProviderFromEnv()
+		providerID, bridgeAddr, err := provider.CreateAddress(strings.TrimSpace(agentDID), ccy, cfg.ChainID, "platform")
+		if err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "missing_address_data") {
+				return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "bridge customer missing address data, complete hosted kyc first"}
+			}
+			return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "platform wallet allocate failed"}
+		}
+		addr = strings.TrimSpace(bridgeAddr)
+		if addr == "" {
+			addr = strings.TrimSpace(providerID)
+		}
+	}
+	if addr == "" {
+		return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "platform recharge address unavailable"}
+	}
+	return RechargeAddress{Mode: "platform", AgentDID: strings.TrimSpace(agentDID), Currency: ccy, ChainID: cfg.ChainID, Address: addr, IsSelfHosted: false}, nil
+}
+
+func (s *Service) HandleRechargeCallback(event RechargeCallback) (RechargeConfirmationStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := strings.TrimSpace(event.RechargeID)
+	if id == "" {
+		return RechargeConfirmationStatus{}, &APIError{Code: "PAY-010", Message: "invalid recharge id"}
+	}
+	status := strings.ToUpper(strings.TrimSpace(event.Status))
+	if status == "" {
+		status = "PENDING"
+	}
+	for i := range s.recharges {
+		if s.recharges[i].RechargeID == id {
+			if c := NormalizeCurrency(event.Currency); c != "" {
+				s.recharges[i].Currency = c
+			}
+			s.recharges[i].Status = status
+			break
+		}
+	}
+	return s.GetRechargeConfirmation(id)
+}
+
+func (s *Service) CheckWalletProvider(provider string) error {
+	p := NormalizeWalletProvider(provider)
+	if p == "" {
+		return &APIError{Code: "PAY-010", Message: "invalid provider"}
+	}
+	return nil
+}
+
+
+func (s *Service) BridgeEnsureCustomer(agentDID string) (BridgeCustomerStatus, error) {
+	a := strings.TrimSpace(agentDID)
+	if a == "" {
+		return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "invalid agent did"}
+	}
+	provider := NewBridgeWalletProviderFromEnv()
+	customerID, err := provider.ensureCustomer(a)
+	now := time.Now().UTC()
+	if err != nil {
+		out := BridgeCustomerStatus{AgentDID: a, KYCStatus: "error", LastError: err.Error(), UpdatedAt: now}
+		s.mu.Lock(); s.bridgeCustomers[a] = out; s.mu.Unlock()
+		return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "bridge ensure customer failed"}
+	}
+	kycStatus := "pending"
+	if status, statusErr := provider.GetCustomerKYCStatus(customerID); statusErr == nil && strings.TrimSpace(status) != "" {
+		kycStatus = strings.ToLower(strings.TrimSpace(status))
+	}
+	out := BridgeCustomerStatus{AgentDID: a, BridgeCustomerID: customerID, KYCStatus: kycStatus, UpdatedAt: now}
+	s.mu.Lock(); s.bridgeCustomers[a] = out; s.mu.Unlock()
+	return out, nil
+}
+
+func (s *Service) BridgeGetCustomerStatus(agentDID string) (BridgeCustomerStatus, error) {
+	a := strings.TrimSpace(agentDID)
+	if a == "" {
+		return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "invalid agent did"}
+	}
+	s.mu.Lock(); defer s.mu.Unlock()
+	if st, ok := s.bridgeCustomers[a]; ok {
+		return st, nil
+	}
+	return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "bridge customer not found"}
+}
+
+func (s *Service) BridgeGetCustomerKYCLink(agentDID string, endorsement string, redirectURI string) (string, error) {
+	a := strings.TrimSpace(agentDID)
+	if a == "" {
+		return "", &APIError{Code: "PAY-010", Message: "invalid agent did"}
+	}
+	s.mu.Lock()
+	st, ok := s.bridgeCustomers[a]
+	s.mu.Unlock()
+	if !ok || strings.TrimSpace(st.BridgeCustomerID) == "" {
+		return "", &APIError{Code: "PAY-010", Message: "bridge customer not found"}
+	}
+	provider := NewBridgeWalletProviderFromEnv()
+	link, err := provider.GetCustomerKYCLink(st.BridgeCustomerID, endorsement, redirectURI)
+	if err != nil {
+		return "", &APIError{Code: "PAY-010", Message: "bridge kyc link fetch failed"}
+	}
+	return strings.TrimSpace(link), nil
+}
+
+func (s *Service) BridgeHandleWebhook(rawBody []byte, signatureHeader string) error {
+	provider := NewBridgeWalletProviderFromEnv()
+	if err := provider.VerifyWebhookSignature(rawBody, signatureHeader); err != nil {
+		return &APIError{Code: "PAY-010", Message: "bridge webhook signature invalid"}
+	}
+	return nil
 }

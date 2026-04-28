@@ -35,14 +35,18 @@ type Server struct {
 	signatureMaxSkew time.Duration
 	ipRateLimiter    rateLimiter
 	agentRateLimiter rateLimiter
+	agentOwnersMu    sync.RWMutex
+	agentOwners      map[string]string
 }
 
 type contextKey string
 
 const requestIDKey contextKey = "requestId"
+const userIDHeader = "X-User-Id"
+const userRoleHeader = "X-User-Role"
 
 func NewServer(svc service.PaymentService) *Server {
-	return &Server{
+	s := &Server{
 		svc:              svc,
 		nowFn:            time.Now,
 		signatureMaxSkew: 5 * time.Minute,
@@ -50,7 +54,9 @@ func NewServer(svc service.PaymentService) *Server {
 		callbackDedupe:   newCallbackDedupeStore(10 * time.Minute),
 		ipRateLimiter:    newFixedWindowLimiter(120, time.Minute),
 		agentRateLimiter: newFixedWindowLimiter(60, time.Minute),
+		agentOwners:      map[string]string{},
 	}
+	return s
 }
 
 func NewServerWithReadiness(svc service.PaymentService, readyCheck func(context.Context) error) *Server {
@@ -93,6 +99,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /account/create", s.handleCreateAccount)
 	mux.HandleFunc("GET /agent/list", s.handleAgentList)
 	mux.HandleFunc("POST /fund/recharge", s.handleRecharge)
+	mux.Handle("GET /fund/recharge/address", s.withReadAuth(http.HandlerFunc(s.handleRechargeAddressQuery)))
+	mux.Handle("POST /fund/recharge/callback", s.withCallbackToken(http.HandlerFunc(s.handleRechargeCallback)))
 	mux.HandleFunc("GET /fund/recharge/list", s.handleRechargeList)
 	mux.HandleFunc("POST /authorize/payment/set", s.handleAuthorizeSet)
 	mux.HandleFunc("POST /authorize/payment/update", s.handleAuthorizeUpdate)
@@ -126,6 +134,14 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("GET /developer/channel-routes", s.withReadAuth(http.HandlerFunc(s.handleChannelRouteList)))
 	mux.Handle("POST /developer/channel-routes", s.withAdminAuth(http.HandlerFunc(s.handleChannelRouteSet)))
 	mux.Handle("DELETE /developer/channel-routes", s.withAdminAuth(http.HandlerFunc(s.handleChannelRouteDelete)))
+	mux.Handle("GET /developer/stablecoin-config", s.withReadAuth(http.HandlerFunc(s.handleStablecoinConfigList)))
+	mux.Handle("POST /developer/stablecoin-config", s.withAdminAuth(http.HandlerFunc(s.handleStablecoinConfigSet)))
+	mux.Handle("GET /developer/stablecoin-provider/health", s.withReadAuth(http.HandlerFunc(s.handleStablecoinProviderHealth)))
+	mux.Handle("POST /bridge/customer/sync", s.withReadAuth(http.HandlerFunc(s.handleBridgeCustomerSync)))
+	mux.Handle("GET /bridge/customer/status", s.withReadAuth(http.HandlerFunc(s.handleBridgeCustomerStatus)))
+	mux.Handle("GET /bridge/customer/kyc-link", s.withReadAuth(http.HandlerFunc(s.handleBridgeCustomerKYCLink)))
+	mux.Handle("POST /bridge/webhook", http.HandlerFunc(s.handleBridgeWebhook))
+	mux.Handle("GET /fund/recharge/confirm", s.withReadAuth(http.HandlerFunc(s.handleRechargeConfirmQuery)))
 	mux.Handle("POST /fund/transfer", s.withM6Funds(s.withAdminAuth(http.HandlerFunc(s.handleFundTransfer))))
 	mux.Handle("POST /fund/withdraw", s.withM6Funds(s.withAdminAuth(http.HandlerFunc(s.handleFundWithdraw))))
 	mux.Handle("POST /payment/debit/preview", s.withM6Funds(http.HandlerFunc(s.handleDebitPreview)))
@@ -144,6 +160,12 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /authorize/session/revoke", s.withM8SelfHosted(http.HandlerFunc(s.handleSessionRevoke)))
 	mux.Handle("POST /payment/sign/request", s.withM8SelfHosted(http.HandlerFunc(s.handlePaymentSignRequest)))
 	mux.Handle("POST /payment/sign/submit", s.withM8SelfHosted(http.HandlerFunc(s.handlePaymentSignSubmit)))
+	mux.HandleFunc("GET /subscription/plans", s.handleSubscriptionPlans)
+	mux.HandleFunc("GET /subscription/current", s.handleSubscriptionCurrent)
+	mux.HandleFunc("GET /billing/invoices", s.handleBillingInvoices)
+	mux.Handle("POST /subscription/change", s.withReadAuth(http.HandlerFunc(s.handleSubscriptionChange)))
+	mux.Handle("GET /admin/subscriptions", s.withAdminAuth(http.HandlerFunc(s.handleAdminSubscriptions)))
+	mux.Handle("POST /admin/subscriptions/adjust", s.withAdminAuth(http.HandlerFunc(s.handleAdminSubscriptionAdjust)))
 	return s.withRequestID(mux)
 }
 
@@ -184,6 +206,7 @@ func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agent := s.svc.RegisterAgent(req.AgentDID)
+	s.bindAgentOwner(req.AgentDID, s.requestUserID(r))
 	if err := s.svc.SetAgentPublicKey(req.AgentDID, req.DIDPubKey); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "save did pub key failed"})
 		return
@@ -213,6 +236,9 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	var req createAccountReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AgentDID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
 		return
 	}
 	acc := s.svc.CreateAccount(req.AgentDID)
@@ -262,13 +288,15 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
-	list := s.svc.ListAgents()
+	userID := s.requestUserID(r)
+	list := s.filterAgentsByOwner(s.svc.ListAgents(), userID)
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": list})
 }
 
 type rechargeReq struct {
 	VAAccountID string `json:"vaAccountId"`
 	VACardNo    string `json:"vaCardNo"`
+	Currency    string `json:"currency"`
 	Amount      string `json:"amount"`
 }
 
@@ -286,12 +314,15 @@ func (s *Server) handleRecharge(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	if !s.ensureAccountOwnedByRef(w, r, accountRef) {
+		return
+	}
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if idem == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
-	if err := s.svc.Recharge(accountRef, req.Amount, idem); err != nil {
+	if err := s.svc.Recharge(accountRef, req.Currency, req.Amount, idem); err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
 			writeAPIError(w, apiErr)
 			return
@@ -304,6 +335,9 @@ func (s *Server) handleRecharge(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRechargeList(w http.ResponseWriter, r *http.Request) {
 	va := strings.TrimSpace(r.URL.Query().Get("accountId"))
+	if va != "" && !s.ensureAccountOwnedByRef(w, r, va) {
+		return
+	}
 	limit := 20
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
 		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
@@ -311,6 +345,9 @@ func (s *Server) handleRechargeList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	list := s.svc.ListRecharges(va, limit)
+	if va == "" {
+		list = s.filterRechargesByOwner(list, s.requestUserID(r))
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": list})
 }
 
@@ -331,6 +368,9 @@ func (s *Server) handleAuthorizeSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
+		return
+	}
 	if err := s.svc.SetAuthorizeRule(req.AgentDID, req.SingleLimit, req.DailyLimit, req.Whitelist); err != nil {
 		writeInternalError(w, r, "set authorize rule", err)
 		return
@@ -343,6 +383,9 @@ func (s *Server) handleAuthorizeUpdate(w http.ResponseWriter, r *http.Request) {
 	var req authorizeReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AgentDID == "" || !isPositiveDecimal(req.SingleLimit) || !isPositiveDecimal(req.DailyLimit) || len(req.Whitelist) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
 		return
 	}
 	if err := s.svc.UpdateAuthorizeRule(req.AgentDID, req.SingleLimit, req.DailyLimit, req.Whitelist); err != nil {
@@ -363,6 +406,9 @@ func (s *Server) handleAuthorizeFreeze(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
+		return
+	}
 	if err := s.svc.FreezeAuthorizeRule(req.AgentDID); err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
 			writeAPIError(w, apiErr)
@@ -381,6 +427,9 @@ func (s *Server) handleAuthorizeActivate(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
+		return
+	}
 	if err := s.svc.ActivateAuthorizeRule(req.AgentDID); err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
 			writeAPIError(w, apiErr)
@@ -396,6 +445,7 @@ func (s *Server) handleAuthorizeActivate(w http.ResponseWriter, r *http.Request)
 type payReq struct {
 	PayerDID   string `json:"payerDid"`
 	MerchantID string `json:"merchantId"`
+	Currency   string `json:"currency"`
 	Amount     string `json:"amount"`
 	Signature  string `json:"signature"`
 }
@@ -419,6 +469,7 @@ type vaTopupConfigReq struct {
 type vaTransferReq struct {
 	FromAccountID string `json:"fromAccountId"`
 	ToAccountID   string `json:"toAccountId"`
+	Currency      string `json:"currency"`
 	Amount        string `json:"amount"`
 }
 
@@ -428,8 +479,11 @@ func (s *Server) handlePay(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
-	if req.PayerDID == "" || req.MerchantID == "" || req.Signature == "" || !isPositiveDecimal(req.Amount) {
+	if req.PayerDID == "" || req.MerchantID == "" || req.Signature == "" || service.NormalizeCurrency(req.Currency) == "" || !isPositiveDecimal(req.Amount) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, req.PayerDID) {
 		return
 	}
 	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
@@ -453,7 +507,7 @@ func (s *Server) handlePay(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "missing did public key"})
 		return
 	}
-	signPayload := buildPaySignaturePayload(req.PayerDID, req.MerchantID, req.Amount, idem, r.Header.Get("X-Sign-Timestamp"))
+	signPayload := buildPaySignaturePayload(req.PayerDID, req.MerchantID, req.Currency, req.Amount, idem, r.Header.Get("X-Sign-Timestamp"))
 	if !verifyDIDSignature(pubKey, req.Signature, signPayload) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid did signature"})
 		return
@@ -462,6 +516,7 @@ func (s *Server) handlePay(w http.ResponseWriter, r *http.Request) {
 	resp, apiErr := s.svc.Pay(service.PayRequest{
 		PayerDID:       req.PayerDID,
 		MerchantID:     req.MerchantID,
+		Currency:       req.Currency,
 		Amount:         req.Amount,
 		IdempotencyKey: idem,
 		Signature:      req.Signature,
@@ -478,6 +533,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	tx, err := s.svc.QueryStatus(txID)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"code": "PAY-010", "message": "not found"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, tx.PayerDID) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": tx})
@@ -551,12 +609,16 @@ func (s *Server) handleRefund(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleBalance(w http.ResponseWriter, r *http.Request) {
 	va := r.URL.Query().Get("accountId")
-	balance, err := s.svc.BalanceByVA(va)
+	if !s.ensureAccountOwnedByRef(w, r, va) {
+		return
+	}
+	currency := strings.TrimSpace(r.URL.Query().Get("currency"))
+	balance, err := s.svc.BalanceByVA(va, currency)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"code": "PAY-010", "message": "not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"balance": balance}})
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"balance": balance, "currency": service.NormalizeCurrency(currency)}})
 }
 
 func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request) {
@@ -565,7 +627,11 @@ func (s *Server) handleLedger(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
-	ledger := s.svc.LedgerByVA(va)
+	if !s.ensureAccountOwnedByRef(w, r, va) {
+		return
+	}
+	currency := strings.TrimSpace(r.URL.Query().Get("currency"))
+	ledger := s.svc.LedgerByVA(va, currency)
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": ledger})
 }
 
@@ -584,6 +650,9 @@ func (s *Server) handleInterest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	if !s.ensureAccountOwnedByRef(w, r, accountID) {
+		return
+	}
 	quote, err := s.svc.QueryInterest(accountID)
 	if err != nil {
 		writeInternalError(w, r, "query interest", err)
@@ -599,6 +668,9 @@ func (s *Server) handleVATopupConfigSet(w http.ResponseWriter, r *http.Request) 
 		!isNonNegativeDecimal(req.ThresholdAmount) ||
 		!isPositiveDecimal(req.TargetAmount) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAccountOwnedByRef(w, r, req.AccountID) {
 		return
 	}
 	item, err := s.svc.SetVATopupConfig(req.AccountID, req.AutoTopupEnabled, req.ThresholdAmount, req.TargetAmount)
@@ -624,6 +696,9 @@ func (s *Server) handleVATopupConfigGet(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	if !s.ensureAccountOwnedByRef(w, r, accountID) {
+		return
+	}
 	item, err := s.svc.GetVATopupConfig(accountID)
 	if err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
@@ -645,12 +720,15 @@ func (s *Server) handleVATransfer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	if !s.ensureAccountOwnedByRef(w, r, req.FromAccountID) || !s.ensureAccountOwnedByRef(w, r, req.ToAccountID) {
+		return
+	}
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if idem == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
-	if err := s.svc.TransferVA(req.FromAccountID, req.ToAccountID, req.Amount, idem); err != nil {
+	if err := s.svc.TransferVA(req.FromAccountID, req.ToAccountID, req.Currency, req.Amount, idem); err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
 			writeAPIError(w, apiErr)
 			return
@@ -664,6 +742,9 @@ func (s *Server) handleVATransfer(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleVATransferList(w http.ResponseWriter, r *http.Request) {
 	accountID := strings.TrimSpace(r.URL.Query().Get("accountId"))
+	if accountID != "" && !s.ensureAccountOwnedByRef(w, r, accountID) {
+		return
+	}
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	startTime := strings.TrimSpace(r.URL.Query().Get("startTime"))
 	endTime := strings.TrimSpace(r.URL.Query().Get("endTime"))
@@ -692,12 +773,16 @@ func (s *Server) handleVATransferList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	items := s.svc.ListVATransfers(accountID, status, startTime, endTime, limit, offset)
+	if accountID == "" {
+		items = s.filterVATransfersByOwner(items, s.requestUserID(r))
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": items})
 }
 
 type fundTransferReq struct {
 	FromAccountID string `json:"fromAccountId"`
 	ToAccountID   string `json:"toAccountId"`
+	Currency      string `json:"currency"`
 	Amount        string `json:"amount"`
 }
 
@@ -710,12 +795,15 @@ func (s *Server) handleFundTransfer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	if !s.ensureAccountOwnedByRef(w, r, req.FromAccountID) || !s.ensureAccountOwnedByRef(w, r, req.ToAccountID) {
+		return
+	}
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if idem == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
-	if err := s.svc.TransferFunds(req.FromAccountID, req.ToAccountID, req.Amount, idem); err != nil {
+	if err := s.svc.TransferFunds(req.FromAccountID, req.ToAccountID, req.Currency, req.Amount, idem); err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
 			writeAPIError(w, apiErr)
 			return
@@ -730,6 +818,7 @@ func (s *Server) handleFundTransfer(w http.ResponseWriter, r *http.Request) {
 
 type fundWithdrawReq struct {
 	VAAccountID     string `json:"vaAccountId"`
+	Currency        string `json:"currency"`
 	Amount          string `json:"amount"`
 	Rail            string `json:"rail"`
 	DestinationHint string `json:"destinationHint"`
@@ -739,9 +828,13 @@ func (s *Server) handleFundWithdraw(w http.ResponseWriter, r *http.Request) {
 	var req fundWithdrawReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
 		strings.TrimSpace(req.VAAccountID) == "" ||
+		service.NormalizeCurrency(req.Currency) == "" ||
 		!isPositiveDecimal(req.Amount) ||
 		strings.TrimSpace(req.Rail) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAccountOwnedByRef(w, r, req.VAAccountID) {
 		return
 	}
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
@@ -749,7 +842,7 @@ func (s *Server) handleFundWithdraw(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
-	rec, err := s.svc.WithdrawFunds(req.VAAccountID, req.Amount, req.Rail, req.DestinationHint, idem)
+	rec, err := s.svc.WithdrawFunds(req.VAAccountID, req.Currency, req.Amount, req.Rail, req.DestinationHint, idem)
 	if err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
 			writeAPIError(w, apiErr)
@@ -766,6 +859,7 @@ func (s *Server) handleFundWithdraw(w http.ResponseWriter, r *http.Request) {
 type debitPreviewReq struct {
 	AgentDID   string `json:"agentDid"`
 	MerchantID string `json:"merchantId"`
+	Currency   string `json:"currency"`
 	Amount     string `json:"amount"`
 	Signature  string `json:"signature"`
 }
@@ -775,6 +869,7 @@ func (s *Server) handleDebitPreview(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
 		strings.TrimSpace(req.AgentDID) == "" ||
 		strings.TrimSpace(req.MerchantID) == "" ||
+		service.NormalizeCurrency(req.Currency) == "" ||
 		!isPositiveDecimal(req.Amount) ||
 		strings.TrimSpace(req.Signature) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
@@ -836,6 +931,7 @@ func (s *Server) handleX402Check(w http.ResponseWriter, r *http.Request) {
 type x402TransferReq struct {
 	VAAccountID            string `json:"vaAccountId"`
 	ToAddress              string `json:"toAddress"`
+	Currency               string `json:"currency"`
 	Amount                 string `json:"amount"`
 	ReferenceTransactionID string `json:"referenceTransactionId"`
 }
@@ -850,12 +946,15 @@ func (s *Server) handleX402Transfer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	if !s.ensureAccountOwnedByRef(w, r, req.VAAccountID) {
+		return
+	}
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if idem == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
-	if err := s.svc.TransferX402Outbound(req.VAAccountID, req.ToAddress, req.Amount, req.ReferenceTransactionID, idem); err != nil {
+	if err := s.svc.TransferX402Outbound(req.VAAccountID, req.ToAddress, req.Currency, req.Amount, req.ReferenceTransactionID, idem); err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
 			writeAPIError(w, apiErr)
 			return
@@ -935,6 +1034,9 @@ func (s *Server) handleCardApply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
+		return
+	}
 	rec, err := s.svc.ApplyVirtualCard(req.AgentDID, req.VAAccountID, req.CreditLimit, idem)
 	if err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
@@ -952,6 +1054,7 @@ type cardPayReq struct {
 	AgentDID   string `json:"agentDid"`
 	CardID     string `json:"cardId"`
 	MerchantID string `json:"merchantId"`
+	Currency   string `json:"currency"`
 	Amount     string `json:"amount"`
 	Signature  string `json:"signature"`
 }
@@ -962,6 +1065,7 @@ func (s *Server) handleCardPay(w http.ResponseWriter, r *http.Request) {
 		strings.TrimSpace(req.AgentDID) == "" ||
 		strings.TrimSpace(req.CardID) == "" ||
 		strings.TrimSpace(req.MerchantID) == "" ||
+		service.NormalizeCurrency(req.Currency) == "" ||
 		!isPositiveDecimal(req.Amount) ||
 		strings.TrimSpace(req.Signature) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
@@ -969,6 +1073,9 @@ func (s *Server) handleCardPay(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid or expired signature timestamp"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
 		return
 	}
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
@@ -1040,6 +1147,9 @@ func (s *Server) handleRiskTransactionCheck(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
+		return
+	}
 	out, err := s.svc.RiskTransactionCheck(req.AgentDID, req.MerchantID, req.Amount, strings.TrimSpace(req.TransactionID))
 	if err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
@@ -1071,6 +1181,9 @@ func (s *Server) handleRiskKYCVerify(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
+		return
+	}
 	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid or expired signature timestamp"})
 		return
@@ -1099,6 +1212,9 @@ func (s *Server) handleRiskKYCVerify(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRiskAuditQuery(w http.ResponseWriter, r *http.Request) {
 	agentDID := strings.TrimSpace(r.URL.Query().Get("agentDid"))
+	if agentDID != "" && !s.ensureAgentOwned(w, r, agentDID) {
+		return
+	}
 	merchantID := strings.TrimSpace(r.URL.Query().Get("merchantId"))
 	limit := 50
 	offset := 0
@@ -1113,6 +1229,9 @@ func (s *Server) handleRiskAuditQuery(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	items := s.svc.RiskAuditQuery(agentDID, merchantID, limit, offset)
+	if agentDID == "" {
+		items = s.filterRiskAuditsByOwner(items, s.requestUserID(r))
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": items})
 }
 
@@ -1135,6 +1254,9 @@ func (s *Server) handleWalletBind(w http.ResponseWriter, r *http.Request) {
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if idem == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
 		return
 	}
 	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
@@ -1180,6 +1302,9 @@ func (s *Server) handleWalletUnbind(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
+		return
+	}
 	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid or expired signature timestamp"})
 		return
@@ -1218,6 +1343,9 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if idem == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
 		return
 	}
 	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
@@ -1266,6 +1394,9 @@ func (s *Server) handleSessionRevoke(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
 		return
 	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
+		return
+	}
 	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid or expired signature timestamp"})
 		return
@@ -1294,6 +1425,7 @@ func (s *Server) handleSessionRevoke(w http.ResponseWriter, r *http.Request) {
 type paymentSignRequestHTTP struct {
 	AgentDID   string `json:"agentDid"`
 	MerchantID string `json:"merchantId"`
+	Currency   string `json:"currency"`
 	Amount     string `json:"amount"`
 	SessionID  string `json:"sessionId"`
 	Signature  string `json:"signature"`
@@ -1304,6 +1436,7 @@ func (s *Server) handlePaymentSignRequest(w http.ResponseWriter, r *http.Request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil ||
 		strings.TrimSpace(req.AgentDID) == "" ||
 		strings.TrimSpace(req.MerchantID) == "" ||
+		service.NormalizeCurrency(req.Currency) == "" ||
 		!isPositiveDecimal(req.Amount) ||
 		strings.TrimSpace(req.Signature) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
@@ -1312,6 +1445,9 @@ func (s *Server) handlePaymentSignRequest(w http.ResponseWriter, r *http.Request
 	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	if idem == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-008", "message": "missing idempotency key"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
 		return
 	}
 	if !s.validateSignatureTimestamp(r.Header.Get("X-Sign-Timestamp")) {
@@ -1342,12 +1478,13 @@ func (s *Server) handlePaymentSignRequest(w http.ResponseWriter, r *http.Request
 }
 
 type paymentSignSubmitReq struct {
-	SignID       string `json:"signId"`
-	PayerDID     string `json:"payerDid"`
-	MerchantID   string `json:"merchantId"`
-	Amount       string `json:"amount"`
+	SignID         string `json:"signId"`
+	PayerDID       string `json:"payerDid"`
+	MerchantID     string `json:"merchantId"`
+	Currency       string `json:"currency"`
+	Amount         string `json:"amount"`
 	IdempotencyKey string `json:"idempotencyKey"`
-	Signature    string `json:"signature"`
+	Signature      string `json:"signature"`
 }
 
 func (s *Server) handlePaymentSignSubmit(w http.ResponseWriter, r *http.Request) {
@@ -1356,6 +1493,7 @@ func (s *Server) handlePaymentSignSubmit(w http.ResponseWriter, r *http.Request)
 		strings.TrimSpace(req.SignID) == "" ||
 		strings.TrimSpace(req.PayerDID) == "" ||
 		strings.TrimSpace(req.MerchantID) == "" ||
+		service.NormalizeCurrency(req.Currency) == "" ||
 		!isPositiveDecimal(req.Amount) ||
 		strings.TrimSpace(req.Signature) == "" ||
 		strings.TrimSpace(req.IdempotencyKey) == "" {
@@ -1366,12 +1504,15 @@ func (s *Server) handlePaymentSignSubmit(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid or expired signature timestamp"})
 		return
 	}
+	if !s.ensureAgentOwned(w, r, req.PayerDID) {
+		return
+	}
 	pubKey, err := s.svc.AgentPublicKey(strings.TrimSpace(req.PayerDID))
 	if err != nil || strings.TrimSpace(pubKey) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "missing did public key"})
 		return
 	}
-	signPayload := buildPaySignaturePayload(req.PayerDID, req.MerchantID, req.Amount, strings.TrimSpace(req.IdempotencyKey), r.Header.Get("X-Sign-Timestamp"))
+	signPayload := buildPaySignaturePayload(req.PayerDID, req.MerchantID, req.Currency, req.Amount, strings.TrimSpace(req.IdempotencyKey), r.Header.Get("X-Sign-Timestamp"))
 	if !verifyDIDSignature(pubKey, req.Signature, signPayload) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-001", "message": "invalid did signature"})
 		return
@@ -1379,6 +1520,7 @@ func (s *Server) handlePaymentSignSubmit(w http.ResponseWriter, r *http.Request)
 	resp, apiErr := s.svc.SubmitSignedPayment(strings.TrimSpace(req.SignID), service.PayRequest{
 		PayerDID:       strings.TrimSpace(req.PayerDID),
 		MerchantID:     strings.TrimSpace(req.MerchantID),
+		Currency:       strings.TrimSpace(req.Currency),
 		Amount:         strings.TrimSpace(req.Amount),
 		IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
 		Signature:      strings.TrimSpace(req.Signature),
@@ -1522,14 +1664,109 @@ type replayWebhookDeliveryReq struct {
 }
 
 type riskConfigSetReq struct {
-	Enabled           bool     `json:"enabled"`
-	SingleAmountLimit string   `json:"singleAmountLimit"`
-	BlockedMerchants  []string `json:"blockedMerchants"`
+	Enabled                bool              `json:"enabled"`
+	SingleAmountLimit      string            `json:"singleAmountLimit"`
+	SingleAmountLimitByCcy map[string]string `json:"singleAmountLimitByCurrency"`
+	BlockedMerchants       []string          `json:"blockedMerchants"`
 }
 
 type channelRouteSetReq struct {
 	MerchantID string `json:"merchantId"`
 	Mode       string `json:"mode"`
+}
+
+type subscriptionChangeReq struct {
+	PlanCode string `json:"planCode"`
+}
+
+type adminSubscriptionAdjustReq struct {
+	UserID   string `json:"userId"`
+	PlanCode string `json:"planCode"`
+	Status   string `json:"status"`
+}
+
+func (s *Server) handleSubscriptionPlans(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": s.svc.ListSubscriptionPlans()})
+}
+
+func (s *Server) handleSubscriptionCurrent(w http.ResponseWriter, r *http.Request) {
+	userID := s.requestUserID(r)
+	rec, err := s.svc.GetUserSubscription(userID)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "query current subscription", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": rec})
+}
+
+func (s *Server) handleBillingInvoices(w http.ResponseWriter, r *http.Request) {
+	userID := s.requestUserID(r)
+	limit := 20
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": s.svc.ListUserInvoices(userID, limit)})
+}
+
+func (s *Server) handleSubscriptionChange(w http.ResponseWriter, r *http.Request) {
+	var req subscriptionChangeReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.PlanCode) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	userID := s.requestUserID(r)
+	rec, err := s.svc.ChangeUserSubscription(userID, strings.TrimSpace(req.PlanCode), true)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "change subscription", err)
+		return
+	}
+	s.appendAuditLog(r, "subscription_change", userID, map[string]any{"planCode": req.PlanCode})
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": rec})
+}
+
+func (s *Server) handleAdminSubscriptions(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	offset := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": s.svc.AdminListSubscriptions(limit, offset)})
+}
+
+func (s *Server) handleAdminSubscriptionAdjust(w http.ResponseWriter, r *http.Request) {
+	var req adminSubscriptionAdjustReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.UserID) == "" || strings.TrimSpace(req.PlanCode) == "" || strings.TrimSpace(req.Status) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	rec, err := s.svc.AdminUpdateSubscription(strings.TrimSpace(req.UserID), strings.TrimSpace(req.PlanCode), strings.TrimSpace(req.Status), true)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "adjust subscription", err)
+		return
+	}
+	s.appendAuditLog(r, "subscription_admin_adjust", req.UserID, map[string]any{"planCode": req.PlanCode, "status": req.Status})
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": rec})
 }
 
 func (s *Server) handleWebhookDeliveryReplay(w http.ResponseWriter, r *http.Request) {
@@ -1580,7 +1817,7 @@ func (s *Server) handleRiskConfigSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
-	item, err := s.svc.SetRiskConfig(req.Enabled, req.SingleAmountLimit, req.BlockedMerchants)
+	item, err := s.svc.SetRiskConfig(req.Enabled, req.SingleAmountLimit, req.SingleAmountLimitByCcy, req.BlockedMerchants)
 	if err != nil {
 		if apiErr, ok := err.(*service.APIError); ok {
 			writeAPIError(w, apiErr)
@@ -1792,8 +2029,8 @@ func isBase64Ed25519PubKey(raw string) bool {
 	return err == nil && len(decoded) == ed25519.PublicKeySize
 }
 
-func buildPaySignaturePayload(payerDID, merchantID, amount, idemKey, ts string) []byte {
-	return []byte(payerDID + "|" + merchantID + "|" + amount + "|" + idemKey + "|" + ts)
+func buildPaySignaturePayload(payerDID, merchantID, currency, amount, idemKey, ts string) []byte {
+	return []byte(payerDID + "|" + merchantID + "|" + service.NormalizeCurrency(currency) + "|" + amount + "|" + idemKey + "|" + ts)
 }
 
 func buildUpdateKeyProofPayload(agentDID, newPubKey, ts string) string {
@@ -1822,6 +2059,10 @@ func (s *Server) withReadAuth(next http.Handler) http.Handler {
 
 func (s *Server) withRoleAuth(allowReadonly bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.authorizeByUserRole(r, allowReadonly) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		adminConfigured := strings.TrimSpace(s.adminBearerToken) != ""
 		readonlyConfigured := strings.TrimSpace(s.readonlyToken) != ""
 		if !adminConfigured && !readonlyConfigured {
@@ -1840,6 +2081,20 @@ func (s *Server) withRoleAuth(allowReadonly bool, next http.Handler) http.Handle
 		log.Printf("requestId=%s unauthorized path=%s ip=%s readonlyAllowed=%t", getRequestID(r.Context()), r.URL.Path, clientIP(r), allowReadonly)
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": "PAY-010", "message": "unauthorized"})
 	})
+}
+
+func (s *Server) authorizeByUserRole(r *http.Request, allowReadonly bool) bool {
+	role := strings.ToLower(strings.TrimSpace(r.Header.Get(userRoleHeader)))
+	switch role {
+	case "":
+		return false
+	case "admin", "operator":
+		return true
+	case "readonly":
+		return allowReadonly
+	default:
+		return false
+	}
 }
 
 func (s *Server) withCallbackToken(next http.Handler) http.Handler {
@@ -1919,6 +2174,162 @@ func secureEqual(a, b string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+func (s *Server) requestUserID(r *http.Request) string {
+	userID := strings.TrimSpace(r.Header.Get(userIDHeader))
+	if userID != "" {
+		return userID
+	}
+	// Backward-compatible fallback for direct backend calls/tests.
+	return "system"
+}
+
+func (s *Server) bindAgentOwner(agentDID, userID string) {
+	agent := strings.TrimSpace(agentDID)
+	user := strings.TrimSpace(userID)
+	if agent == "" || user == "" {
+		return
+	}
+	_ = s.svc.BindAgentOwner(agent, user)
+	s.agentOwnersMu.Lock()
+	s.agentOwners[agent] = user
+	s.agentOwnersMu.Unlock()
+}
+
+func (s *Server) ensureAgentOwned(w http.ResponseWriter, r *http.Request, agentDID string) bool {
+	userID := s.requestUserID(r)
+	agent := strings.TrimSpace(agentDID)
+	if agent == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return false
+	}
+	if userID == "" {
+		// Backward compatibility for legacy callers/tests without user header.
+		s.agentOwnersMu.RLock()
+		_, hasAnyOwner := s.agentOwners[agent]
+		s.agentOwnersMu.RUnlock()
+		if !hasAnyOwner {
+			return true
+		}
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": "PAY-010", "message": "unauthorized"})
+		return false
+	}
+	s.agentOwnersMu.RLock()
+	owner, ok := s.agentOwners[agent]
+	s.agentOwnersMu.RUnlock()
+	if !ok {
+		if dbOwner, exists, err := s.svc.AgentOwner(agent); err == nil && exists && strings.TrimSpace(dbOwner) != "" {
+			owner = strings.TrimSpace(dbOwner)
+			ok = true
+			s.agentOwnersMu.Lock()
+			s.agentOwners[agent] = owner
+			s.agentOwnersMu.Unlock()
+		}
+	}
+	if !ok {
+		// Compatibility path: bind unowned pre-existing agents to current user.
+		s.bindAgentOwner(agent, userID)
+		return true
+	}
+	if owner != userID {
+		writeJSON(w, http.StatusForbidden, map[string]any{"code": "PAY-010", "message": "forbidden"})
+		return false
+	}
+	return true
+}
+
+func (s *Server) filterAgentsByOwner(items []service.AgentSummary, userID string) []service.AgentSummary {
+	if strings.TrimSpace(userID) == "" {
+		return []service.AgentSummary{}
+	}
+	out := make([]service.AgentSummary, 0, len(items))
+	s.agentOwnersMu.RLock()
+	defer s.agentOwnersMu.RUnlock()
+	for _, item := range items {
+		if s.agentOwners[strings.TrimSpace(item.AgentDID)] == userID {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func (s *Server) accountToAgentDID(accountRef string) string {
+	ref := strings.TrimSpace(accountRef)
+	if ref == "" {
+		return ""
+	}
+	for _, item := range s.svc.ListAgents() {
+		if strings.TrimSpace(item.VAAccountID) == ref || strings.TrimSpace(item.VACardNo) == ref {
+			return strings.TrimSpace(item.AgentDID)
+		}
+	}
+	return ""
+}
+
+func (s *Server) ensureAccountOwnedByRef(w http.ResponseWriter, r *http.Request, accountRef string) bool {
+	agentDID := s.accountToAgentDID(accountRef)
+	if agentDID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "account not found"})
+		return false
+	}
+	return s.ensureAgentOwned(w, r, agentDID)
+}
+
+func (s *Server) filterRechargesByOwner(items []service.RechargeOrder, userID string) []service.RechargeOrder {
+	if strings.TrimSpace(userID) == "" {
+		return []service.RechargeOrder{}
+	}
+	out := make([]service.RechargeOrder, 0, len(items))
+	for _, item := range items {
+		if agent := s.accountToAgentDID(item.VAAccountID); agent != "" && s.isAgentOwnedByUser(agent, userID) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func (s *Server) filterVATransfersByOwner(items []service.VATransferRecord, userID string) []service.VATransferRecord {
+	if strings.TrimSpace(userID) == "" {
+		return []service.VATransferRecord{}
+	}
+	out := make([]service.VATransferRecord, 0, len(items))
+	for _, item := range items {
+		fromAgent := s.accountToAgentDID(item.FromAccountID)
+		toAgent := s.accountToAgentDID(item.ToAccountID)
+		if (fromAgent != "" && s.isAgentOwnedByUser(fromAgent, userID)) || (toAgent != "" && s.isAgentOwnedByUser(toAgent, userID)) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func (s *Server) filterRiskAuditsByOwner(items []service.RiskAuditEntry, userID string) []service.RiskAuditEntry {
+	if strings.TrimSpace(userID) == "" {
+		return []service.RiskAuditEntry{}
+	}
+	out := make([]service.RiskAuditEntry, 0, len(items))
+	for _, item := range items {
+		if s.isAgentOwnedByUser(strings.TrimSpace(item.AgentDID), userID) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func (s *Server) isAgentOwnedByUser(agentDID, userID string) bool {
+	agent := strings.TrimSpace(agentDID)
+	if agent == "" || strings.TrimSpace(userID) == "" {
+		return false
+	}
+	s.agentOwnersMu.RLock()
+	owner, ok := s.agentOwners[agent]
+	s.agentOwnersMu.RUnlock()
+	if ok {
+		return owner == userID
+	}
+	// Compatibility path: if this agent has not been bound yet, treat as not visible in list filters.
+	return false
 }
 
 func (s *Server) appendAuditLog(r *http.Request, action string, resource string, detail map[string]any) {
@@ -2004,4 +2415,227 @@ func (s *callbackDedupeStore) prune(now time.Time) {
 func callbackDigest(body []byte, ts, nonce string) string {
 	sum := sha256.Sum256([]byte(string(body) + "|" + strings.TrimSpace(ts) + "|" + strings.TrimSpace(nonce)))
 	return hex.EncodeToString(sum[:])
+}
+
+
+type stablecoinConfigSetReq struct {
+	Currency         string `json:"currency"`
+	Provider         string `json:"provider"`
+	Enabled          bool   `json:"enabled"`
+	ChainID          string `json:"chainId"`
+	RPCURL           string `json:"rpcUrl"`
+	TokenContract    string `json:"tokenContract"`
+	Decimals         int    `json:"decimals"`
+	HotWallet        string `json:"hotWallet"`
+	MinConfirmations int    `json:"minConfirmations"`
+	RiskThreshold    string `json:"riskThreshold"`
+}
+
+func (s *Server) handleStablecoinConfigList(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": s.svc.ListStablecoinConfigs()})
+}
+
+func (s *Server) handleStablecoinConfigSet(w http.ResponseWriter, r *http.Request) {
+	var req stablecoinConfigSetReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || service.NormalizeCurrency(req.Currency) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	threshold := 0.0
+	if strings.TrimSpace(req.RiskThreshold) != "" {
+		v, err := strconv.ParseFloat(strings.TrimSpace(req.RiskThreshold), 64)
+		if err != nil || v <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid riskThreshold"})
+			return
+		}
+		threshold = v
+	}
+	item, err := s.svc.SetStablecoinConfig(service.StablecoinConfig{Currency: req.Currency, Provider: req.Provider, Enabled: req.Enabled, ChainID: req.ChainID, RPCURL: req.RPCURL, TokenContract: req.TokenContract, Decimals: req.Decimals, HotWallet: req.HotWallet, MinConfirmations: req.MinConfirmations, RiskThreshold: threshold})
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "set stablecoin config", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handleRechargeConfirmQuery(w http.ResponseWriter, r *http.Request) {
+	rechargeID := strings.TrimSpace(r.URL.Query().Get("rechargeId"))
+	if rechargeID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	item, err := s.svc.GetRechargeConfirmation(rechargeID)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "recharge confirmation query", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+
+type rechargeAddressReq struct {
+	AgentDID string `json:"agentDid"`
+	Currency string `json:"currency"`
+	Mode     string `json:"mode"`
+}
+
+type rechargeCallbackReq struct {
+	RechargeID    string `json:"rechargeId"`
+	Currency      string `json:"currency"`
+	Status        string `json:"status"`
+	Confirmations int    `json:"confirmations"`
+}
+
+func (s *Server) handleRechargeAddressQuery(w http.ResponseWriter, r *http.Request) {
+	agentDID := strings.TrimSpace(r.URL.Query().Get("agentDid"))
+	currency := strings.TrimSpace(r.URL.Query().Get("currency"))
+	mode := strings.TrimSpace(r.URL.Query().Get("mode"))
+	if agentDID == "" || service.NormalizeCurrency(currency) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, agentDID) {
+		return
+	}
+	item, err := s.svc.GetRechargeAddress(agentDID, currency, mode)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "query recharge address", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handleRechargeCallback(w http.ResponseWriter, r *http.Request) {
+	var req rechargeCallbackReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.RechargeID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	item, err := s.svc.HandleRechargeCallback(service.RechargeCallback{RechargeID: req.RechargeID, Currency: req.Currency, Status: req.Status, Confirmations: req.Confirmations})
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "recharge callback", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handleStablecoinProviderHealth(w http.ResponseWriter, r *http.Request) {
+	provider := strings.TrimSpace(r.URL.Query().Get("provider"))
+	if provider == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if err := s.svc.CheckWalletProvider(provider); err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "provider health check", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"provider": strings.ToLower(provider), "healthy": true}})
+}
+
+
+type bridgeCustomerSyncReq struct {
+	AgentDID string `json:"agentDid"`
+}
+
+func (s *Server) handleBridgeCustomerSync(w http.ResponseWriter, r *http.Request) {
+	var req bridgeCustomerSyncReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.AgentDID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, req.AgentDID) {
+		return
+	}
+	item, err := s.svc.BridgeEnsureCustomer(req.AgentDID)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "bridge customer sync", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handleBridgeCustomerStatus(w http.ResponseWriter, r *http.Request) {
+	agentDID := strings.TrimSpace(r.URL.Query().Get("agentDid"))
+	if agentDID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, agentDID) {
+		return
+	}
+	item, err := s.svc.BridgeGetCustomerStatus(agentDID)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "bridge customer status", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": item})
+}
+
+func (s *Server) handleBridgeCustomerKYCLink(w http.ResponseWriter, r *http.Request) {
+	agentDID := strings.TrimSpace(r.URL.Query().Get("agentDid"))
+	endorsement := strings.TrimSpace(r.URL.Query().Get("endorsement"))
+	redirectURI := strings.TrimSpace(r.URL.Query().Get("redirectUri"))
+	if agentDID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !s.ensureAgentOwned(w, r, agentDID) {
+		return
+	}
+	link, err := s.svc.BridgeGetCustomerKYCLink(agentDID, endorsement, redirectURI)
+	if err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "bridge customer kyc link", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"url": link}})
+}
+
+func (s *Server) handleBridgeWebhook(w http.ResponseWriter, r *http.Request) {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid body"})
+		return
+	}
+	sig := strings.TrimSpace(r.Header.Get("X-Webhook-Signature"))
+	if err := s.svc.BridgeHandleWebhook(raw, sig); err != nil {
+		if apiErr, ok := err.(*service.APIError); ok {
+			writeAPIError(w, apiErr)
+			return
+		}
+		writeInternalError(w, r, "bridge webhook", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "message": "ok"})
 }
