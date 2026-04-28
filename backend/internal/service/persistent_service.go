@@ -1632,3 +1632,305 @@ func (s *PersistentService) RefundApply(transactionID string, reason string, ide
 	}
 	return s.store.Redis.Set(ctx, idem, transactionID, 24*time.Hour).Err()
 }
+
+func (s *PersistentService) appendRiskAuditRow(category string, agentDID string, merchantID string, transactionID string, detail map[string]any) {
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		raw = []byte("{}")
+	}
+	_, _ = s.store.DB.Exec(`
+INSERT INTO risk_audit_entry (category, agent_did, merchant_id, transaction_id, detail_json, created_at)
+VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP())`,
+		strings.TrimSpace(category),
+		strings.TrimSpace(agentDID),
+		strings.TrimSpace(merchantID),
+		strings.TrimSpace(transactionID),
+		string(raw),
+	)
+}
+
+func (s *PersistentService) ApplyVirtualCard(agentDID string, vaAccountID string, requestedLimit string, idemKey string) (VirtualCardRecord, error) {
+	v, err := parseAmount(requestedLimit)
+	if err != nil || v <= 0 {
+		return VirtualCardRecord{}, &APIError{Code: "PAY-010", Message: "invalid credit limit"}
+	}
+	if strings.TrimSpace(idemKey) == "" {
+		return VirtualCardRecord{}, &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
+	ctx := context.Background()
+	idem := "idem:vc_apply:" + idemKey
+	if found, err := s.store.Redis.Get(ctx, idem).Result(); err == nil && found != "" {
+		var rec VirtualCardRecord
+		if scanErr := s.store.DB.QueryRow(`
+SELECT card_id, agent_did, va_account_id, masked_pan, status, credit_limit, sandbox_reference, created_at, updated_at
+FROM virtual_card WHERE card_id = ?`, found).Scan(
+			&rec.CardID, &rec.AgentDID, &rec.VAAccountID, &rec.MaskedPAN, &rec.Status, &rec.CreditLimit, &rec.SandboxReference, &rec.CreatedAt, &rec.UpdatedAt,
+		); scanErr == nil && rec.CardID != "" {
+			return rec, nil
+		}
+		return VirtualCardRecord{}, &APIError{Code: "PAY-010", Message: "idempotent replay"}
+	} else if err != nil && err != redis.Nil {
+		return VirtualCardRecord{}, err
+	}
+	var agent string
+	if err := s.store.DB.QueryRow(`
+SELECT agent_did FROM asset_va_account WHERE va_account_id = ?`, strings.TrimSpace(vaAccountID)).Scan(&agent); err == sql.ErrNoRows {
+		return VirtualCardRecord{}, &APIError{Code: "PAY-010", Message: "account not found"}
+	} else if err != nil {
+		return VirtualCardRecord{}, err
+	}
+	if agent != strings.TrimSpace(agentDID) {
+		return VirtualCardRecord{}, &APIError{Code: "PAY-010", Message: "account not found"}
+	}
+	cid := fmt.Sprintf("vc_%d", time.Now().UnixNano())
+	masked := fmt.Sprintf("6888 **** **** %04d", time.Now().UnixNano()%10000)
+	if _, err := s.store.DB.Exec(`
+INSERT INTO virtual_card (card_id, agent_did, va_account_id, masked_pan, status, credit_limit, sandbox_reference, created_at, updated_at)
+VALUES (?, ?, ?, ?, 'ACTIVE', ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())`,
+		cid, strings.TrimSpace(agentDID), strings.TrimSpace(vaAccountID), masked, v, idemKey); err != nil {
+		return VirtualCardRecord{}, err
+	}
+	if err := s.store.Redis.Set(ctx, idem, cid, 24*time.Hour).Err(); err != nil {
+		return VirtualCardRecord{}, err
+	}
+	s.appendRiskAuditRow("payment.card.apply", agentDID, "", "", map[string]any{"cardId": cid, "creditLimit": v})
+	var rec VirtualCardRecord
+	if err := s.store.DB.QueryRow(`
+SELECT card_id, agent_did, va_account_id, masked_pan, status, credit_limit, sandbox_reference, created_at, updated_at
+FROM virtual_card WHERE card_id = ?`, cid).Scan(
+		&rec.CardID, &rec.AgentDID, &rec.VAAccountID, &rec.MaskedPAN, &rec.Status, &rec.CreditLimit, &rec.SandboxReference, &rec.CreatedAt, &rec.UpdatedAt,
+	); err != nil {
+		return VirtualCardRecord{}, err
+	}
+	return rec, nil
+}
+
+func (s *PersistentService) PayVirtualCard(agentDID string, cardID string, merchantID string, amount string, idemKey string) (string, error) {
+	if strings.TrimSpace(idemKey) == "" {
+		return "", &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
+	amt, err := parseAmount(amount)
+	if err != nil || amt <= 0 {
+		return "", &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	ctx := context.Background()
+	idem := "idem:card_pay:" + idemKey
+	if found, err := s.store.Redis.Get(ctx, idem).Result(); err == nil && found != "" {
+		return found, nil
+	} else if err != nil && err != redis.Nil {
+		return "", err
+	}
+	if riskErr := s.evaluateP2Risk(merchantID, amt); riskErr != nil {
+		s.appendRiskAuditRow("risk.transaction.check", "", merchantID, "", map[string]any{"amount": amt, "decision": "BLOCKED", "reason": riskErr.Message})
+		return "", riskErr
+	}
+	tx, err := s.store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	var agentDIDDB string
+	var vaID string
+	var creditLimit float64
+	var cardStatus string
+	if err := tx.QueryRow(`
+SELECT agent_did, va_account_id, credit_limit, status FROM virtual_card WHERE card_id = ? FOR UPDATE`, strings.TrimSpace(cardID)).
+		Scan(&agentDIDDB, &vaID, &creditLimit, &cardStatus); err == sql.ErrNoRows {
+		return "", &APIError{Code: "PAY-010", Message: "card not found"}
+	} else if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(agentDID) != agentDIDDB {
+		return "", &APIError{Code: "PAY-010", Message: "card not found"}
+	}
+	if strings.ToUpper(strings.TrimSpace(cardStatus)) != "ACTIVE" {
+		return "", &APIError{Code: "PAY-002", Message: "card not active"}
+	}
+	if amt > creditLimit {
+		return "", &APIError{Code: "PAY-002", Message: "over card limit"}
+	}
+	res, err := tx.Exec(`
+UPDATE asset_va_account SET balance = balance - ? WHERE va_account_id = ? AND balance >= ?`, amt, vaID, amt)
+	if err != nil {
+		return "", err
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		return "", &APIError{Code: "PAY-003", Message: "agent va insufficient balance"}
+	}
+	txID := fmt.Sprintf("cardpay_%d", time.Now().UnixNano())
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	s.appendRiskAuditRow("payment.card.pay", agentDIDDB, merchantID, txID, map[string]any{"amount": amt, "cardId": cardID})
+	if err := s.store.Redis.Set(ctx, idem, txID, 24*time.Hour).Err(); err != nil {
+		return txID, err
+	}
+	return txID, nil
+}
+
+func (s *PersistentService) ManageVirtualCard(cardID string, operation string, adjustAmount string) (VirtualCardRecord, error) {
+	op := strings.ToUpper(strings.TrimSpace(operation))
+	ctx := context.Background()
+	tx, err := s.store.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return VirtualCardRecord{}, err
+	}
+	defer tx.Rollback()
+	var agentDID string
+	if err := tx.QueryRow(`SELECT agent_did FROM virtual_card WHERE card_id = ? FOR UPDATE`, strings.TrimSpace(cardID)).Scan(&agentDID); err == sql.ErrNoRows {
+		return VirtualCardRecord{}, &APIError{Code: "PAY-010", Message: "card not found"}
+	} else if err != nil {
+		return VirtualCardRecord{}, err
+	}
+	switch op {
+	case "FREEZE":
+		if _, err := tx.Exec(`UPDATE virtual_card SET status='FROZEN', updated_at=UTC_TIMESTAMP() WHERE card_id=?`, strings.TrimSpace(cardID)); err != nil {
+			return VirtualCardRecord{}, err
+		}
+	case "UNFREEZE", "ACTIVATE":
+		if _, err := tx.Exec(`UPDATE virtual_card SET status='ACTIVE', updated_at=UTC_TIMESTAMP() WHERE card_id=?`, strings.TrimSpace(cardID)); err != nil {
+			return VirtualCardRecord{}, err
+		}
+	case "ADJUST_LIMIT":
+		v, err := parseAmount(adjustAmount)
+		if err != nil || v <= 0 {
+			return VirtualCardRecord{}, &APIError{Code: "PAY-010", Message: "invalid limit"}
+		}
+		if _, err := tx.Exec(`UPDATE virtual_card SET credit_limit=?, updated_at=UTC_TIMESTAMP() WHERE card_id=?`, v, strings.TrimSpace(cardID)); err != nil {
+			return VirtualCardRecord{}, err
+		}
+	default:
+		return VirtualCardRecord{}, &APIError{Code: "PAY-010", Message: "invalid operation"}
+	}
+	if err := tx.Commit(); err != nil {
+		return VirtualCardRecord{}, err
+	}
+	s.appendRiskAuditRow("payment.card.manage", agentDID, "", "", map[string]any{"cardId": strings.TrimSpace(cardID), "operation": op})
+	var rec VirtualCardRecord
+	if err := s.store.DB.QueryRow(`
+SELECT card_id, agent_did, va_account_id, masked_pan, status, credit_limit, sandbox_reference, created_at, updated_at
+FROM virtual_card WHERE card_id = ?`, strings.TrimSpace(cardID)).Scan(
+		&rec.CardID, &rec.AgentDID, &rec.VAAccountID, &rec.MaskedPAN, &rec.Status, &rec.CreditLimit, &rec.SandboxReference, &rec.CreatedAt, &rec.UpdatedAt,
+	); err != nil {
+		return VirtualCardRecord{}, err
+	}
+	return rec, nil
+}
+
+func (s *PersistentService) RiskTransactionCheck(agentDID string, merchantID string, amount string, transactionID string) (map[string]any, error) {
+	amt, err := parseAmount(amount)
+	if err != nil || amt <= 0 {
+		return nil, &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	if r := s.evaluateP2Risk(merchantID, amt); r != nil {
+		s.appendRiskAuditRow("risk.transaction.check", agentDID, merchantID, transactionID, map[string]any{"amount": amt, "decision": "BLOCKED", "code": r.Code})
+		return map[string]any{
+			"decision":      "BLOCK",
+			"code":          r.Code,
+			"message":       r.Message,
+			"agentDid":      agentDID,
+			"merchantId":    merchantID,
+			"amount":        amt,
+			"transactionId": transactionID,
+		}, nil
+	}
+	s.appendRiskAuditRow("risk.transaction.check", agentDID, merchantID, transactionID, map[string]any{"amount": amt, "decision": "ALLOW"})
+	return map[string]any{
+		"decision":      "ALLOW",
+		"agentDid":      agentDID,
+		"merchantId":    merchantID,
+		"amount":        amt,
+		"transactionId": transactionID,
+	}, nil
+}
+
+func (s *PersistentService) RiskKYCVerify(agentDID string, documentReference string, idemKey string) (PartyKYCStatus, error) {
+	if strings.TrimSpace(idemKey) == "" {
+		return PartyKYCStatus{}, &APIError{Code: "PAY-008", Message: "idempotency key required"}
+	}
+	agentDID = strings.TrimSpace(agentDID)
+	if agentDID == "" {
+		return PartyKYCStatus{}, &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	ctx := context.Background()
+	idem := "idem:kyc_verify:" + idemKey
+	if found, err := s.store.Redis.Get(ctx, idem).Result(); err == nil && found != "" {
+		var st PartyKYCStatus
+		if scanErr := s.store.DB.QueryRow(`
+SELECT agent_did, status, tier, COALESCE(external_reference,''), verified_at, updated_at FROM risk_party_kyc WHERE agent_did = ?`, agentDID).
+			Scan(&st.AgentDID, &st.Status, &st.Tier, &st.ExternalReference, &st.VerifiedAt, &st.UpdatedAt); scanErr == nil && st.AgentDID != "" {
+			return st, nil
+		}
+	} else if err != nil && err != redis.Nil {
+		return PartyKYCStatus{}, err
+	}
+	var exists int
+	if err := s.store.DB.QueryRow(`SELECT COUNT(1) FROM agent_did WHERE did = ?`, agentDID).Scan(&exists); err != nil || exists == 0 {
+		return PartyKYCStatus{}, &APIError{Code: "PAY-010", Message: "agent not found"}
+	}
+	ext := shortSandboxHash(agentDID, documentReference, idemKey)
+	now := time.Now().UTC()
+	if _, err := s.store.DB.Exec(`
+INSERT INTO risk_party_kyc (agent_did, status, tier, external_reference, verified_at, updated_at)
+VALUES (?, 'APPROVED', 'SANDBOX_T1', ?, ?, UTC_TIMESTAMP())
+ON DUPLICATE KEY UPDATE
+  status = 'APPROVED',
+  tier = 'SANDBOX_T1',
+  external_reference = VALUES(external_reference),
+  verified_at = VALUES(verified_at),
+  updated_at = UTC_TIMESTAMP()`, agentDID, "sandbox_kyc_"+ext, now); err != nil {
+		return PartyKYCStatus{}, err
+	}
+	if err := s.store.Redis.Set(ctx, idem, agentDID, 24*time.Hour).Err(); err != nil {
+		return PartyKYCStatus{}, err
+	}
+	s.appendRiskAuditRow("risk.kyc.verify", agentDID, "", "", map[string]any{"documentReference": strings.TrimSpace(documentReference), "status": "APPROVED"})
+	var st PartyKYCStatus
+	if err := s.store.DB.QueryRow(`
+SELECT agent_did, status, tier, COALESCE(external_reference,''), verified_at, updated_at FROM risk_party_kyc WHERE agent_did = ?`, agentDID).
+		Scan(&st.AgentDID, &st.Status, &st.Tier, &st.ExternalReference, &st.VerifiedAt, &st.UpdatedAt); err != nil {
+		return PartyKYCStatus{}, err
+	}
+	return st, nil
+}
+
+func (s *PersistentService) RiskAuditQuery(agentDID string, merchantID string, limit int, offset int) []RiskAuditEntry {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	query := `
+SELECT id, category, agent_did, merchant_id, transaction_id, detail_json, created_at FROM risk_audit_entry WHERE 1=1`
+	args := make([]any, 0, 4)
+	if trimmed := strings.TrimSpace(agentDID); trimmed != "" {
+		query += " AND agent_did = ?"
+		args = append(args, trimmed)
+	}
+	if trimmed := strings.TrimSpace(merchantID); trimmed != "" {
+		query += " AND merchant_id = ?"
+		args = append(args, trimmed)
+	}
+	query += " ORDER BY id DESC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
+	rows, err := s.store.DB.Query(query, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]RiskAuditEntry, 0, limit)
+	for rows.Next() {
+		var item RiskAuditEntry
+		var detail sql.NullString
+		if err := rows.Scan(&item.ID, &item.Category, &item.AgentDID, &item.MerchantID, &item.TransactionID, &detail, &item.CreatedAt); err != nil {
+			continue
+		}
+		if detail.Valid && strings.TrimSpace(detail.String) != "" {
+			item.Detail = json.RawMessage([]byte(detail.String))
+		}
+		out = append(out, item)
+	}
+	return out
+}

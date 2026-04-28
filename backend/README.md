@@ -27,9 +27,22 @@ Go 实现的 MVP 后端，覆盖文档中第一阶段核心接口：
 - `GET /account/va/transfer/list`
 - `GET /metrics/overview`
 
-- 可选环境变量 `FEATURE_M6_FUNDS`：设为 `1` 或 `true` 时开启里程碑 M6 资金与支付扩展接口；未开启时这些路由返回 `404`（`PAY-011`），便于快速下线。
+- 可选环境变量 `FEATURE_M7_CARD_RISK`：设为 `1` 或 `true` 时开启里程碑 M7 虚拟卡与风控接口；未开启时返回 **404**（`PAY-012`）。
 
-## 里程碑 M6（资金与支付扩展，特性开关）
+## 里程碑 M7（沙箱虚拟卡 + 规则风控 + 当事人 KYC 占位）
+
+在 `FEATURE_M7_CARD_RISK=true` 时额外提供（**沙箱模拟**，不接真实卡清算）：
+
+- `POST /payment/card/apply`：为指定 `agentDid` + `vaAccountId` 开通虚拟卡额度（管理员）
+- `POST /payment/card/pay`：DID 签名卡支付（从 VA 余额扣款，复用 P2 黑白名单 + 金额阈值）
+- `PUT /payment/card/manage`：冻结/解冻/调额（管理员）
+- `POST /risk/transaction/check`：规则引擎交易试拦（只读令牌或管理员）
+- `POST /risk/kyc/verify`：对 **资金当事方**（以 `agentDid` 标识的持币/付款主体）做沙箱 KYC 状态落库；**不是对 AI 模型做 KYC**，生产应接入持牌身份服务商
+- `GET /risk/audit/query`：风控侧审计流水（`risk_audit_entry`）
+
+持久化需执行迁移 `013_add_m7_card_kyc_audit.sql`。
+
+## 安全基线（M2）
 
 在 `FEATURE_M6_FUNDS=true` 时额外提供：
 

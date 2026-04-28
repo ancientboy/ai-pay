@@ -1274,6 +1274,21 @@ func seedServiceForPay() *service.Service {
 	return svc
 }
 
+func TestM7EndpointsDisabledWithoutFlag(t *testing.T) {
+	t.Setenv("FEATURE_M7_CARD_RISK", "")
+	svc := service.New()
+	server := NewServerForTest(svc, time.Now, 100, 100)
+	req := httptest.NewRequest(http.MethodPost, "/risk/transaction/check", bytes.NewReader(mustJSONAny(t, map[string]string{
+		"agentDid": "did:gusd:agent:x", "merchantId": "m1", "amount": "1",
+	})))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when M7 disabled, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestM6EndpointsDisabledWithoutFlag(t *testing.T) {
 	t.Setenv("FEATURE_M6_FUNDS", "")
 	svc := service.New()
