@@ -22,6 +22,7 @@ export function ConsoleShell({
   const canManageDeveloper = currentRole !== "readonly";
   const navItems = [
     { href: "/console", label: t("nav.home") },
+    { href: "/api-docs", label: t("nav.apiDocs") },
     { href: "/onboarding", label: t("nav.gettingStarted") },
     { href: "/launch-readiness", label: t("nav.launchReadiness") },
     { href: "/incident-center", label: t("nav.incidentCenter") },
