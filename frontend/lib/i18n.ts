@@ -344,6 +344,9 @@ const messages: Record<Locale, DictObject> = {
     orchestration: {
       title: "支付编排控制台",
       subtitle: "管理 Provider 子账户并执行 Payment Intent",
+      agentHint: "可先选择 Agent，自动带出其 VA 账户",
+      selectAgent: "选择 Agent",
+      loadingAgents: "加载 Agent 列表中...",
       bindTitle: "绑定 Provider 子账户",
       listTitle: "子账户列表",
       intentTitle: "创建 Payment Intent",
@@ -724,6 +727,9 @@ const messages: Record<Locale, DictObject> = {
     orchestration: {
       title: "Payment Orchestration Console",
       subtitle: "Manage provider sub-accounts and execute payment intents",
+      agentHint: "Select an agent first to auto-fill VA account",
+      selectAgent: "Select Agent",
+      loadingAgents: "Loading agents...",
       bindTitle: "Bind Provider Sub-account",
       listTitle: "Sub-account List",
       intentTitle: "Create Payment Intent",
