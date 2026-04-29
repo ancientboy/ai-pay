@@ -60,3 +60,29 @@ export function toReadableError(err: unknown, locale: "zh-CN" | "en-US" = "zh-CN
   }
   return unknown;
 }
+
+export function errorActionHint(code?: string, locale: "zh-CN" | "en-US" = "zh-CN"): string {
+  const c = (code ?? "").trim().toUpperCase();
+  const zh: Record<string, string> = {
+    "PAY-001": "请检查 DID 公钥、签名内容与签名时间戳（5分钟内）。",
+    "PAY-002": "请先在授权规则页检查单笔/日限额与商户白名单。",
+    "PAY-003": "请先充值或减少支付金额后重试。",
+    "PAY-006": "请检查风控配置（禁用商户、单笔限额）并适当放行。",
+    "PAY-007": "通道超时，建议保留 requestId 并稍后重试。",
+    "PAY-008": "请确保请求带有唯一且未复用的 Idempotency-Key。",
+    "PAY-010": "请核对参数与账户归属；若持续失败请携带 requestId 排障。",
+  };
+  const en: Record<string, string> = {
+    "PAY-001": "Check DID public key, signed payload, and signature timestamp (within 5 minutes).",
+    "PAY-002": "Review authorize rules: single/day limits and merchant whitelist.",
+    "PAY-003": "Top up balance or reduce amount, then retry.",
+    "PAY-006": "Review risk settings (blocked merchants / amount limits) and adjust policy.",
+    "PAY-007": "Channel timeout. Keep requestId and retry later.",
+    "PAY-008": "Ensure a unique, non-reused Idempotency-Key is sent.",
+    "PAY-010": "Validate request parameters and ownership; include requestId for troubleshooting.",
+  };
+  if (locale === "en-US") {
+    return en[c] ?? "Try retrying with a new request and keep requestId for troubleshooting.";
+  }
+  return zh[c] ?? "建议重试并保留 requestId 供排障使用。";
+}

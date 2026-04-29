@@ -1,0 +1,2 @@
+ALTER TABLE stablecoin_config
+  ADD COLUMN IF NOT EXISTS provider VARCHAR(32) NOT NULL DEFAULT 'mock';

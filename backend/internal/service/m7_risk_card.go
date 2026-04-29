@@ -95,7 +95,7 @@ func (s *Service) PayVirtualCard(agentDID string, cardID string, merchantID stri
 	if acc.Balance < amt {
 		return "", &APIError{Code: "PAY-003", Message: "agent va insufficient balance"}
 	}
-	if r := s.evaluateP2Risk(merchantID, amt); r != nil {
+	if r := s.evaluateP2Risk(merchantID, "GUSD", amt); r != nil {
 		s.appendRiskAuditLocked("risk.transaction.check", card.AgentDID, merchantID, "", map[string]any{"amount": amt, "decision": "BLOCKED", "reason": r.Message})
 		return "", r
 	}
@@ -142,7 +142,7 @@ func (s *Service) RiskTransactionCheck(agentDID string, merchantID string, amoun
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if r := s.evaluateP2Risk(merchantID, amt); r != nil {
+	if r := s.evaluateP2Risk(merchantID, "GUSD", amt); r != nil {
 		s.appendRiskAuditLocked("risk.transaction.check", agentDID, merchantID, transactionID, map[string]any{"amount": amt, "decision": "BLOCKED", "code": r.Code})
 		return map[string]any{
 			"decision":      "BLOCK",

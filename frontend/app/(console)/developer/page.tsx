@@ -19,6 +19,11 @@ import {
   replayWebhookDelivery,
   setChannelRoute,
   setRiskConfig,
+  listStablecoinConfigs,
+  setStablecoinConfig,
+  checkStablecoinProviderHealth,
+  getBridgeCustomerStatus,
+  syncBridgeCustomer,
 } from "@/lib/console-api";
 import { toReadableError } from "@/lib/error-map";
 import { formatStatus } from "@/lib/i18n";
@@ -41,6 +46,23 @@ type DeliveryItem = {
   updatedAt: string;
 };
 
+function formatKycStatus(status: string): string {
+  const s = status.trim().toLowerCase();
+  if (!s) return "unknown";
+  switch (s) {
+    case "approved":
+      return "approved";
+    case "incomplete":
+      return "incomplete (action required)";
+    case "under_review":
+      return "under review";
+    case "rejected":
+      return "rejected";
+    default:
+      return s;
+  }
+}
+
 export default function DeveloperPage() {
   const { t, locale } = useLocale();
   const { showToast } = useToast();
@@ -60,6 +82,18 @@ export default function DeveloperPage() {
   const [routeMode, setRouteMode] = useState<"SETTLE" | "ASYNC" | "FAIL">("SETTLE");
   const [auditAction, setAuditAction] = useState("");
   const [auditResource, setAuditResource] = useState("");
+  const [scCurrency, setScCurrency] = useState<"GUSD" | "USDC" | "USDT">("GUSD");
+  const [scProvider, setScProvider] = useState("mock");
+  const [scEnabled, setScEnabled] = useState(true);
+  const [scChainId, setScChainId] = useState("eth-mainnet");
+  const [scRpcUrl, setScRpcUrl] = useState("");
+  const [scTokenContract, setScTokenContract] = useState("");
+  const [scDecimals, setScDecimals] = useState("6");
+  const [scHotWallet, setScHotWallet] = useState("");
+  const [scMinConfirmations, setScMinConfirmations] = useState("12");
+  const [scRiskThreshold, setScRiskThreshold] = useState("10000");
+  const [bridgeAgentDid, setBridgeAgentDid] = useState("");
+  const [bridgeStatus, setBridgeStatus] = useState<{ agentDid: string; bridgeCustomerId: string; kycStatus: string; lastError?: string; updatedAt: string } | null>(null);
   const pageSize = 10;
 
   const apiKeysQuery = useQuery({
@@ -95,6 +129,10 @@ export default function DeveloperPage() {
   const channelRoutesQuery = useQuery({
     queryKey: ["developer", "channelRoutes"],
     queryFn: listChannelRoutes,
+  });
+  const stablecoinConfigsQuery = useQuery({
+    queryKey: ["developer", "stablecoinConfigs"],
+    queryFn: listStablecoinConfigs,
   });
   const auditLogsQuery = useQuery({
     queryKey: ["developer", "auditLogs", auditAction, auditResource],
@@ -178,6 +216,65 @@ export default function DeveloperPage() {
       showToast("success", t("developer.channelRouteSaved"));
       queryClient.invalidateQueries({ queryKey: ["developer", "channelRoutes"] });
       queryClient.invalidateQueries({ queryKey: ["developer", "auditLogs"] });
+    },
+    onError: (err) => showToast("error", toReadableError(err, locale)),
+  });
+  function applyStablecoinFromList() {
+    const selected = (stablecoinConfigsQuery.data ?? []).find((item) => item.currency === scCurrency);
+    if (!selected) {
+      showToast("error", "stablecoin config not found");
+      return;
+    }
+    setScProvider(selected.provider || "mock");
+    setScEnabled(selected.enabled);
+    setScChainId(selected.chainId ?? "");
+    setScRpcUrl(selected.rpcUrl ?? "");
+    setScTokenContract(selected.tokenContract ?? "");
+    setScDecimals(String(selected.decimals ?? 6));
+    setScHotWallet(selected.hotWallet ?? "");
+    setScMinConfirmations(String(selected.minConfirmations ?? 12));
+    setScRiskThreshold(String(selected.riskThreshold ?? 10000));
+    showToast("info", `loaded ${selected.currency} config`);
+  }
+
+  const syncBridgeCustomerMutation = useMutation({
+    mutationFn: () => syncBridgeCustomer(bridgeAgentDid.trim()),
+    onSuccess: (data) => {
+      setBridgeStatus(data);
+      showToast("success", `bridge customer synced: ${data.bridgeCustomerId}`);
+    },
+    onError: (err) => showToast("error", toReadableError(err, locale)),
+  });
+
+  const getBridgeCustomerStatusMutation = useMutation({
+    mutationFn: () => getBridgeCustomerStatus(bridgeAgentDid.trim()),
+    onSuccess: (data) => setBridgeStatus(data),
+    onError: (err) => showToast("error", toReadableError(err, locale)),
+  });
+
+  const checkStablecoinProviderMutation = useMutation({
+    mutationFn: () => checkStablecoinProviderHealth(scProvider),
+    onSuccess: () => showToast("success", `provider ${scProvider} healthy`),
+    onError: (err) => showToast("error", toReadableError(err, locale)),
+  });
+
+  const setStablecoinConfigMutation = useMutation({
+    mutationFn: () =>
+      setStablecoinConfig({
+        currency: scCurrency,
+        provider: scProvider,
+        enabled: scEnabled,
+        chainId: scChainId,
+        rpcUrl: scRpcUrl,
+        tokenContract: scTokenContract,
+        decimals: Number(scDecimals) || 6,
+        hotWallet: scHotWallet,
+        minConfirmations: Number(scMinConfirmations) || 12,
+        riskThreshold: scRiskThreshold,
+      }),
+    onSuccess: () => {
+      showToast("success", "stablecoin config saved");
+      queryClient.invalidateQueries({ queryKey: ["developer", "stablecoinConfigs"] });
     },
     onError: (err) => showToast("error", toReadableError(err, locale)),
   });
@@ -530,6 +627,59 @@ export default function DeveloperPage() {
         </div>
       </div>
 
+
+      <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+        <h3 className="text-sm font-medium text-slate-200">Stablecoin Config</h3>
+        <div className="mt-2 grid gap-2 md:grid-cols-3">
+          <select value={scCurrency} onChange={(e)=>setScCurrency(e.target.value as "GUSD" | "USDC" | "USDT")} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm">
+            <option value="GUSD">GUSD</option><option value="USDC">USDC</option><option value="USDT">USDT</option>
+          </select>
+          <input value={scProvider} onChange={(e)=>setScProvider(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="provider (mock/bridge/stripe)" />
+          <input value={scChainId} onChange={(e)=>setScChainId(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="chainId" />
+          <input value={scRpcUrl} onChange={(e)=>setScRpcUrl(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="rpcUrl" />
+          <input value={scTokenContract} onChange={(e)=>setScTokenContract(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="tokenContract" />
+          <input value={scDecimals} onChange={(e)=>setScDecimals(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="decimals" />
+          <input value={scHotWallet} onChange={(e)=>setScHotWallet(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="hotWallet" />
+          <input value={scMinConfirmations} onChange={(e)=>setScMinConfirmations(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="minConfirmations" />
+          <input value={scRiskThreshold} onChange={(e)=>setScRiskThreshold(e.target.value)} className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="riskThreshold" />
+          <label className="flex items-center gap-2 text-sm text-slate-300"><input type="checkbox" checked={scEnabled} onChange={(e)=>setScEnabled(e.target.checked)} />enabled</label>
+        </div>
+        <div className="mt-3 flex gap-2">
+          <button onClick={applyStablecoinFromList} className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200">Load Selected</button>
+          <button onClick={()=>checkStablecoinProviderMutation.mutate()} className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200">Check Provider</button>
+          <button onClick={()=>setStablecoinConfigMutation.mutate()} className="rounded-md bg-blue-600 px-3 py-2 text-sm text-white">Save Stablecoin Config</button>
+        </div>
+        <ul className="mt-3 space-y-2 text-xs text-slate-300">
+          {(stablecoinConfigsQuery.data ?? []).map((item)=> (
+            <li key={item.currency} className="rounded border border-slate-800 p-2">{item.currency} · {item.provider || "mock"} · {item.chainId || "-"} · conf={item.minConfirmations} · {item.enabled ? "enabled" : "disabled"}</li>
+          ))}
+        </ul>
+      </div>
+
+
+      <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+        <h3 className="text-sm font-medium text-slate-200">Bridge Customer/KYC Sync</h3>
+        <div className="mt-2 flex gap-2">
+          <input value={bridgeAgentDid} onChange={(e)=>setBridgeAgentDid(e.target.value)} className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm" placeholder="agentDid" />
+          <button onClick={()=>syncBridgeCustomerMutation.mutate()} className="rounded-md bg-blue-600 px-3 py-2 text-sm text-white">Sync</button>
+          <button onClick={()=>getBridgeCustomerStatusMutation.mutate()} className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200">Status</button>
+        </div>
+        {bridgeStatus ? (
+          <div className="mt-3 rounded border border-slate-800 p-2 text-xs text-slate-300">
+            <p>agent: {bridgeStatus.agentDid}</p>
+            <p>customer: {bridgeStatus.bridgeCustomerId}</p>
+            <p>kyc: {formatKycStatus(bridgeStatus.kycStatus)}</p>
+            <p>error: {bridgeStatus.lastError || '-'}</p>
+            <p>updated: {bridgeStatus.updatedAt}</p>
+            {bridgeStatus.kycStatus.trim().toLowerCase() !== "approved" ? (
+              <p className="mt-2 rounded border border-amber-700/60 bg-amber-950/30 p-2 text-amber-200">
+                KYC not approved yet. Customer can continue Bridge onboarding/KYC before production recharge/settlement.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+
       <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
         <h3 className="text-sm font-medium text-slate-200">{t("developer.auditLogs")}</h3>
         <div className="mt-2 grid gap-2 md:grid-cols-3">
@@ -547,6 +697,35 @@ export default function DeveloperPage() {
           />
           <button onClick={() => auditLogsQuery.refetch()} className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200">
             {t("developer.refresh")}
+          </button>
+        </div>
+        <div className="mt-2 flex flex-wrap gap-2 text-xs">
+          <button
+            onClick={() => {
+              setAuditAction("risk_config_set");
+              setAuditResource("global");
+            }}
+            className="rounded border border-slate-700 px-2 py-1 text-slate-200"
+          >
+            Risk Config Audit
+          </button>
+          <button
+            onClick={() => {
+              setAuditAction("channel_route_set");
+              setAuditResource("");
+            }}
+            className="rounded border border-slate-700 px-2 py-1 text-slate-200"
+          >
+            Channel Route Audit
+          </button>
+          <button
+            onClick={() => {
+              setAuditAction("");
+              setAuditResource("");
+            }}
+            className="rounded border border-slate-700 px-2 py-1 text-slate-200"
+          >
+            Clear Audit Filters
           </button>
         </div>
         <ul className="mt-3 space-y-2 text-xs text-slate-300">
