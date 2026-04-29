@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS bridge_webhook_event (
+  event_id VARCHAR(128) PRIMARY KEY,
+  event_type VARCHAR(128) NOT NULL DEFAULT '',
+  payload JSON NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

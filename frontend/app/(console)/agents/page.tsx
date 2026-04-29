@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { DetailModal } from "@/components/detail-modal";
 import { useLocale } from "@/components/locale-provider";
+import { OnboardingBanner } from "@/components/onboarding-banner";
 import { useToast } from "@/components/toast-provider";
 import { ensureAgentSigningPublicKey } from "@/lib/agent-signature";
 import { createAccount, listAgents, registerAgent } from "@/lib/console-api";
@@ -74,6 +75,7 @@ export default function AgentsPage() {
 
   return (
     <section className="space-y-6">
+      <OnboardingBanner />
       <div>
         <h2 className="text-xl font-semibold">{t("agents.title")}</h2>
         <p className="mt-1 text-sm text-slate-400">

@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS bridge_customer_map (
+  agent_did VARCHAR(128) PRIMARY KEY,
+  bridge_customer_id VARCHAR(64) NOT NULL,
+  kyc_status VARCHAR(32) NOT NULL DEFAULT 'unknown',
+  last_error TEXT,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);

@@ -40,13 +40,13 @@ func TestPersistentRechargeIdempotentByVACardNo(t *testing.T) {
 	}
 
 	idem := fmt.Sprintf("rch-it-idem-%d", time.Now().UnixNano())
-	if err := svc.Recharge(acc.VACardNo, "10", idem); err != nil {
+	if err := svc.Recharge(acc.VACardNo, "GUSD", "10", idem); err != nil {
 		t.Fatalf("first recharge failed: %v", err)
 	}
-	if err := svc.Recharge(acc.VACardNo, "10", idem); err != nil {
+	if err := svc.Recharge(acc.VACardNo, "GUSD", "10", idem); err != nil {
 		t.Fatalf("second recharge with same idem should be idempotent: %v", err)
 	}
-	balance, err := svc.BalanceByVA(acc.VAAccountID)
+	balance, err := svc.BalanceByVA(acc.VAAccountID, "GUSD")
 	if err != nil {
 		t.Fatalf("query balance failed: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestPersistentPayAndQueryStatus(t *testing.T) {
 	did := fmt.Sprintf("did:gusd:agent:it_pay_%d", time.Now().UnixNano())
 	_ = svc.RegisterAgent(did)
 	acc := svc.CreateAccount(did)
-	if err := svc.Recharge(acc.VAAccountID, "30", fmt.Sprintf("rch-it-pay-%d", time.Now().UnixNano())); err != nil {
+	if err := svc.Recharge(acc.VAAccountID, "GUSD", "30", fmt.Sprintf("rch-it-pay-%d", time.Now().UnixNano())); err != nil {
 		t.Fatalf("recharge failed: %v", err)
 	}
 	if err := svc.SetAuthorizeRule(did, "10", "50", []string{"m1"}); err != nil {
@@ -98,7 +98,7 @@ func TestPersistentVATopupAndTransfer(t *testing.T) {
 	_ = svc.RegisterAgent(didTo)
 	fromAcc := svc.CreateAccount(didFrom)
 	toAcc := svc.CreateAccount(didTo)
-	if err := svc.Recharge(fromAcc.VAAccountID, "20", fmt.Sprintf("rch-it-vat-%d", time.Now().UnixNano())); err != nil {
+	if err := svc.Recharge(fromAcc.VAAccountID, "GUSD", "20", fmt.Sprintf("rch-it-vat-%d", time.Now().UnixNano())); err != nil {
 		t.Fatalf("recharge failed: %v", err)
 	}
 
@@ -111,17 +111,17 @@ func TestPersistentVATopupAndTransfer(t *testing.T) {
 	}
 
 	idem := fmt.Sprintf("idem-it-vat-transfer-%d", time.Now().UnixNano())
-	if err := svc.TransferVA(fromAcc.VAAccountID, toAcc.VAAccountID, "3", idem); err != nil {
+	if err := svc.TransferVA(fromAcc.VAAccountID, toAcc.VAAccountID, "GUSD", "3", idem); err != nil {
 		t.Fatalf("transfer failed: %v", err)
 	}
-	if err := svc.TransferVA(fromAcc.VAAccountID, toAcc.VAAccountID, "3", idem); err != nil {
+	if err := svc.TransferVA(fromAcc.VAAccountID, toAcc.VAAccountID, "GUSD", "3", idem); err != nil {
 		t.Fatalf("idempotent transfer retry failed: %v", err)
 	}
-	fromBal, err := svc.BalanceByVA(fromAcc.VAAccountID)
+	fromBal, err := svc.BalanceByVA(fromAcc.VAAccountID, "GUSD")
 	if err != nil {
 		t.Fatalf("query from balance failed: %v", err)
 	}
-	toBal, err := svc.BalanceByVA(toAcc.VAAccountID)
+	toBal, err := svc.BalanceByVA(toAcc.VAAccountID, "GUSD")
 	if err != nil {
 		t.Fatalf("query to balance failed: %v", err)
 	}
