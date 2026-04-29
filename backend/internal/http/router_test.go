@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -1488,6 +1489,54 @@ func TestAgentOwnershipHeadersRequiredAndEnforced(t *testing.T) {
 	if rrAllowed.Code != http.StatusOK {
 		t.Fatalf("expected 200 when owner sets rule, got %d body=%s", rrAllowed.Code, rrAllowed.Body.String())
 	}
+}
+
+func TestAgentAutoRegister(t *testing.T) {
+	svc := service.New()
+	server := NewServerForTest(svc, time.Now, 100, 100)
+
+	body := mustJSONAny(t, map[string]string{
+		"agentDid":  "did:gusd:agent:auto_register_1",
+		"didPubKey": validEd25519PubKeyBase64(t),
+	})
+	req := httptest.NewRequest(http.MethodPost, "/agent/auto-register", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-Id", "user_auto")
+	rr := httptest.NewRecorder()
+	server.Routes().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for auto register, got %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+	data, ok := payload["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing data in response")
+	}
+	agentPart, ok := data["agent"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing agent object in auto-register response")
+	}
+	if strings.TrimSpace(anyToString(agentPart["did"])) == "" {
+		t.Fatalf("missing DID in auto-register response")
+	}
+	account, ok := data["account"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing account object in auto-register response")
+	}
+	if strings.TrimSpace(anyToString(account["VAAccountID"])) == "" {
+		t.Fatalf("missing VAAccountID in auto-register response")
+	}
+}
+
+func anyToString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }
 
 func validEd25519PubKeyBase64(t *testing.T) string {

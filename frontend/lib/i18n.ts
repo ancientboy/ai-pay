@@ -64,6 +64,9 @@ const messages: Record<Locale, DictObject> = {
       submitting: "登录中...",
       failed: "登录失败，请重试",
       empty: "用户名和密码不能为空",
+      register: "注册",
+      registering: "注册中...",
+      registerSuccess: "注册成功，请登录",
       backHome: "返回首页",
     },
     landing: {
@@ -470,6 +473,9 @@ const messages: Record<Locale, DictObject> = {
       submitting: "Logging in...",
       failed: "Login failed, please retry",
       empty: "Username and password are required",
+      register: "Register",
+      registering: "Registering...",
+      registerSuccess: "Registration succeeded, please sign in",
       backHome: "Back to Home",
     },
     landing: {

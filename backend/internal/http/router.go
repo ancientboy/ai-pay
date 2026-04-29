@@ -94,6 +94,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /ready", s.handleReady)
 	mux.HandleFunc("POST /agent/did/register", s.handleRegisterAgent)
+	mux.HandleFunc("POST /agent/auto-register", s.handleAgentAutoRegister)
 	mux.HandleFunc("POST /agent/did/verify", s.handleVerifyAgent)
 	mux.HandleFunc("POST /agent/did/update", s.handleUpdateAgent)
 	mux.HandleFunc("POST /account/create", s.handleCreateAccount)
@@ -224,6 +225,11 @@ type createAccountReq struct {
 	AgentDID string `json:"agentDid"`
 }
 
+type agentAutoRegisterReq struct {
+	AgentDID  string `json:"agentDid"`
+	DIDPubKey string `json:"didPubKey"`
+}
+
 type verifyAgentReq struct {
 	AgentDID  string `json:"agentDid"`
 	Message   string `json:"message"`
@@ -248,6 +254,34 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	acc := s.svc.CreateAccount(req.AgentDID)
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": acc})
+}
+
+func (s *Server) handleAgentAutoRegister(w http.ResponseWriter, r *http.Request) {
+	var req agentAutoRegisterReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.AgentDID) == "" || strings.TrimSpace(req.DIDPubKey) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	if !isBase64Ed25519PubKey(req.DIDPubKey) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid did pub key"})
+		return
+	}
+
+	agent := s.svc.RegisterAgent(req.AgentDID)
+	s.bindAgentOwner(req.AgentDID, s.requestUserID(r))
+	if err := s.svc.SetAgentPublicKey(req.AgentDID, req.DIDPubKey); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "save did pub key failed"})
+		return
+	}
+	agent.DIDPubKey = req.DIDPubKey
+	account := s.svc.CreateAccount(req.AgentDID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"code": "0",
+		"data": map[string]any{
+			"agent":   agent,
+			"account": account,
+		},
+	})
 }
 
 func (s *Server) handleVerifyAgent(w http.ResponseWriter, r *http.Request) {
