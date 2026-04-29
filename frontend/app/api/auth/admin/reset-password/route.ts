@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { appendAdminAuditLog } from "@/lib/admin-audit-store";
 import { parseSessionToken, SESSION_COOKIE_NAME } from "@/lib/session";
 import { resetStoredUserPassword } from "@/lib/user-store";
 
@@ -54,6 +55,13 @@ export async function POST(request: NextRequest) {
       { status: 400 },
     );
   }
+
+  await appendAdminAuditLog({
+    actor: claims.sub,
+    action: "admin.user.reset_password",
+    targetUsername: username,
+    detail: { via: "api.auth.admin.reset-password" },
+  });
 
   return NextResponse.json({ code: "0", data: result.user });
 }

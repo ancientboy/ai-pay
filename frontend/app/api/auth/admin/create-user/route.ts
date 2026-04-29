@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseSessionToken, SESSION_COOKIE_NAME } from "@/lib/session";
 import { registerStoredUser } from "@/lib/user-store";
+import { appendAdminAuditLog } from "@/lib/admin-audit-store";
 
 function isEnglish(request: NextRequest) {
   const language = request.headers.get("accept-language")?.toLowerCase() ?? "";
@@ -59,6 +60,15 @@ export async function POST(request: NextRequest) {
       { status: 400 },
     );
   }
+
+  await appendAdminAuditLog({
+    actor: claims.sub,
+    action: "admin.user.create",
+    targetUsername: result.user.username,
+    detail: {
+      role: result.user.role,
+    },
+  });
 
   return NextResponse.json({ code: "0", data: result.user });
 }

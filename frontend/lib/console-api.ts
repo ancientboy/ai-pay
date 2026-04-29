@@ -1109,6 +1109,15 @@ export type AdminUserRecord = {
   createdAt: string;
 };
 
+export type AdminAuditRecord = {
+  id: string;
+  actor: string;
+  action: "admin.user.create" | "admin.user.enable" | "admin.user.disable" | "admin.user.reset_password";
+  targetUsername: string;
+  detail?: Record<string, unknown>;
+  createdAt: string;
+};
+
 export function listAdminUsers() {
   return request<AdminUserRecord[]>("/auth/admin/users");
 }
@@ -1128,6 +1137,12 @@ export function resetAdminUserPassword(input: { username: string; newPassword: s
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export function listAdminAuditLogs(limit = 50) {
+  return request<AdminAuditRecord[]>(
+    `/auth/admin/audit-logs?limit=${encodeURIComponent(String(limit))}`,
+  );
 }
 
 export type BridgeCustomerStatus = {

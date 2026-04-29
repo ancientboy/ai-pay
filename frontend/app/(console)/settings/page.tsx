@@ -8,9 +8,11 @@ import {
   getSavedApiBaseURL,
   saveApiBaseURL,
   listAdminUsers,
+  listAdminUserAuditLogs,
   updateAdminUserStatus,
   resetAdminUserPassword,
   type AdminUserRecord,
+  type AdminUserAuditLog,
 } from "@/lib/console-api";
 
 export default function SettingsPage() {
@@ -37,6 +39,8 @@ export default function SettingsPage() {
   const [resetUsername, setResetUsername] = useState("");
   const [resetPassword, setResetPassword] = useState("");
   const [resettingPassword, setResettingPassword] = useState(false);
+  const [auditLogs, setAuditLogs] = useState<AdminUserAuditLog[]>([]);
+  const [loadingAuditLogs, setLoadingAuditLogs] = useState(false);
 
   async function refreshUsers() {
     setLoadingUsers(true);
@@ -47,6 +51,18 @@ export default function SettingsPage() {
       showToast("error", err instanceof Error ? err.message : "load users failed");
     } finally {
       setLoadingUsers(false);
+    }
+  }
+
+  async function refreshAuditLogs() {
+    setLoadingAuditLogs(true);
+    try {
+      const items = await listAdminUserAuditLogs(20);
+      setAuditLogs(items);
+    } catch (err) {
+      showToast("error", err instanceof Error ? err.message : "load audit logs failed");
+    } finally {
+      setLoadingAuditLogs(false);
     }
   }
 
@@ -150,6 +166,7 @@ export default function SettingsPage() {
                   setNewPassword("");
                   setNewRole("operator");
                   await refreshUsers();
+                  await refreshAuditLogs();
                 } catch (err) {
                   showToast("error", err instanceof Error ? err.message : "create user failed");
                 } finally {
@@ -189,6 +206,7 @@ export default function SettingsPage() {
                         await updateAdminUserStatus({ username: u.username, status: "active" });
                         showToast("success", "user enabled");
                         await refreshUsers();
+                        await refreshAuditLogs();
                       } catch (err) {
                         showToast("error", err instanceof Error ? err.message : "update status failed");
                       } finally {
@@ -208,6 +226,7 @@ export default function SettingsPage() {
                         await updateAdminUserStatus({ username: u.username, status: "disabled" });
                         showToast("success", "user disabled");
                         await refreshUsers();
+                        await refreshAuditLogs();
                       } catch (err) {
                         showToast("error", err instanceof Error ? err.message : "update status failed");
                       } finally {
@@ -262,6 +281,7 @@ export default function SettingsPage() {
                     });
                     showToast("success", "password reset done");
                     setResetPassword("");
+                    await refreshAuditLogs();
                   } catch (err) {
                     showToast("error", err instanceof Error ? err.message : "reset password failed");
                   } finally {
@@ -273,6 +293,28 @@ export default function SettingsPage() {
                 {resettingPassword ? "resetting..." : "reset password"}
               </button>
             </div>
+          </div>
+          <div className="mt-4 rounded border border-slate-800 p-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-slate-300">User admin audit logs</p>
+              <button
+                type="button"
+                onClick={() => {
+                  refreshAuditLogs();
+                }}
+                className="rounded border border-slate-700 px-2 py-1 text-[11px] text-slate-200"
+              >
+                {loadingAuditLogs ? "loading..." : "refresh logs"}
+              </button>
+            </div>
+            <ul className="mt-2 space-y-2 text-xs text-slate-300">
+              {auditLogs.map((log) => (
+                <li key={log.id} className="rounded border border-slate-800 p-2">
+                  <p>{log.createdAt} · {log.actor} · {log.action} · target={log.targetUsername}</p>
+                </li>
+              ))}
+              {auditLogs.length === 0 ? <li className="text-slate-500">no audit logs</li> : null}
+            </ul>
           </div>
         </div>
       </div>

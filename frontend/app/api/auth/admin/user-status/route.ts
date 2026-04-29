@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { appendAdminAuditLog } from "@/lib/admin-audit-store";
 import { parseSessionToken, SESSION_COOKIE_NAME } from "@/lib/session";
 import { setStoredUserStatus } from "@/lib/user-store";
 
@@ -52,5 +53,11 @@ export async function POST(request: NextRequest) {
       { status: 404 },
     );
   }
+  await appendAdminAuditLog({
+    actor: claims.sub,
+    action: status === "disabled" ? "admin.user.disable" : "admin.user.enable",
+    targetUsername: username,
+    detail: { status },
+  });
   return NextResponse.json({ code: "0", data: { username, status } });
 }
