@@ -4,6 +4,7 @@ import { useMutation } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { DetailModal } from "@/components/detail-modal";
 import { useLocale } from "@/components/locale-provider";
+import { OnboardingBanner } from "@/components/onboarding-banner";
 import { useToast } from "@/components/toast-provider";
 import { pay, queryBalance, queryLedger, queryTransaction } from "@/lib/console-api";
 import { ApiClientError, toReadableError } from "@/lib/error-map";
@@ -220,6 +221,7 @@ export default function TransactionsPage() {
 
   return (
     <section className="space-y-6">
+      <OnboardingBanner />
       <div>
         <h2 className="text-xl font-semibold">{t("transactions.title")}</h2>
         <p className="mt-1 text-sm text-slate-400">

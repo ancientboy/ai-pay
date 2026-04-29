@@ -22,6 +22,7 @@ import {
 import { ApiClientError, toReadableError } from "@/lib/error-map";
 import { formatStatus } from "@/lib/i18n";
 import { getValidationSchemas } from "@/lib/validation";
+import { OnboardingBanner } from "@/components/onboarding-banner";
 
 const RECHARGE_DRAFT_KEY = "ai-pay.recharge.draft.v1";
 
@@ -484,6 +485,7 @@ export default function RechargePage() {
 
   return (
     <section className="space-y-6">
+      <OnboardingBanner />
       <div>
         <h2 className="text-xl font-semibold">{t("recharge.title")}</h2>
         <p className="mt-1 text-sm text-slate-400">
