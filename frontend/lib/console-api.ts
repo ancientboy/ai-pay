@@ -521,3 +521,33 @@ export function createDeveloperWebhook(input: { url: string; event: string }) {
 }
 export const listDeveloperWebhookDeliveries = listWebhookDeliveries;
 export const getDeveloperWebhookDeliveryStats = getWebhookDeliveryStats;
+
+export type HelpSuggestion = {
+  label: string;
+  href: string;
+};
+
+export type HelpAnswer = {
+  answer: string;
+  suggestions: HelpSuggestion[];
+};
+
+export function queryHelp(input: { question: string; pagePath?: string }) {
+  return (async () => {
+    const response = await fetch("/api/help/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const payload = (await response.json().catch(() => null)) as
+      | { code?: string; message?: string; data?: HelpAnswer }
+      | null;
+    if (!response.ok || payload?.code !== "0" || !payload?.data) {
+      throw new ApiClientError(
+        payload?.code || "PAY-010",
+        payload?.message || "help query failed",
+      );
+    }
+    return payload.data;
+  })();
+}
