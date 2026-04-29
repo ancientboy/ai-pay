@@ -3,7 +3,15 @@
 import { useMemo, useState } from "react";
 import { useLocale } from "@/components/locale-provider";
 import { useToast } from "@/components/toast-provider";
-import { createUserAsAdmin, getSavedApiBaseURL, saveApiBaseURL } from "@/lib/console-api";
+import {
+  createUserAsAdmin,
+  getSavedApiBaseURL,
+  saveApiBaseURL,
+  listAdminUsers,
+  updateAdminUserStatus,
+  resetAdminUserPassword,
+  type AdminUserRecord,
+} from "@/lib/console-api";
 
 export default function SettingsPage() {
   const { t } = useLocale();
@@ -23,6 +31,24 @@ export default function SettingsPage() {
   const [newPassword, setNewPassword] = useState("");
   const [newRole, setNewRole] = useState<"operator" | "admin" | "readonly">("operator");
   const [creatingUser, setCreatingUser] = useState(false);
+  const [users, setUsers] = useState<AdminUserRecord[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+  const [updatingUser, setUpdatingUser] = useState("");
+  const [resetUsername, setResetUsername] = useState("");
+  const [resetPassword, setResetPassword] = useState("");
+  const [resettingPassword, setResettingPassword] = useState(false);
+
+  async function refreshUsers() {
+    setLoadingUsers(true);
+    try {
+      const items = await listAdminUsers();
+      setUsers(items);
+    } catch (err) {
+      showToast("error", err instanceof Error ? err.message : "load users failed");
+    } finally {
+      setLoadingUsers(false);
+    }
+  }
 
   return (
     <section className="space-y-6">
@@ -123,6 +149,7 @@ export default function SettingsPage() {
                   setNewUsername("");
                   setNewPassword("");
                   setNewRole("operator");
+                  await refreshUsers();
                 } catch (err) {
                   showToast("error", err instanceof Error ? err.message : "create user failed");
                 } finally {
@@ -133,6 +160,119 @@ export default function SettingsPage() {
             >
               {creatingUser ? "creating..." : "create user"}
             </button>
+          </div>
+          <div className="mt-3 flex gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                refreshUsers();
+              }}
+              className="rounded-md border border-slate-700 px-3 py-1 text-xs text-slate-200"
+            >
+              {loadingUsers ? "loading..." : "refresh users"}
+            </button>
+          </div>
+          <ul className="mt-3 space-y-2 text-xs text-slate-300">
+            {users.map((u) => (
+              <li key={u.username} className="rounded border border-slate-800 p-2">
+                <p>
+                  {u.username} · role={u.role} · status={u.status}
+                </p>
+                <p className="text-slate-500">created: {u.createdAt}</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={updatingUser === u.username || u.status === "active"}
+                    onClick={async () => {
+                      setUpdatingUser(u.username);
+                      try {
+                        await updateAdminUserStatus({ username: u.username, status: "active" });
+                        showToast("success", "user enabled");
+                        await refreshUsers();
+                      } catch (err) {
+                        showToast("error", err instanceof Error ? err.message : "update status failed");
+                      } finally {
+                        setUpdatingUser("");
+                      }
+                    }}
+                    className="rounded border border-emerald-700/60 px-2 py-1 text-[11px] text-emerald-200 disabled:opacity-50"
+                  >
+                    enable
+                  </button>
+                  <button
+                    type="button"
+                    disabled={updatingUser === u.username || u.status === "disabled"}
+                    onClick={async () => {
+                      setUpdatingUser(u.username);
+                      try {
+                        await updateAdminUserStatus({ username: u.username, status: "disabled" });
+                        showToast("success", "user disabled");
+                        await refreshUsers();
+                      } catch (err) {
+                        showToast("error", err instanceof Error ? err.message : "update status failed");
+                      } finally {
+                        setUpdatingUser("");
+                      }
+                    }}
+                    className="rounded border border-amber-700/60 px-2 py-1 text-[11px] text-amber-200 disabled:opacity-50"
+                  >
+                    disable
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setResetUsername(u.username)}
+                    className="rounded border border-slate-700 px-2 py-1 text-[11px]"
+                  >
+                    set as reset target
+                  </button>
+                </div>
+              </li>
+            ))}
+            {users.length === 0 ? <li className="text-slate-500">no users</li> : null}
+          </ul>
+          <div className="mt-4 rounded border border-slate-800 p-3">
+            <p className="text-xs text-slate-400">Reset password</p>
+            <div className="mt-2 space-y-2">
+              <input
+                value={resetUsername}
+                onChange={(e) => setResetUsername(e.target.value)}
+                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
+                placeholder="target username"
+              />
+              <input
+                value={resetPassword}
+                onChange={(e) => setResetPassword(e.target.value)}
+                className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
+                placeholder="new password"
+                type="password"
+              />
+              <button
+                type="button"
+                disabled={resettingPassword}
+                onClick={async () => {
+                  if (!resetUsername.trim() || !resetPassword.trim()) {
+                    showToast("error", "target username/new password required");
+                    return;
+                  }
+                  setResettingPassword(true);
+                  try {
+                    await resetAdminUserPassword({
+                      username: resetUsername.trim(),
+                      newPassword: resetPassword.trim(),
+                    });
+                    showToast("success", "password reset done");
+                    setResetPassword("");
+                  } catch (err) {
+                    showToast("error", err instanceof Error ? err.message : "reset password failed");
+                  } finally {
+                    setResettingPassword(false);
+                  }
+                }}
+                className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200 disabled:opacity-60"
+              >
+                {resettingPassword ? "resetting..." : "reset password"}
+              </button>
+            </div>
           </div>
         </div>
       </div>

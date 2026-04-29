@@ -1087,6 +1087,49 @@ export function createUserAsAdmin(input: {
   });
 }
 
+export function listUsersAsAdmin() {
+  return listAdminUsers();
+}
+
+export function setUserStatusAsAdmin(input: { username: string; status: "enabled" | "disabled" }) {
+  return updateAdminUserStatus({
+    username: input.username,
+    status: input.status === "enabled" ? "active" : "disabled",
+  });
+}
+
+export function resetUserPasswordAsAdmin(input: { username: string; password: string }) {
+  return resetAdminUserPassword({ username: input.username, newPassword: input.password });
+}
+
+export type AdminUserRecord = {
+  username: string;
+  role: string;
+  status: "active" | "disabled";
+  createdAt: string;
+};
+
+export function listAdminUsers() {
+  return request<AdminUserRecord[]>("/auth/admin/users");
+}
+
+export function updateAdminUserStatus(input: {
+  username: string;
+  status: "active" | "disabled";
+}) {
+  return request<{ username: string; status: "active" | "disabled" }>("/auth/admin/user-status", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function resetAdminUserPassword(input: { username: string; newPassword: string }) {
+  return request<{ username: string }>("/auth/admin/reset-password", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export type BridgeCustomerStatus = {
   agentDid: string;
   bridgeCustomerId: string;

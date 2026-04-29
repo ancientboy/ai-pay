@@ -6,6 +6,7 @@ type StoredUser = {
   username: string;
   passwordHash: string;
   role: string;
+  disabled?: boolean;
   createdAt: string;
 };
 
@@ -63,6 +64,9 @@ export async function verifyStoredUser(username: string, password: string) {
   if (!hit) {
     return null;
   }
+  if (hit.disabled) {
+    return null;
+  }
   if (hit.passwordHash !== hashPassword(password.trim())) {
     return null;
   }
@@ -91,6 +95,7 @@ export async function registerStoredUser(input: {
     username: uname,
     passwordHash: hashPassword(pwd),
     role: (input.role || "operator").trim() || "operator",
+    disabled: false,
     createdAt: new Date().toISOString(),
   });
   await writeStore(store);
@@ -110,6 +115,74 @@ export async function findStoredUserByUsername(username: string) {
   return {
     username: hit.username,
     role: hit.role || "operator",
+    disabled: !!hit.disabled,
     createdAt: hit.createdAt,
   };
+}
+
+export async function listStoredUsers() {
+  const store = await readStore();
+  return store.users
+    .map((u) => ({
+      username: u.username,
+      role: u.role || "operator",
+      disabled: !!u.disabled,
+      createdAt: u.createdAt,
+    }))
+    .sort((a, b) => a.username.localeCompare(b.username));
+}
+
+export async function updateStoredUser(input: {
+  username: string;
+  role?: string;
+  password?: string;
+  disabled?: boolean;
+}) {
+  const uname = normalizeUsername(input.username);
+  if (!uname) {
+    return { ok: false as const, code: "AUTH-001" };
+  }
+  const store = await readStore();
+  const idx = store.users.findIndex((u) => normalizeUsername(u.username) === uname);
+  if (idx < 0) {
+    return { ok: false as const, code: "AUTH-008" };
+  }
+  if (typeof input.role === "string" && input.role.trim()) {
+    store.users[idx].role = input.role.trim();
+  }
+  if (typeof input.disabled === "boolean") {
+    store.users[idx].disabled = input.disabled;
+  }
+  if (typeof input.password === "string" && input.password.trim()) {
+    if (input.password.trim().length < 6) {
+      return { ok: false as const, code: "AUTH-006" };
+    }
+    store.users[idx].passwordHash = hashPassword(input.password.trim());
+  }
+  await writeStore(store);
+  return {
+    ok: true as const,
+    user: {
+      username: store.users[idx].username,
+      role: store.users[idx].role || "operator",
+      disabled: !!store.users[idx].disabled,
+      createdAt: store.users[idx].createdAt,
+    },
+  };
+}
+
+export async function setStoredUserStatus(username: string, status: "active" | "disabled") {
+  const result = await updateStoredUser({ username, disabled: status === "disabled" });
+  if (!result.ok) {
+    return false;
+  }
+  return true;
+}
+
+export async function resetStoredUserPassword(username: string, password: string) {
+  const result = await updateStoredUser({ username, password });
+  if (!result.ok) {
+    return { ok: false as const, code: result.code };
+  }
+  return { ok: true as const, user: result.user };
 }
