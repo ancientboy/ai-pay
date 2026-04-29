@@ -915,7 +915,6 @@ export function createPaymentSignRequest(input: {
         buildSignRequestPayload(
           input.agentDid,
           input.merchantId,
-          input.currency,
           input.amount,
           sessionId,
           idempotencyKey,
@@ -947,6 +946,7 @@ export function submitPaymentSign(input: {
   signId: string;
   payerDid: string;
   merchantId: string;
+  currency?: "GUSD" | "USDC" | "USDT";
   amount: string;
 }) {
   const idempotencyKey = `sign-submit-ui-${Date.now()}`;
@@ -959,7 +959,7 @@ export function submitPaymentSign(input: {
         buildPaySignPayload(
           input.payerDid,
           input.merchantId,
-          input.currency,
+          input.currency ?? "GUSD",
           input.amount,
           idempotencyKey,
           signTimestamp,
