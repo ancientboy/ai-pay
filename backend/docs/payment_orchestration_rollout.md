@@ -56,6 +56,25 @@
    - 绑定 provider 子账户
    - 创建并执行 payment intent
    - 查询 intent + executions 一致性
+3. 新增回归用例（已落地）
+   - `TestOrchestrationIntentExecuteFlow`
+     - 覆盖“绑定 -> 创建 -> 执行 -> 状态查询”完整闭环
+   - `TestOrchestrationIntentExecuteWithoutRoute`
+     - 覆盖“未绑定路由直接执行”失败
+   - `TestOrchestrationIntentExecuteProviderMismatch`
+     - 覆盖“执行时指定 provider 与可用子账户不匹配”失败
+   - `TestOrchestrationIntentExecuteTwice`
+     - 覆盖“已执行意图重复执行”失败
+
+## 本地验收脚本（建议顺序）
+1. 后端自动化：
+   - 在 `backend` 目录执行：`go test ./...`
+2. 聚焦编排回归：
+   - 在 `backend` 目录执行：
+     - `go test ./internal/http -run TestOrchestrationIntentExecuteFlow`
+     - `go test ./internal/http -run TestOrchestrationIntentExecuteWithoutRoute`
+     - `go test ./internal/http -run TestOrchestrationIntentExecuteProviderMismatch`
+     - `go test ./internal/http -run TestOrchestrationIntentExecuteTwice`
 
 ## 风险与约束
 - 当前执行仍为“框架化模拟”，真实扣款由后续 Provider Adapter 接管。
