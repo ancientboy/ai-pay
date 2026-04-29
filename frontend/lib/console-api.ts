@@ -82,6 +82,17 @@ export function saveApiBaseURL(url: string) {
   window.localStorage.setItem(STORAGE_API_BASE_URL_KEY, url.trim());
 }
 
+export function adminCreateUser(input: {
+  username: string;
+  password: string;
+  role?: string;
+}) {
+  return request<{ username: string; role: string }>("/auth/admin/create-user", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export function registerAgent(agentDid: string, didPubKey?: string) {
   return request<{ DID: string }>("/agent/did/register", {
     method: "POST",
@@ -1063,6 +1074,17 @@ export function setStablecoinConfig(input: {
 
 export function checkStablecoinProviderHealth(provider: string) {
   return request<{ provider: string; healthy: boolean }>(`/developer/stablecoin-provider/health?provider=${encodeURIComponent(provider)}`);
+}
+
+export function createUserAsAdmin(input: {
+  username: string;
+  password: string;
+  role?: string;
+}) {
+  return request<{ username: string; role: string }>("/auth/admin/create-user", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export type BridgeCustomerStatus = {

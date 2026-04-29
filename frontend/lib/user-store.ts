@@ -96,3 +96,20 @@ export async function registerStoredUser(input: {
   await writeStore(store);
   return { ok: true as const, user: { username: uname, role: (input.role || "operator").trim() || "operator" } };
 }
+
+export async function findStoredUserByUsername(username: string) {
+  const uname = normalizeUsername(username);
+  if (!uname) {
+    return null;
+  }
+  const store = await readStore();
+  const hit = store.users.find((u) => normalizeUsername(u.username) === uname);
+  if (!hit) {
+    return null;
+  }
+  return {
+    username: hit.username,
+    role: hit.role || "operator",
+    createdAt: hit.createdAt,
+  };
+}

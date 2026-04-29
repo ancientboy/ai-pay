@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useLocale } from "@/components/locale-provider";
 import { useToast } from "@/components/toast-provider";
-import { getSavedApiBaseURL, saveApiBaseURL } from "@/lib/console-api";
+import { createUserAsAdmin, getSavedApiBaseURL, saveApiBaseURL } from "@/lib/console-api";
 
 export default function SettingsPage() {
   const { t } = useLocale();
@@ -19,6 +19,10 @@ export default function SettingsPage() {
     () => apiBaseURL.trim() !== "" && apiBaseURL.trim() !== envBaseURL,
     [apiBaseURL, envBaseURL],
   );
+  const [newUsername, setNewUsername] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newRole, setNewRole] = useState<"operator" | "admin" | "readonly">("operator");
+  const [creatingUser, setCreatingUser] = useState(false);
 
   return (
     <section className="space-y-6">
@@ -73,6 +77,63 @@ export default function SettingsPage() {
             <li>{t("settings.notes.timestamp")}</li>
             <li>{t("settings.notes.requestId")}</li>
           </ul>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+          <h3 className="text-sm font-medium text-slate-200">Admin: Create User</h3>
+          <p className="mt-2 text-sm text-slate-400">Create console user accounts manually.</p>
+          <div className="mt-3 space-y-2">
+            <input
+              value={newUsername}
+              onChange={(e) => setNewUsername(e.target.value)}
+              className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
+              placeholder="username"
+            />
+            <input
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
+              placeholder="password"
+              type="password"
+            />
+            <select
+              value={newRole}
+              onChange={(e) => setNewRole(e.target.value as "operator" | "admin" | "readonly")}
+              className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
+            >
+              <option value="operator">operator</option>
+              <option value="admin">admin</option>
+              <option value="readonly">readonly</option>
+            </select>
+            <button
+              type="button"
+              disabled={creatingUser}
+              onClick={async () => {
+                if (!newUsername.trim() || !newPassword.trim()) {
+                  showToast("error", "username/password required");
+                  return;
+                }
+                setCreatingUser(true);
+                try {
+                  await createUserAsAdmin({
+                    username: newUsername.trim(),
+                    password: newPassword.trim(),
+                    role: newRole,
+                  });
+                  showToast("success", "user created");
+                  setNewUsername("");
+                  setNewPassword("");
+                  setNewRole("operator");
+                } catch (err) {
+                  showToast("error", err instanceof Error ? err.message : "create user failed");
+                } finally {
+                  setCreatingUser(false);
+                }
+              }}
+              className="rounded-md bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-60"
+            >
+              {creatingUser ? "creating..." : "create user"}
+            </button>
+          </div>
         </div>
       </div>
     </section>
