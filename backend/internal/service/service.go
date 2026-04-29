@@ -2452,6 +2452,21 @@ func (s *Service) CreatePaymentIntent(platformVAAccountID string, agentDID strin
 	if _, ok := s.accountsByVA[va]; !ok {
 		return PaymentIntentRecord{}, &APIError{Code: "PAY-010", Message: "platform va account not found"}
 	}
+	selectedProvider := ""
+	for _, b := range s.providerAccounts {
+		if b.PlatformVAAccount == va && strings.EqualFold(b.Currency, ccy) && strings.EqualFold(b.Status, "ACTIVE") {
+			selectedProvider = b.Provider
+			break
+		}
+	}
+	if selectedProvider == "" {
+		for _, b := range s.providerAccounts {
+			if b.PlatformVAAccount == va && strings.EqualFold(b.Status, "ACTIVE") {
+				selectedProvider = b.Provider
+				break
+			}
+		}
+	}
 	now := time.Now().UTC()
 	intentID := fmt.Sprintf("pi_%d", now.UnixNano())
 	item := PaymentIntentRecord{
@@ -2463,6 +2478,7 @@ func (s *Service) CreatePaymentIntent(platformVAAccountID string, agentDID strin
 		Amount:            amt,
 		TargetType:        "merchant",
 		TargetReference:   merchant,
+		SelectedProvider:  selectedProvider,
 		Status:            "CREATED",
 		IdempotencyKey:    "",
 		CreatedAt:         now,
@@ -2478,7 +2494,7 @@ func (s *Service) CreatePaymentIntent(platformVAAccountID string, agentDID strin
 func (s *Service) ExecutePaymentIntent(intentID string, provider string) (PaymentExecutionRecord, error) {
 	id := strings.TrimSpace(intentID)
 	p := strings.ToLower(strings.TrimSpace(provider))
-	if id == "" || p == "" {
+	if id == "" {
 		return PaymentExecutionRecord{}, &APIError{Code: "PAY-010", Message: "invalid execute input"}
 	}
 	s.mu.Lock()
@@ -2487,12 +2503,31 @@ func (s *Service) ExecutePaymentIntent(intentID string, provider string) (Paymen
 	if !ok {
 		return PaymentExecutionRecord{}, &APIError{Code: "PAY-010", Message: "payment intent not found"}
 	}
+	if !strings.EqualFold(intent.Status, "CREATED") {
+		return PaymentExecutionRecord{}, &APIError{Code: "PAY-010", Message: "payment intent already executed"}
+	}
+	if p == "" {
+		p = strings.ToLower(strings.TrimSpace(intent.SelectedProvider))
+	}
+	if p == "" {
+		return PaymentExecutionRecord{}, &APIError{Code: "PAY-010", Message: "route provider missing"}
+	}
+	providerAccountID := ""
+	for _, b := range s.providerAccounts {
+		if b.PlatformVAAccount == intent.PlatformVAAccount && strings.EqualFold(b.Provider, p) && strings.EqualFold(b.Status, "ACTIVE") {
+			providerAccountID = b.ProviderAccount
+			break
+		}
+	}
+	if providerAccountID == "" {
+		return PaymentExecutionRecord{}, &APIError{Code: "PAY-010", Message: "provider sub account not bound"}
+	}
 	now := time.Now().UTC()
 	exec := PaymentExecutionRecord{
 		ID:                int64(len(s.paymentExecs[id]) + 1),
 		IntentID:          id,
 		Provider:          p,
-		ProviderAccountID: intent.SelectedProvider,
+		ProviderAccountID: providerAccountID,
 		ProviderTxnID:     fmt.Sprintf("%s_txn_%d", p, now.UnixNano()),
 		Status:            "SUCCESS",
 		RawResponseJSON:   "{}",

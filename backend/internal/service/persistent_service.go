@@ -468,6 +468,16 @@ func (s *PersistentService) createPaymentIntentInternal(input PaymentIntentCreat
 	if err != nil || amount <= 0 {
 		return PaymentIntent{}, &APIError{Code: "PAY-010", Message: "invalid amount"}
 	}
+	routeProvider := strings.ToLower(strings.TrimSpace(input.RouteProvider))
+	routeSubAccountID := strings.TrimSpace(input.RouteSubAccountID)
+	if routeProvider == "" || routeSubAccountID == "" {
+		autoProvider, autoSubAccountID, routeErr := s.resolveProviderRoute(va, currency, routeProvider)
+		if routeErr != nil {
+			return PaymentIntent{}, routeErr
+		}
+		routeProvider = autoProvider
+		routeSubAccountID = autoSubAccountID
+	}
 	intentID := fmt.Sprintf("pi_%d", time.Now().UnixNano())
 	_, err = s.store.DB.Exec(`
 INSERT INTO payment_intent (intent_id, platform_va_id, agent_did, merchant_id, currency, amount, status, route_provider, route_sub_account_id, idempotency_key, metadata_json, created_at, updated_at)
@@ -478,8 +488,8 @@ VALUES (?, ?, ?, ?, ?, ?, 'CREATED', ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(
 		merchant,
 		currency,
 		amount,
-		strings.ToLower(strings.TrimSpace(input.RouteProvider)),
-		strings.TrimSpace(input.RouteSubAccountID),
+		routeProvider,
+		routeSubAccountID,
 		strings.TrimSpace(input.IdempotencyKey),
 		defaultJSON(input.MetadataJSON),
 	)
@@ -517,6 +527,17 @@ func (s *PersistentService) executePaymentIntentInternal(input PaymentIntentExec
 	if err != nil {
 		return PaymentExecution{}, err
 	}
+	if !strings.EqualFold(strings.TrimSpace(intent.Status), "CREATED") {
+		return PaymentExecution{}, &APIError{Code: "PAY-010", Message: "intent is not executable"}
+	}
+	provider := strings.ToLower(strings.TrimSpace(intent.RouteProvider))
+	if provider == "" {
+		return PaymentExecution{}, &APIError{Code: "PAY-010", Message: "route provider missing"}
+	}
+	subAccountID := strings.TrimSpace(intent.RouteSubAccountID)
+	if subAccountID == "" {
+		return PaymentExecution{}, &APIError{Code: "PAY-010", Message: "route sub account missing"}
+	}
 	executionID := fmt.Sprintf("pe_%d", time.Now().UnixNano())
 	result := "SUCCESS"
 	errorCode := ""
@@ -533,8 +554,8 @@ INSERT INTO payment_execution (execution_id, intent_id, provider, sub_account_id
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())`,
 		executionID,
 		intent.IntentID,
-		intent.RouteProvider,
-		intent.RouteSubAccountID,
+		provider,
+		subAccountID,
 		intent.Amount,
 		intent.Currency,
 		result,
@@ -621,6 +642,44 @@ func deriveProviderTxnID(intent PaymentIntent, executionID string) string {
 	return fmt.Sprintf("%s_txn_%s", provider, strings.TrimPrefix(executionID, "pe_"))
 }
 
+func (s *PersistentService) pickRouteProviderForIntent(platformVAID string, currency string, preferred string) (string, string, error) {
+	va := strings.TrimSpace(platformVAID)
+	ccy := NormalizeCurrency(currency)
+	if va == "" || ccy == "" {
+		return "", "", &APIError{Code: "PAY-010", Message: "invalid route selection input"}
+	}
+	if p := strings.ToLower(strings.TrimSpace(preferred)); p != "" {
+		var subID string
+		err := s.store.DB.QueryRow(`
+SELECT sub_account_id
+FROM provider_sub_account
+WHERE platform_va_id = ? AND provider = ? AND currency = ? AND status = 'ACTIVE'
+ORDER BY updated_at DESC, created_at DESC
+LIMIT 1`, va, p, ccy).Scan(&subID)
+		if err == nil && strings.TrimSpace(subID) != "" {
+			return p, strings.TrimSpace(subID), nil
+		}
+		if err != nil && err != sql.ErrNoRows {
+			return "", "", err
+		}
+	}
+	var provider string
+	var subID string
+	err := s.store.DB.QueryRow(`
+SELECT provider, sub_account_id
+FROM provider_sub_account
+WHERE platform_va_id = ? AND currency = ? AND status = 'ACTIVE'
+ORDER BY updated_at DESC, created_at DESC
+LIMIT 1`, va, ccy).Scan(&provider, &subID)
+	if err == sql.ErrNoRows {
+		return "", "", &APIError{Code: "PAY-010", Message: "no active provider sub account for currency"}
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return strings.ToLower(strings.TrimSpace(provider)), strings.TrimSpace(subID), nil
+}
+
 func (s *PersistentService) BindProviderAccount(platformVAAccountID string, provider string, providerCustomerID string, providerAccountID string, currency string, metadata string) (ProviderAccountBinding, error) {
 	item, err := s.BindProviderSubAccount(ProviderSubAccountBindInput{
 		PlatformVAID:       platformVAAccountID,
@@ -672,16 +731,26 @@ func (s *PersistentService) ListProviderAccounts(platformVAAccountID string) []P
 }
 
 func (s *PersistentService) CreatePaymentIntent(platformVAAccountID string, agentDID string, merchantID string, currency string, amount string, metadata string) (PaymentIntentRecord, error) {
+	routeProvider := ""
+	routeSubAccountID := ""
+	items := s.ListProviderSubAccounts(platformVAAccountID)
+	for _, it := range items {
+		if strings.EqualFold(strings.TrimSpace(it.Status), "ACTIVE") && strings.EqualFold(NormalizeCurrency(it.Currency), NormalizeCurrency(currency)) {
+			routeProvider = strings.ToLower(strings.TrimSpace(it.Provider))
+			routeSubAccountID = strings.TrimSpace(it.SubAccountID)
+			break
+		}
+	}
 	item, err := s.createPaymentIntentInternal(PaymentIntentCreateInput{
-		PlatformVAID:    platformVAAccountID,
-		AgentDID:        agentDID,
-		MerchantID:      merchantID,
-		Currency:        currency,
-		Amount:          amount,
-		RouteProvider:   "",
-		RouteSubAccountID: "",
-		IdempotencyKey:  "",
-		MetadataJSON:    metadata,
+		PlatformVAID:      platformVAAccountID,
+		AgentDID:          agentDID,
+		MerchantID:        merchantID,
+		Currency:          currency,
+		Amount:            amount,
+		RouteProvider:     routeProvider,
+		RouteSubAccountID: routeSubAccountID,
+		IdempotencyKey:    "",
+		MetadataJSON:      metadata,
 	})
 	if err != nil {
 		return PaymentIntentRecord{}, err
@@ -706,7 +775,24 @@ func (s *PersistentService) CreatePaymentIntent(platformVAAccountID string, agen
 
 func (s *PersistentService) ExecutePaymentIntent(intentID string, provider string) (PaymentExecutionRecord, error) {
 	if p := strings.ToLower(strings.TrimSpace(provider)); p != "" {
-		_, _ = s.store.DB.Exec(`UPDATE payment_intent SET route_provider = ?, updated_at = UTC_TIMESTAMP() WHERE intent_id = ?`, p, strings.TrimSpace(intentID))
+		intent, err := s.getPaymentIntentInternal(strings.TrimSpace(intentID))
+		if err != nil {
+			return PaymentExecutionRecord{}, err
+		}
+		var subAccountID string
+		err = s.store.DB.QueryRow(`
+SELECT sub_account_id
+FROM provider_sub_account
+WHERE platform_va_id = ? AND provider = ? AND currency = ? AND status = 'ACTIVE'
+ORDER BY updated_at DESC
+LIMIT 1`, intent.PlatformVAID, p, intent.Currency).Scan(&subAccountID)
+		if err == sql.ErrNoRows {
+			return PaymentExecutionRecord{}, &APIError{Code: "PAY-010", Message: "active provider sub account not found"}
+		}
+		if err != nil {
+			return PaymentExecutionRecord{}, err
+		}
+		_, _ = s.store.DB.Exec(`UPDATE payment_intent SET route_provider = ?, route_sub_account_id = ?, updated_at = UTC_TIMESTAMP() WHERE intent_id = ?`, p, strings.TrimSpace(subAccountID), strings.TrimSpace(intentID))
 	}
 	item, err := s.executePaymentIntentInternal(PaymentIntentExecuteInput{
 		IntentID:        intentID,
@@ -729,6 +815,46 @@ func (s *PersistentService) ExecutePaymentIntent(intentID string, provider strin
 		CreatedAt:         item.CreatedAt,
 		UpdatedAt:         item.CreatedAt,
 	}, nil
+}
+
+func (s *PersistentService) resolveProviderRoute(platformVAID string, currency string, preferred string) (string, string, error) {
+	va := strings.TrimSpace(platformVAID)
+	ccy := NormalizeCurrency(currency)
+	pref := strings.ToLower(strings.TrimSpace(preferred))
+	if va == "" || ccy == "" {
+		return "", "", &APIError{Code: "PAY-010", Message: "invalid route input"}
+	}
+	if pref != "" {
+		var subAccountID string
+		err := s.store.DB.QueryRow(`
+SELECT sub_account_id
+FROM provider_sub_account
+WHERE platform_va_id = ? AND provider = ? AND currency = ? AND status = 'ACTIVE'
+ORDER BY updated_at DESC
+LIMIT 1`, va, pref, ccy).Scan(&subAccountID)
+		if err == sql.ErrNoRows {
+			return "", "", &APIError{Code: "PAY-010", Message: "active provider sub account not found"}
+		}
+		if err != nil {
+			return "", "", err
+		}
+		return pref, strings.TrimSpace(subAccountID), nil
+	}
+	var providerName string
+	var subAccountID string
+	err := s.store.DB.QueryRow(`
+SELECT provider, sub_account_id
+FROM provider_sub_account
+WHERE platform_va_id = ? AND currency = ? AND status = 'ACTIVE'
+ORDER BY updated_at DESC
+LIMIT 1`, va, ccy).Scan(&providerName, &subAccountID)
+	if err == sql.ErrNoRows {
+		return "", "", &APIError{Code: "PAY-010", Message: "no active provider route for intent"}
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return strings.ToLower(strings.TrimSpace(providerName)), strings.TrimSpace(subAccountID), nil
 }
 
 func (s *PersistentService) GetPaymentIntentStatus(intentID string) (map[string]any, error) {
