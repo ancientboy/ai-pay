@@ -31,6 +31,7 @@ const messages: Record<Locale, DictObject> = {
       no: "否",
       offline: "离线",
       ok: "正常",
+      suggestedAction: "建议操作",
     },
     nav: {
       dashboard: "仪表盘",
@@ -451,6 +452,8 @@ const messages: Record<Locale, DictObject> = {
       goTransactions: "去发起支付",
       productionHintTitle: "生产化提示",
       productionHintDesc: "当前部分链路仍为内账本/沙盒语义，正式上线前请完成真实通道清结算联调。",
+      openGuide: "打开新手向导",
+      dontShowAgain: "不再显示",
     },
     validation: {
       agentDidEmpty: "Agent DID 不能为空",
@@ -492,6 +495,7 @@ const messages: Record<Locale, DictObject> = {
       no: "No",
       offline: "Offline",
       ok: "OK",
+      suggestedAction: "Suggested action",
     },
     nav: {
       dashboard: "Dashboard",
@@ -890,6 +894,8 @@ const messages: Record<Locale, DictObject> = {
       productionHintTitle: "Production hint",
       productionHintDesc:
         "Some flows are still ledger/sandbox semantics. Complete real-channel settlement integration before production launch.",
+      openGuide: "Open guide",
+      dontShowAgain: "Don't show again",
     },
     validation: {
       agentDidEmpty: "Agent DID is required",

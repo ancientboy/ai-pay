@@ -3,11 +3,12 @@
 import { useMutation } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { DetailModal } from "@/components/detail-modal";
+import { EnvReadinessBanner } from "@/components/env-readiness-banner";
 import { useLocale } from "@/components/locale-provider";
 import { OnboardingBanner } from "@/components/onboarding-banner";
 import { useToast } from "@/components/toast-provider";
 import { pay, queryBalance, queryLedger, queryTransaction } from "@/lib/console-api";
-import { ApiClientError, toReadableError } from "@/lib/error-map";
+import { ApiClientError, errorActionHint, toReadableError } from "@/lib/error-map";
 import { formatStatus } from "@/lib/i18n";
 import { getValidationSchemas } from "@/lib/validation";
 
@@ -85,10 +86,11 @@ export default function TransactionsPage() {
 
   function setRecoverError(err: unknown, action: RecoverAction) {
     const message = toReadableError(err, locale);
+    const hint = err instanceof ApiClientError ? errorActionHint(err.code, locale) : undefined;
     setMessage(message);
     setErrorDetails(
       err instanceof ApiClientError
-        ? { message, code: err.code, requestId: err.requestId, action }
+        ? { message: hint ? `${message}\n${hint}` : message, code: err.code, requestId: err.requestId, action }
         : { message, action },
     );
     showToast("error", message);
@@ -222,6 +224,7 @@ export default function TransactionsPage() {
   return (
     <section className="space-y-6">
       <OnboardingBanner />
+      <EnvReadinessBanner />
       <div>
         <h2 className="text-xl font-semibold">{t("transactions.title")}</h2>
         <p className="mt-1 text-sm text-slate-400">
@@ -323,6 +326,7 @@ export default function TransactionsPage() {
           <div className="mb-3 rounded-md border border-rose-700/60 bg-rose-950/30 p-3 text-xs text-rose-100">
             <p>{t("common.errorCode")}: {errorDetails.code ?? t("common.notAvailable")}</p>
             <p>{t("common.requestId")}: {errorDetails.requestId ?? t("common.notAvailable")}</p>
+            <p className="mt-1 text-rose-200">{errorActionHint(errorDetails.code, locale) || ""}</p>
             <div className="mt-2 flex flex-wrap gap-2">
               <button
                 type="button"
@@ -338,6 +342,12 @@ export default function TransactionsPage() {
               >
                 {t("common.copyError")}
               </button>
+            {errorActionHint(errorDetails.code, locale) ? (
+                <p className="w-full text-[11px] text-rose-200">
+                  {locale === "en-US" ? "Suggestion: " : "建议操作："}
+                {errorActionHint(errorDetails.code, locale)}
+                </p>
+              ) : null}
             </div>
           </div>
         ) : null}
