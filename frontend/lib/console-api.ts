@@ -1139,10 +1139,33 @@ export function resetAdminUserPassword(input: { username: string; newPassword: s
   });
 }
 
-export function listAdminAuditLogs(limit = 50) {
-  return request<AdminAuditRecord[]>(
-    `/auth/admin/audit-logs?limit=${encodeURIComponent(String(limit))}`,
-  );
+export type ListAdminAuditLogsInput = {
+  limit?: number;
+  offset?: number;
+  actor?: string;
+  action?: AdminAuditRecord["action"] | "";
+  targetUsername?: string;
+};
+
+export function listAdminAuditLogs(input?: ListAdminAuditLogsInput) {
+  const query = new URLSearchParams();
+  if (input?.limit && Number.isFinite(input.limit) && input.limit > 0) {
+    query.set("limit", String(input.limit));
+  }
+  if (typeof input?.offset === "number" && Number.isFinite(input.offset) && input.offset >= 0) {
+    query.set("offset", String(input.offset));
+  }
+  if (input?.actor?.trim()) {
+    query.set("actor", input.actor.trim());
+  }
+  if (input?.action?.trim()) {
+    query.set("action", input.action.trim());
+  }
+  if (input?.targetUsername?.trim()) {
+    query.set("targetUsername", input.targetUsername.trim());
+  }
+  const suffix = query.toString();
+  return request<AdminAuditRecord[]>(`/auth/admin/audit-logs${suffix ? `?${suffix}` : ""}`);
 }
 
 export type BridgeCustomerStatus = {

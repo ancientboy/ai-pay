@@ -16,6 +16,14 @@ export type AdminAuditLog = {
   createdAt: string;
 };
 
+export type AdminAuditQuery = {
+  actor?: string;
+  action?: AdminAuditAction | "";
+  targetUsername?: string;
+  limit?: number;
+  offset?: number;
+};
+
 type AdminAuditStore = {
   logs: AdminAuditLog[];
 };
@@ -75,8 +83,35 @@ export async function appendAdminAuditLog(input: {
   return log;
 }
 
-export async function listAdminAuditLogs(limit = 50) {
-  const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.min(limit, 200) : 50;
+export async function listAdminAuditLogs(input?: AdminAuditQuery) {
+  const safeLimit =
+    typeof input?.limit === "number" && Number.isFinite(input.limit) && input.limit > 0
+      ? Math.min(input.limit, 200)
+      : 50;
+  const safeOffset =
+    typeof input?.offset === "number" && Number.isFinite(input.offset) && input.offset >= 0
+      ? Math.floor(input.offset)
+      : 0;
+  const actor = (input?.actor ?? "").trim().toLowerCase();
+  const action = (input?.action ?? "").trim().toLowerCase();
+  const targetUsername = (input?.targetUsername ?? "").trim().toLowerCase();
   const store = await readStore();
-  return store.logs.slice(0, safeLimit);
+  const filtered = store.logs.filter((log) => {
+    if (actor && !log.actor.includes(actor)) {
+      return false;
+    }
+    if (action && log.action !== action) {
+      return false;
+    }
+    if (targetUsername && !log.targetUsername.includes(targetUsername)) {
+      return false;
+    }
+    return true;
+  });
+  return {
+    items: filtered.slice(safeOffset, safeOffset + safeLimit),
+    total: filtered.length,
+    limit: safeLimit,
+    offset: safeOffset,
+  };
 }

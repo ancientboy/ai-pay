@@ -41,6 +41,13 @@ export default function SettingsPage() {
   const [resettingPassword, setResettingPassword] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AdminUserAuditLog[]>([]);
   const [loadingAuditLogs, setLoadingAuditLogs] = useState(false);
+  const [auditActorFilter, setAuditActorFilter] = useState("");
+  const [auditTargetFilter, setAuditTargetFilter] = useState("");
+  const [auditActionFilter, setAuditActionFilter] = useState<
+    "" | AdminUserAuditLog["action"]
+  >("");
+  const [auditOffset, setAuditOffset] = useState(0);
+  const auditPageSize = 10;
 
   async function refreshUsers() {
     setLoadingUsers(true);
@@ -57,7 +64,19 @@ export default function SettingsPage() {
   async function refreshAuditLogs() {
     setLoadingAuditLogs(true);
     try {
-      const items = await listAdminAuditLogs(20);
+      const actionFilter = auditActionFilter.trim() as
+        | ""
+        | "admin.user.create"
+        | "admin.user.enable"
+        | "admin.user.disable"
+        | "admin.user.reset_password";
+      const items = await listAdminAuditLogs({
+        limit: auditPageSize,
+        offset: auditOffset,
+        actor: auditActorFilter.trim(),
+        targetUsername: auditTargetFilter.trim(),
+        action: actionFilter,
+      });
       setAuditLogs(items);
     } catch (err) {
       showToast("error", err instanceof Error ? err.message : "load audit logs failed");
@@ -297,14 +316,49 @@ export default function SettingsPage() {
           <div className="mt-4 rounded border border-slate-800 p-3">
             <div className="flex items-center justify-between">
               <p className="text-xs text-slate-300">User admin audit logs</p>
+            </div>
+            <div className="mt-2 grid gap-2 md:grid-cols-4">
+              <input
+                value={auditActorFilter}
+                onChange={(e) => setAuditActorFilter(e.target.value)}
+                className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200"
+                placeholder="filter actor"
+              />
+              <select
+                value={auditActionFilter}
+                onChange={(e) =>
+                  setAuditActionFilter(
+                    e.target.value as
+                      | ""
+                      | "admin.user.create"
+                      | "admin.user.enable"
+                      | "admin.user.disable"
+                      | "admin.user.reset_password",
+                  )
+                }
+                className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200"
+              >
+                <option value="">all actions</option>
+                <option value="admin.user.create">admin.user.create</option>
+                <option value="admin.user.enable">admin.user.enable</option>
+                <option value="admin.user.disable">admin.user.disable</option>
+                <option value="admin.user.reset_password">admin.user.reset_password</option>
+              </select>
+              <input
+                value={auditTargetFilter}
+                onChange={(e) => setAuditTargetFilter(e.target.value)}
+                className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200"
+                placeholder="filter target"
+              />
               <button
                 type="button"
                 onClick={() => {
+                  setAuditOffset(0);
                   refreshAuditLogs();
                 }}
                 className="rounded border border-slate-700 px-2 py-1 text-[11px] text-slate-200"
               >
-                {loadingAuditLogs ? "loading..." : "refresh logs"}
+                {loadingAuditLogs ? "loading..." : "apply filters"}
               </button>
             </div>
             <ul className="mt-2 space-y-2 text-xs text-slate-300">
@@ -315,6 +369,41 @@ export default function SettingsPage() {
               ))}
               {auditLogs.length === 0 ? <li className="text-slate-500">no audit logs</li> : null}
             </ul>
+            <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400">
+              <p>offset={auditOffset}</p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={auditOffset <= 0 || loadingAuditLogs}
+                  onClick={() => {
+                    const next = Math.max(0, auditOffset - auditPageSize);
+                    setAuditOffset(next);
+                  }}
+                  className="rounded border border-slate-700 px-2 py-1 disabled:opacity-50"
+                >
+                  prev
+                </button>
+                <button
+                  type="button"
+                  disabled={loadingAuditLogs || auditLogs.length < auditPageSize}
+                  onClick={() => {
+                    setAuditOffset(auditOffset + auditPageSize);
+                  }}
+                  className="rounded border border-slate-700 px-2 py-1 disabled:opacity-50"
+                >
+                  next
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    refreshAuditLogs();
+                  }}
+                  className="rounded border border-slate-700 px-2 py-1"
+                >
+                  refresh
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
