@@ -8,11 +8,11 @@ import {
   getSavedApiBaseURL,
   saveApiBaseURL,
   listAdminUsers,
-  listAdminUserAuditLogs,
+  listAdminAuditLogs,
   updateAdminUserStatus,
   resetAdminUserPassword,
   type AdminUserRecord,
-  type AdminUserAuditLog,
+  type AdminAuditRecord as AdminUserAuditLog,
 } from "@/lib/console-api";
 
 export default function SettingsPage() {
@@ -57,7 +57,7 @@ export default function SettingsPage() {
   async function refreshAuditLogs() {
     setLoadingAuditLogs(true);
     try {
-      const items = await listAdminUserAuditLogs(20);
+      const items = await listAdminAuditLogs(20);
       setAuditLogs(items);
     } catch (err) {
       showToast("error", err instanceof Error ? err.message : "load audit logs failed");
