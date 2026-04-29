@@ -9,6 +9,7 @@ import {
   saveApiBaseURL,
   listAdminUsers,
   listAdminAuditLogs,
+  buildAdminAuditExportUrl,
   updateAdminUserStatus,
   resetAdminUserPassword,
   type AdminUserRecord,
@@ -41,6 +42,7 @@ export default function SettingsPage() {
   const [resettingPassword, setResettingPassword] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AdminUserAuditLog[]>([]);
   const [loadingAuditLogs, setLoadingAuditLogs] = useState(false);
+  const [exportingAuditLogs, setExportingAuditLogs] = useState(false);
   const [auditActorFilter, setAuditActorFilter] = useState("");
   const [auditTargetFilter, setAuditTargetFilter] = useState("");
   const [auditActionFilter, setAuditActionFilter] = useState<
@@ -82,6 +84,28 @@ export default function SettingsPage() {
       showToast("error", err instanceof Error ? err.message : "load audit logs failed");
     } finally {
       setLoadingAuditLogs(false);
+    }
+  }
+
+  async function handleExportAuditCsv() {
+    setExportingAuditLogs(true);
+    try {
+      const url = buildAdminAuditExportUrl({
+        actor: auditActorFilter.trim(),
+        action: auditActionFilter || undefined,
+        targetUsername: auditTargetFilter.trim(),
+      });
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `admin-audit-logs-${Date.now()}.csv`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      showToast("success", "csv exported");
+    } catch (err) {
+      showToast("error", err instanceof Error ? err.message : "export csv failed");
+    } finally {
+      setExportingAuditLogs(false);
     }
   }
 
@@ -392,6 +416,16 @@ export default function SettingsPage() {
                   className="rounded border border-slate-700 px-2 py-1 disabled:opacity-50"
                 >
                   next
+                </button>
+                <button
+                  type="button"
+                  disabled={exportingAuditLogs}
+                  onClick={() => {
+                    handleExportAuditCsv();
+                  }}
+                  className="rounded border border-slate-700 px-2 py-1 disabled:opacity-50"
+                >
+                  {exportingAuditLogs ? "exporting..." : "export csv"}
                 </button>
                 <button
                   type="button"

@@ -1168,6 +1168,25 @@ export function listAdminAuditLogs(input?: ListAdminAuditLogsInput) {
   return request<AdminAuditRecord[]>(`/auth/admin/audit-logs${suffix ? `?${suffix}` : ""}`);
 }
 
+export function buildAdminAuditExportUrl(input?: Omit<ListAdminAuditLogsInput, "limit" | "offset">) {
+  const query = new URLSearchParams();
+  if (input?.actor?.trim()) {
+    query.set("actor", input.actor.trim());
+  }
+  if (input?.action?.trim()) {
+    query.set("action", input.action.trim());
+  }
+  if (input?.targetUsername?.trim()) {
+    query.set("targetUsername", input.targetUsername.trim());
+  }
+  const runtimeBaseURL = getRuntimeBaseURL();
+  const path = `/api/auth/admin/audit-logs/export${query.toString() ? `?${query.toString()}` : ""}`;
+  if (!runtimeBaseURL) {
+    return path;
+  }
+  return `${runtimeBaseURL.replace(/\/+$/, "")}${path}`;
+}
+
 export type BridgeCustomerStatus = {
   agentDid: string;
   bridgeCustomerId: string;
