@@ -407,6 +407,8 @@ export type AuthSession = {
   createdAt: string;
 };
 
+export type AuthSessionRecord = AuthSession;
+
 export type PaymentSignRequestRecord = {
   signId: string;
   agentDid: string;
@@ -433,6 +435,51 @@ export type UserSubscription = {
   startedAt: string;
   currentPeriodEnd: string;
   autoRenew: boolean;
+  updatedAt: string;
+};
+
+export type ProviderAccountBinding = {
+  id?: number;
+  platformVaAccountId: string;
+  provider: string;
+  providerCustomerId: string;
+  providerAccountId: string;
+  assetType?: string;
+  currency: "GUSD" | "USDC" | "USDT" | string;
+  status: string;
+  metadataJson?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PaymentIntentRecord = {
+  intentId: string;
+  platformVaAccountId: string;
+  agentDid: string;
+  scenario: string;
+  currency: "GUSD" | "USDC" | "USDT" | string;
+  amount: number;
+  targetType: string;
+  targetReference: string;
+  preferredProvider?: string;
+  selectedProvider?: string;
+  status: string;
+  idempotencyKey?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PaymentIntentExecutionRecord = {
+  id?: number;
+  intentId: string;
+  provider: string;
+  providerAccountId?: string;
+  providerTxnId?: string;
+  status: string;
+  failureCode?: string;
+  failureReason?: string;
+  rawResponseJson?: string;
+  createdAt: string;
   updatedAt: string;
 };
 
@@ -482,7 +529,7 @@ export function listMyInvoices(limit = 20) {
 }
 
 export function adminListSubscriptions(limit = 50, offset = 0) {
-  return request<UserSubscription[]>(
+  return request<SubscriptionSummary[]>(
     `/admin/subscriptions?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(
       String(offset),
     )}`,
@@ -498,6 +545,98 @@ export function adminAdjustSubscription(input: {
   return request<UserSubscription>("/admin/subscriptions/adjust", {
     method: "POST",
     body: JSON.stringify(input),
+  });
+}
+
+export function bindProviderAccount(input: {
+  platformVaAccountId: string;
+  provider: string;
+  providerCustomerId?: string;
+  providerAccountId: string;
+  currency: "GUSD" | "USDC" | "USDT";
+  metadata?: string;
+}) {
+  return request<ProviderAccountBinding>("/orchestrate/provider-account/bind", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function listProviderAccounts(platformVaAccountId: string) {
+  return request<ProviderAccountBinding[]>(
+    `/orchestrate/provider-account/list?platformVaAccountId=${encodeURIComponent(platformVaAccountId)}`,
+  );
+}
+
+export function createPaymentIntent(input: {
+  platformVaAccountId: string;
+  agentDid: string;
+  merchantId: string;
+  currency: "GUSD" | "USDC" | "USDT";
+  amount: string;
+  metadata?: string;
+}) {
+  return request<PaymentIntentRecord>("/orchestrate/payment-intent/create", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function executePaymentIntent(input: { intentId: string; provider?: string }) {
+  return request<PaymentIntentExecutionRecord>("/orchestrate/payment-intent/execute", {
+    method: "POST",
+    body: JSON.stringify({ intentId: input.intentId, provider: input.provider ?? "" }),
+  });
+}
+
+export function getPaymentIntentStatus(intentId: string) {
+  return request<{ intent: PaymentIntentRecord; executions: PaymentIntentExecutionRecord[] }>(
+    `/orchestrate/payment-intent/status?intentId=${encodeURIComponent(intentId)}`,
+  );
+}
+
+export type SubscriptionPlanID = "starter" | "growth" | "enterprise";
+
+export type SubscriptionSummary = {
+  userId: string;
+  plan: SubscriptionPlanID | string;
+  status: string;
+  nextRenewalAt: string;
+};
+
+export function getBillingPlans() {
+  return listSubscriptionPlans().then((items) =>
+    items.map((item) => ({
+      planId: item.code,
+      name: item.name,
+      priceMonthly: item.monthlyPrice,
+    })),
+  );
+}
+
+export function getCurrentSubscription() {
+  return getMySubscription().then((sub) => ({
+    userId: sub.userId,
+    planId: sub.planCode,
+    status: sub.status,
+    nextBillingAt: sub.currentPeriodEnd,
+    updatedAt: sub.updatedAt,
+  }));
+}
+
+export function renewSubscription(planId: string, months: number) {
+  return updateMySubscription({ planCode: planId, autoRenew: months > 0 });
+}
+
+export function adminAdjustSubscriptionLegacy(input: {
+  userId: string;
+  targetPlan: SubscriptionPlanID;
+}) {
+  return adminAdjustSubscription({
+    userId: input.userId,
+    planCode: input.targetPlan,
+    autoRenew: true,
+    status: "active",
   });
 }
 
@@ -848,6 +987,7 @@ export function submitPaymentSign(input: {
 export const listDeveloperApiKeys = listApiKeys;
 export const createDeveloperApiKey = createApiKey;
 export const listDeveloperWebhooks = listWebhooks;
+export const adminAdjustSubscriptionCompat = adminAdjustSubscriptionLegacy;
 export function createDeveloperWebhook(input: { url: string; event: string }) {
   return createWebhook(input.url, input.event);
 }
@@ -959,4 +1099,96 @@ export function getBridgeCustomerKycLink(input: {
     query.set("redirectUri", input.redirectUri.trim());
   }
   return request<{ url: string }>(`/bridge/customer/kyc-link?${query.toString()}`);
+}
+
+export type OrchestrateProviderAccount = {
+  id: number;
+  platformVaAccountId: string;
+  provider: string;
+  providerCustomerId: string;
+  providerAccountId: string;
+  assetType: string;
+  currency: string;
+  status: string;
+  metadataJson?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type OrchestratePaymentIntent = {
+  intentId: string;
+  platformVaAccountId: string;
+  agentDid: string;
+  scenario: string;
+  currency: string;
+  amount: number;
+  targetType: string;
+  targetReference: string;
+  preferredProvider?: string;
+  selectedProvider?: string;
+  status: string;
+  idempotencyKey?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type OrchestratePaymentExecution = {
+  id: number;
+  intentId: string;
+  provider: string;
+  providerAccountId?: string;
+  providerTxnId?: string;
+  status: string;
+  failureCode?: string;
+  failureReason?: string;
+  rawResponseJson?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function bindOrchestrateProviderAccount(input: {
+  platformVaAccountId: string;
+  provider: string;
+  providerCustomerId?: string;
+  providerAccountId: string;
+  currency: "GUSD" | "USDC" | "USDT";
+  metadata?: string;
+}) {
+  return request<OrchestrateProviderAccount>("/orchestrate/provider-account/bind", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function listOrchestrateProviderAccounts(platformVaAccountId: string) {
+  return request<OrchestrateProviderAccount[]>(
+    `/orchestrate/provider-account/list?platformVaAccountId=${encodeURIComponent(platformVaAccountId)}`,
+  );
+}
+
+export function createOrchestratePaymentIntent(input: {
+  platformVaAccountId: string;
+  agentDid: string;
+  merchantId: string;
+  currency: "GUSD" | "USDC" | "USDT";
+  amount: string;
+  metadata?: string;
+}) {
+  return request<OrchestratePaymentIntent>("/orchestrate/payment-intent/create", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function executeOrchestratePaymentIntent(input: { intentId: string; provider: string }) {
+  return request<OrchestratePaymentExecution>("/orchestrate/payment-intent/execute", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function queryOrchestratePaymentIntentStatus(intentId: string) {
+  return request<{ intent: OrchestratePaymentIntent; executions: OrchestratePaymentExecution[] }>(
+    `/orchestrate/payment-intent/status?intentId=${encodeURIComponent(intentId)}`,
+  );
 }

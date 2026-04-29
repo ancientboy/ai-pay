@@ -24,6 +24,7 @@ export function ConsoleShell({
     { href: "/console", label: t("nav.home") },
     { href: "/dashboard", label: t("nav.dashboard") },
     { href: "/agents", label: t("nav.agents") },
+    { href: "/orchestration", label: t("nav.orchestration") },
     { href: "/kyc", label: t("nav.kyc") },
     { href: "/billing", label: t("nav.billing") },
     { href: "/authorize", label: t("nav.authorize") },

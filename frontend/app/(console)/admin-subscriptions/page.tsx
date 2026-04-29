@@ -21,12 +21,16 @@ export default function AdminSubscriptionsPage() {
 
   const subscriptionsQuery = useQuery({
     queryKey: ["admin-subscriptions"],
-    queryFn: adminListSubscriptions,
+    queryFn: () => adminListSubscriptions(),
   });
 
   const adjustMutation = useMutation({
     mutationFn: (input: { userId: string; targetPlan: SubscriptionPlanID }) =>
-      adminAdjustSubscription(input),
+      adminAdjustSubscription({
+        userId: input.userId,
+        planCode: input.targetPlan,
+        autoRenew: true,
+      }),
     onSuccess: () => {
       showToast("success", t("billing.adminAdjustSuccess"));
       setTargetUserID("");
