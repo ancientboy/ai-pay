@@ -1,0 +1,33 @@
+CREATE TABLE IF NOT EXISTS stablecoin_config (
+  currency VARCHAR(8) PRIMARY KEY,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  chain_id VARCHAR(64) NOT NULL DEFAULT '',
+  rpc_url VARCHAR(255) NOT NULL DEFAULT '',
+  token_contract VARCHAR(128) NOT NULL DEFAULT '',
+  decimals INT NOT NULL DEFAULT 6,
+  hot_wallet VARCHAR(128) NOT NULL DEFAULT '',
+  min_confirmations INT NOT NULL DEFAULT 12,
+  risk_threshold DECIMAL(24, 8) NOT NULL DEFAULT 10000,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+INSERT IGNORE INTO stablecoin_config(currency, enabled, chain_id, decimals, min_confirmations, risk_threshold) VALUES
+('GUSD', TRUE, 'eth-mainnet', 2, 6, 10000),
+('USDC', TRUE, 'eth-mainnet', 6, 12, 10000),
+('USDT', TRUE, 'eth-mainnet', 6, 12, 10000);
+
+ALTER TABLE risk_config
+  ADD COLUMN IF NOT EXISTS single_amount_limit_gusd DECIMAL(24, 8) NOT NULL DEFAULT 1000,
+  ADD COLUMN IF NOT EXISTS single_amount_limit_usdc DECIMAL(24, 8) NOT NULL DEFAULT 1000,
+  ADD COLUMN IF NOT EXISTS single_amount_limit_usdt DECIMAL(24, 8) NOT NULL DEFAULT 1000;
+
+ALTER TABLE pay_order
+  ADD COLUMN IF NOT EXISTS currency VARCHAR(8) NOT NULL DEFAULT 'GUSD',
+  ADD COLUMN IF NOT EXISTS amount_minor BIGINT NOT NULL DEFAULT 0;
+
+ALTER TABLE fund_recharge_order
+  ADD COLUMN IF NOT EXISTS currency VARCHAR(8) NOT NULL DEFAULT 'GUSD',
+  ADD COLUMN IF NOT EXISTS amount_minor BIGINT NOT NULL DEFAULT 0;
+
+ALTER TABLE asset_va_account
+  ADD COLUMN IF NOT EXISTS currency VARCHAR(8) NOT NULL DEFAULT 'GUSD';

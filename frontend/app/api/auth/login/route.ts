@@ -4,9 +4,8 @@ import {
   SESSION_COOKIE_NAME,
   sessionCookieOptions,
 } from "@/lib/session";
+import { verifyStoredUser } from "@/lib/user-store";
 
-const ADMIN_USERNAME = process.env.AI_PAY_ADMIN_USERNAME ?? "admin";
-const ADMIN_PASSWORD = process.env.AI_PAY_ADMIN_PASSWORD ?? "admin123";
 const DEFAULT_ROLE = process.env.AI_PAY_DEFAULT_ROLE ?? "operator";
 
 const loginAttempts = new Map<
@@ -83,14 +82,16 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (username !== ADMIN_USERNAME || password !== ADMIN_PASSWORD) {
+  const user = await verifyStoredUser(username, password);
+  if (!user) {
     return NextResponse.json(
       { code: "AUTH-002", message: authMessage(request, "AUTH-002") },
       { status: 401 },
     );
   }
 
-  const token = await createSessionToken(username, DEFAULT_ROLE);
+  const role = user.role?.trim() || DEFAULT_ROLE;
+  const token = await createSessionToken(user.username, role);
   loginAttempts.delete(ip);
   const response = NextResponse.json({ code: "0", message: "ok" });
   response.cookies.set(SESSION_COOKIE_NAME, token, sessionCookieOptions());

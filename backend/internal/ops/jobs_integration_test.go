@@ -39,7 +39,7 @@ func TestRunDailyReconcileIntegration(t *testing.T) {
 	did := fmt.Sprintf("did:gusd:agent:it_reconcile_%d", time.Now().UnixNano())
 	_ = svc.RegisterAgent(did)
 	acc := svc.CreateAccount(did)
-	if err := svc.Recharge(acc.VAAccountID, "5", fmt.Sprintf("rch-it-reconcile-%d", time.Now().UnixNano())); err != nil {
+	if err := svc.Recharge(acc.VAAccountID, "GUSD", "5", fmt.Sprintf("rch-it-reconcile-%d", time.Now().UnixNano())); err != nil {
 		t.Fatalf("recharge failed: %v", err)
 	}
 
