@@ -82,6 +82,17 @@ export function saveApiBaseURL(url: string) {
   window.localStorage.setItem(STORAGE_API_BASE_URL_KEY, url.trim());
 }
 
+export function adminCreateUser(input: {
+  username: string;
+  password: string;
+  role?: string;
+}) {
+  return request<{ username: string; role: string }>("/auth/admin/create-user", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export function registerAgent(agentDid: string, didPubKey?: string) {
   return request<{ DID: string }>("/agent/did/register", {
     method: "POST",
@@ -137,7 +148,7 @@ export function activateAuthorizeRule(agentDid: string) {
   });
 }
 
-export function recharge(input: { vaAccountId?: string; vaCardNo?: string; amount: string }) {
+export function recharge(input: { vaAccountId?: string; vaCardNo?: string; currency: "GUSD" | "USDC" | "USDT"; amount: string }) {
   return request("/fund/recharge", {
     method: "POST",
     body: JSON.stringify(input),
@@ -148,6 +159,7 @@ export function recharge(input: { vaAccountId?: string; vaCardNo?: string; amoun
 export function pay(input: {
   payerDid: string;
   merchantId: string;
+  currency: "GUSD" | "USDC" | "USDT";
   amount: string;
 }) {
   const idempotencyKey = `idem-ui-${Date.now()}`;
@@ -160,6 +172,7 @@ export function pay(input: {
         buildPaySignPayload(
           input.payerDid,
           input.merchantId,
+          input.currency,
           input.amount,
           idempotencyKey,
           signTimestamp,
@@ -189,13 +202,13 @@ export function queryTransaction(transactionId: string) {
   }>(`/payment/status/query?transactionId=${encodeURIComponent(transactionId)}`);
 }
 
-export function queryBalance(accountId: string) {
-  return request<{ balance: number }>(
-    `/account/balance/query?accountId=${encodeURIComponent(accountId)}`,
+export function queryBalance(accountId: string, currency: "GUSD" | "USDC" | "USDT" = "GUSD") {
+  return request<{ balance: number; currency: string }>(
+    `/account/balance/query?accountId=${encodeURIComponent(accountId)}&currency=${encodeURIComponent(currency)}`,
   );
 }
 
-export function queryLedger(accountId: string) {
+export function queryLedger(accountId: string, currency: "GUSD" | "USDC" | "USDT" = "GUSD") {
   return request<
     Array<{
       ID: string;
@@ -205,7 +218,7 @@ export function queryLedger(accountId: string) {
       Status: string;
       CreatedAt: string;
     }>
-  >(`/account/ledger/query?accountId=${encodeURIComponent(accountId)}`);
+  >(`/account/ledger/query?accountId=${encodeURIComponent(accountId)}&currency=${encodeURIComponent(currency)}`);
 }
 
 export function queryInterest(accountId: string) {
@@ -373,6 +386,7 @@ export type DeveloperWebhookDeliveryStats = {
 };
 
 export type RiskConfig = {
+  provider: string;
   enabled: boolean;
   singleAmountLimit: number;
   blockedMerchants: string[];
@@ -396,8 +410,245 @@ export type AuditLog = {
   createdAt: string;
 };
 
+export type AuthSession = {
+  sessionId: string;
+  agentDid: string;
+  status: string;
+  expiresAt: string;
+  createdAt: string;
+};
+
+export type AuthSessionRecord = AuthSession;
+
+export type PaymentSignRequestRecord = {
+  signId: string;
+  agentDid: string;
+  merchantId: string;
+  amount: string;
+  sessionId: string;
+  status: string;
+  expiresAt: string;
+  createdAt: string;
+};
+
+export type SubscriptionPlan = {
+  code: string;
+  name: string;
+  monthlyPrice: number;
+  currency: string;
+  description: string;
+};
+
+export type UserSubscription = {
+  userId: string;
+  planCode: string;
+  status: string;
+  startedAt: string;
+  currentPeriodEnd: string;
+  autoRenew: boolean;
+  updatedAt: string;
+};
+
+export type ProviderAccountBinding = {
+  id?: number;
+  platformVaAccountId: string;
+  provider: string;
+  providerCustomerId: string;
+  providerAccountId: string;
+  assetType?: string;
+  currency: "GUSD" | "USDC" | "USDT" | string;
+  status: string;
+  metadataJson?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PaymentIntentRecord = {
+  intentId: string;
+  platformVaAccountId: string;
+  agentDid: string;
+  scenario: string;
+  currency: "GUSD" | "USDC" | "USDT" | string;
+  amount: number;
+  targetType: string;
+  targetReference: string;
+  preferredProvider?: string;
+  selectedProvider?: string;
+  status: string;
+  idempotencyKey?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PaymentIntentExecutionRecord = {
+  id?: number;
+  intentId: string;
+  provider: string;
+  providerAccountId?: string;
+  providerTxnId?: string;
+  status: string;
+  failureCode?: string;
+  failureReason?: string;
+  rawResponseJson?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type BillingInvoice = {
+  invoiceId: string;
+  userId: string;
+  planCode: string;
+  amount: number;
+  currency: string;
+  status: string;
+  dueAt: string;
+  paidAt?: string;
+  createdAt: string;
+};
+
 export function listApiKeys() {
   return request<DeveloperAPIKey[]>("/developer/api-keys");
+}
+
+export function listSubscriptionPlans() {
+  return request<SubscriptionPlan[]>("/billing/plans");
+}
+
+export function getMySubscription() {
+  return request<UserSubscription>("/billing/subscription/current");
+}
+
+export function updateMySubscription(input: { planCode: string; autoRenew: boolean }) {
+  return request<UserSubscription>("/billing/subscription/update", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function renewMySubscription() {
+  return request<UserSubscription>("/billing/subscription/renew", {
+    method: "POST",
+    body: JSON.stringify({}),
+    idempotencyKey: `billing-renew-ui-${Date.now()}`,
+  });
+}
+
+export function listMyInvoices(limit = 20) {
+  return request<BillingInvoice[]>(
+    `/billing/invoices?limit=${encodeURIComponent(String(limit))}`,
+  );
+}
+
+export function adminListSubscriptions(limit = 50, offset = 0) {
+  return request<SubscriptionSummary[]>(
+    `/admin/subscriptions?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(
+      String(offset),
+    )}`,
+  );
+}
+
+export function adminAdjustSubscription(input: {
+  userId: string;
+  planCode: string;
+  autoRenew: boolean;
+  status?: string;
+}) {
+  return request<UserSubscription>("/admin/subscriptions/adjust", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function bindProviderAccount(input: {
+  platformVaAccountId: string;
+  provider: string;
+  providerCustomerId?: string;
+  providerAccountId: string;
+  currency: "GUSD" | "USDC" | "USDT";
+  metadata?: string;
+}) {
+  return request<ProviderAccountBinding>("/orchestrate/provider-account/bind", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function listProviderAccounts(platformVaAccountId: string) {
+  return request<ProviderAccountBinding[]>(
+    `/orchestrate/provider-account/list?platformVaAccountId=${encodeURIComponent(platformVaAccountId)}`,
+  );
+}
+
+export function createPaymentIntent(input: {
+  platformVaAccountId: string;
+  agentDid: string;
+  merchantId: string;
+  currency: "GUSD" | "USDC" | "USDT";
+  amount: string;
+  metadata?: string;
+}) {
+  return request<PaymentIntentRecord>("/orchestrate/payment-intent/create", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function executePaymentIntent(input: { intentId: string; provider?: string }) {
+  return request<PaymentIntentExecutionRecord>("/orchestrate/payment-intent/execute", {
+    method: "POST",
+    body: JSON.stringify({ intentId: input.intentId, provider: input.provider ?? "" }),
+  });
+}
+
+export function getPaymentIntentStatus(intentId: string) {
+  return request<{ intent: PaymentIntentRecord; executions: PaymentIntentExecutionRecord[] }>(
+    `/orchestrate/payment-intent/status?intentId=${encodeURIComponent(intentId)}`,
+  );
+}
+
+export type SubscriptionPlanID = "starter" | "growth" | "enterprise";
+
+export type SubscriptionSummary = {
+  userId: string;
+  plan: SubscriptionPlanID | string;
+  status: string;
+  nextRenewalAt: string;
+};
+
+export function getBillingPlans() {
+  return listSubscriptionPlans().then((items) =>
+    items.map((item) => ({
+      planId: item.code,
+      name: item.name,
+      priceMonthly: item.monthlyPrice,
+    })),
+  );
+}
+
+export function getCurrentSubscription() {
+  return getMySubscription().then((sub) => ({
+    userId: sub.userId,
+    planId: sub.planCode,
+    status: sub.status,
+    nextBillingAt: sub.currentPeriodEnd,
+    updatedAt: sub.updatedAt,
+  }));
+}
+
+export function renewSubscription(planId: string, months: number) {
+  return updateMySubscription({ planCode: planId, autoRenew: months > 0 });
+}
+
+export function adminAdjustSubscriptionLegacy(input: {
+  userId: string;
+  targetPlan: SubscriptionPlanID;
+}) {
+  return adminAdjustSubscription({
+    userId: input.userId,
+    planCode: input.targetPlan,
+    autoRenew: true,
+    status: "active",
+  });
 }
 
 export function createApiKey(name: string) {
@@ -512,12 +763,497 @@ export function listAuditLogs(input?: { action?: string; resource?: string; limi
   return request<AuditLog[]>(`/developer/audit-logs${suffix ? `?${suffix}` : ""}`);
 }
 
+function buildWalletBindSignPayload(
+  agentDid: string,
+  walletAddress: string,
+  idempotencyKey: string,
+  signTimestamp: string,
+) {
+  return `wallet_bind|${agentDid}|${walletAddress}|${idempotencyKey}|${signTimestamp}`;
+}
+
+function buildWalletUnbindSignPayload(
+  agentDid: string,
+  idempotencyKey: string,
+  signTimestamp: string,
+) {
+  return `wallet_unbind|${agentDid}|${idempotencyKey}|${signTimestamp}`;
+}
+
+function buildSessionCreateSignPayload(
+  agentDid: string,
+  idempotencyKey: string,
+  signTimestamp: string,
+) {
+  return `session_create|${agentDid}|${idempotencyKey}|${signTimestamp}`;
+}
+
+function buildSessionRevokeSignPayload(
+  agentDid: string,
+  sessionId: string,
+  idempotencyKey: string,
+  signTimestamp: string,
+) {
+  return `session_revoke|${agentDid}|${sessionId}|${idempotencyKey}|${signTimestamp}`;
+}
+
+function buildSignRequestPayload(
+  agentDid: string,
+  merchantId: string,
+  amount: string,
+  sessionId: string,
+  idempotencyKey: string,
+  signTimestamp: string,
+) {
+  return `sign_request|${agentDid}|${merchantId}|${amount}|${sessionId}|${idempotencyKey}|${signTimestamp}`;
+}
+
+export function bindWallet(input: { agentDid: string; walletAddress: string; label?: string }) {
+  const idempotencyKey = `wallet-bind-ui-${Date.now()}`;
+  const signTimestamp = new Date().toISOString();
+  return (async () => {
+    let signature = "sig";
+    try {
+      signature = await signAgentPayload(
+        input.agentDid,
+        buildWalletBindSignPayload(input.agentDid, input.walletAddress, idempotencyKey, signTimestamp),
+      );
+    } catch {
+      // Compatibility fallback for legacy agents without DID key pair.
+    }
+    return request("/wallet/bind", {
+      method: "POST",
+      body: JSON.stringify({
+        agentDid: input.agentDid,
+        walletAddress: input.walletAddress,
+        label: input.label ?? "",
+        signature,
+      }),
+      idempotencyKey,
+      signTimestamp,
+    });
+  })();
+}
+
+export function walletUnbind(agentDid: string) {
+  const idempotencyKey = `wallet-unbind-ui-${Date.now()}`;
+  const signTimestamp = new Date().toISOString();
+  return (async () => {
+    let signature = "sig";
+    try {
+      signature = await signAgentPayload(
+        agentDid,
+        buildWalletUnbindSignPayload(agentDid, idempotencyKey, signTimestamp),
+      );
+    } catch {
+      // Compatibility fallback for legacy agents without DID key pair.
+    }
+    return request("/wallet/unbind", {
+      method: "POST",
+      body: JSON.stringify({ agentDid, signature }),
+      idempotencyKey,
+      signTimestamp,
+    });
+  })();
+}
+
+export function createAuthSession(input: { agentDid: string; ttlMinutes?: number }) {
+  const idempotencyKey = `session-create-ui-${Date.now()}`;
+  const signTimestamp = new Date().toISOString();
+  return (async () => {
+    let signature = "sig";
+    try {
+      signature = await signAgentPayload(
+        input.agentDid,
+        buildSessionCreateSignPayload(input.agentDid, idempotencyKey, signTimestamp),
+      );
+    } catch {
+      // Compatibility fallback for legacy agents without DID key pair.
+    }
+    return request<AuthSession>("/authorize/session/create", {
+      method: "POST",
+      body: JSON.stringify({
+        agentDid: input.agentDid,
+        ttlMinutes: input.ttlMinutes,
+        signature,
+      }),
+      idempotencyKey,
+      signTimestamp,
+    });
+  })();
+}
+
+export function revokeAuthSession(input: { agentDid: string; sessionId: string }) {
+  const idempotencyKey = `session-revoke-ui-${Date.now()}`;
+  const signTimestamp = new Date().toISOString();
+  return (async () => {
+    let signature = "sig";
+    try {
+      signature = await signAgentPayload(
+        input.agentDid,
+        buildSessionRevokeSignPayload(input.agentDid, input.sessionId, idempotencyKey, signTimestamp),
+      );
+    } catch {
+      // Compatibility fallback for legacy agents without DID key pair.
+    }
+    return request("/authorize/session/revoke", {
+      method: "POST",
+      body: JSON.stringify({
+        agentDid: input.agentDid,
+        sessionId: input.sessionId,
+        signature,
+      }),
+      idempotencyKey,
+      signTimestamp,
+    });
+  })();
+}
+
+export function createPaymentSignRequest(input: {
+  agentDid: string;
+  merchantId: string;
+  amount: string;
+  sessionId?: string;
+}) {
+  const idempotencyKey = `sign-request-ui-${Date.now()}`;
+  const signTimestamp = new Date().toISOString();
+  const sessionId = input.sessionId ?? "";
+  return (async () => {
+    let signature = "sig";
+    try {
+      signature = await signAgentPayload(
+        input.agentDid,
+        buildSignRequestPayload(
+          input.agentDid,
+          input.merchantId,
+          input.amount,
+          sessionId,
+          idempotencyKey,
+          signTimestamp,
+        ),
+      );
+    } catch {
+      // Compatibility fallback for legacy agents without DID key pair.
+    }
+    return request<PaymentSignRequestRecord>("/payment/sign/request", {
+      method: "POST",
+      body: JSON.stringify({
+        agentDid: input.agentDid,
+        merchantId: input.merchantId,
+        amount: input.amount,
+        sessionId,
+        signature,
+      }),
+      idempotencyKey,
+      signTimestamp,
+    });
+  })();
+}
+
+// Backward-compatible alias for earlier page import.
+export const requestPaymentSign = createPaymentSignRequest;
+
+export function submitPaymentSign(input: {
+  signId: string;
+  payerDid: string;
+  merchantId: string;
+  currency?: "GUSD" | "USDC" | "USDT";
+  amount: string;
+}) {
+  const idempotencyKey = `sign-submit-ui-${Date.now()}`;
+  const signTimestamp = new Date().toISOString();
+  return (async () => {
+    let signature = "sig";
+    try {
+      signature = await signAgentPayload(
+        input.payerDid,
+        buildPaySignPayload(
+          input.payerDid,
+          input.merchantId,
+          input.currency ?? "GUSD",
+          input.amount,
+          idempotencyKey,
+          signTimestamp,
+        ),
+      );
+    } catch {
+      // Compatibility fallback for legacy agents without DID key pair.
+    }
+    return request<{ transactionId: string; status: string }>("/payment/sign/submit", {
+      method: "POST",
+      body: JSON.stringify({
+        signId: input.signId,
+        payerDid: input.payerDid,
+        merchantId: input.merchantId,
+        amount: input.amount,
+        idempotencyKey,
+        signature,
+      }),
+      signTimestamp,
+    });
+  })();
+}
+
 // Backward-compatible aliases for pages using older names.
 export const listDeveloperApiKeys = listApiKeys;
 export const createDeveloperApiKey = createApiKey;
 export const listDeveloperWebhooks = listWebhooks;
+export const adminAdjustSubscriptionCompat = adminAdjustSubscriptionLegacy;
 export function createDeveloperWebhook(input: { url: string; event: string }) {
   return createWebhook(input.url, input.event);
 }
 export const listDeveloperWebhookDeliveries = listWebhookDeliveries;
 export const getDeveloperWebhookDeliveryStats = getWebhookDeliveryStats;
+
+
+export function queryRechargeAddress(input: {
+  agentDid: string;
+  currency: "GUSD" | "USDC" | "USDT";
+  mode: "platform" | "self_hosted";
+}) {
+  return request<{
+    mode: string;
+    agentDid: string;
+    currency: string;
+    chainId: string;
+    address: string;
+    isSelfHosted: boolean;
+  }>(
+    `/fund/recharge/address?agentDid=${encodeURIComponent(input.agentDid)}&currency=${encodeURIComponent(input.currency)}&mode=${encodeURIComponent(input.mode)}`,
+  );
+}
+
+export function queryRechargeConfirm(rechargeId: string) {
+  return request<{
+    rechargeId: string;
+    currency: string;
+    requiredConfirmations: number;
+    currentConfirmations: number;
+    confirmed: boolean;
+    status: string;
+    updatedAt: string;
+  }>(`/fund/recharge/confirm?rechargeId=${encodeURIComponent(rechargeId)}`);
+}
+
+
+export type StablecoinConfig = {
+  currency: "GUSD" | "USDC" | "USDT";
+  provider: string;
+  enabled: boolean;
+  chainId: string;
+  rpcUrl: string;
+  tokenContract: string;
+  decimals: number;
+  hotWallet: string;
+  minConfirmations: number;
+  riskThreshold: number;
+  updatedAt: string;
+};
+
+export function listStablecoinConfigs() {
+  return request<StablecoinConfig[]>('/developer/stablecoin-config');
+}
+
+export function setStablecoinConfig(input: {
+  currency: "GUSD" | "USDC" | "USDT";
+  provider: string;
+  enabled: boolean;
+  chainId: string;
+  rpcUrl: string;
+  tokenContract: string;
+  decimals: number;
+  hotWallet: string;
+  minConfirmations: number;
+  riskThreshold: string;
+}) {
+  return request<StablecoinConfig>('/developer/stablecoin-config', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function checkStablecoinProviderHealth(provider: string) {
+  return request<{ provider: string; healthy: boolean }>(`/developer/stablecoin-provider/health?provider=${encodeURIComponent(provider)}`);
+}
+
+export function createUserAsAdmin(input: {
+  username: string;
+  password: string;
+  role?: string;
+}) {
+  return request<{ username: string; role: string }>("/auth/admin/create-user", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function listUsersAsAdmin() {
+  return listAdminUsers();
+}
+
+export function setUserStatusAsAdmin(input: { username: string; status: "enabled" | "disabled" }) {
+  return updateAdminUserStatus({
+    username: input.username,
+    status: input.status === "enabled" ? "active" : "disabled",
+  });
+}
+
+export function resetUserPasswordAsAdmin(input: { username: string; password: string }) {
+  return resetAdminUserPassword({ username: input.username, newPassword: input.password });
+}
+
+export type AdminUserRecord = {
+  username: string;
+  role: string;
+  status: "active" | "disabled";
+  createdAt: string;
+};
+
+export function listAdminUsers() {
+  return request<AdminUserRecord[]>("/auth/admin/users");
+}
+
+export function updateAdminUserStatus(input: {
+  username: string;
+  status: "active" | "disabled";
+}) {
+  return request<{ username: string; status: "active" | "disabled" }>("/auth/admin/user-status", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function resetAdminUserPassword(input: { username: string; newPassword: string }) {
+  return request<{ username: string }>("/auth/admin/reset-password", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export type BridgeCustomerStatus = {
+  agentDid: string;
+  bridgeCustomerId: string;
+  kycStatus: string;
+  hostedKycUrl?: string;
+  lastError?: string;
+  updatedAt: string;
+};
+
+export function syncBridgeCustomer(agentDid: string) {
+  return request<BridgeCustomerStatus>("/bridge/customer/sync", {
+    method: "POST",
+    body: JSON.stringify({ agentDid }),
+  });
+}
+
+export function getBridgeCustomerStatus(agentDid: string) {
+  return request<BridgeCustomerStatus>(`/bridge/customer/status?agentDid=${encodeURIComponent(agentDid)}`);
+}
+
+export function getBridgeCustomerKycLink(input: {
+  agentDid: string;
+  endorsement?: string;
+  redirectUri?: string;
+}) {
+  const query = new URLSearchParams();
+  query.set("agentDid", input.agentDid);
+  if (input.endorsement?.trim()) {
+    query.set("endorsement", input.endorsement.trim());
+  }
+  if (input.redirectUri?.trim()) {
+    query.set("redirectUri", input.redirectUri.trim());
+  }
+  return request<{ url: string }>(`/bridge/customer/kyc-link?${query.toString()}`);
+}
+
+export type OrchestrateProviderAccount = {
+  id: number;
+  platformVaAccountId: string;
+  provider: string;
+  providerCustomerId: string;
+  providerAccountId: string;
+  assetType: string;
+  currency: string;
+  status: string;
+  metadataJson?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type OrchestratePaymentIntent = {
+  intentId: string;
+  platformVaAccountId: string;
+  agentDid: string;
+  scenario: string;
+  currency: string;
+  amount: number;
+  targetType: string;
+  targetReference: string;
+  preferredProvider?: string;
+  selectedProvider?: string;
+  status: string;
+  idempotencyKey?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type OrchestratePaymentExecution = {
+  id: number;
+  intentId: string;
+  provider: string;
+  providerAccountId?: string;
+  providerTxnId?: string;
+  status: string;
+  failureCode?: string;
+  failureReason?: string;
+  rawResponseJson?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function bindOrchestrateProviderAccount(input: {
+  platformVaAccountId: string;
+  provider: string;
+  providerCustomerId?: string;
+  providerAccountId: string;
+  currency: "GUSD" | "USDC" | "USDT";
+  metadata?: string;
+}) {
+  return request<OrchestrateProviderAccount>("/orchestrate/provider-account/bind", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function listOrchestrateProviderAccounts(platformVaAccountId: string) {
+  return request<OrchestrateProviderAccount[]>(
+    `/orchestrate/provider-account/list?platformVaAccountId=${encodeURIComponent(platformVaAccountId)}`,
+  );
+}
+
+export function createOrchestratePaymentIntent(input: {
+  platformVaAccountId: string;
+  agentDid: string;
+  merchantId: string;
+  currency: "GUSD" | "USDC" | "USDT";
+  amount: string;
+  metadata?: string;
+}) {
+  return request<OrchestratePaymentIntent>("/orchestrate/payment-intent/create", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function executeOrchestratePaymentIntent(input: { intentId: string; provider: string }) {
+  return request<OrchestratePaymentExecution>("/orchestrate/payment-intent/execute", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function queryOrchestratePaymentIntentStatus(intentId: string) {
+  return request<{ intent: OrchestratePaymentIntent; executions: OrchestratePaymentExecution[] }>(
+    `/orchestrate/payment-intent/status?intentId=${encodeURIComponent(intentId)}`,
+  );
+}

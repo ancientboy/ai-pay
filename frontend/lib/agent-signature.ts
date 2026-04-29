@@ -93,9 +93,10 @@ export async function signAgentPayload(agentDid: string, payload: string): Promi
 export function buildPaySignPayload(
   payerDid: string,
   merchantId: string,
+  currency: string,
   amount: string,
   idempotencyKey: string,
   signTimestamp: string,
 ): string {
-  return `${payerDid}|${merchantId}|${amount}|${idempotencyKey}|${signTimestamp}`;
+  return `${payerDid}|${merchantId}|${currency.toUpperCase()}|${amount}|${idempotencyKey}|${signTimestamp}`;
 }

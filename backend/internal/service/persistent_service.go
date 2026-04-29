@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -15,7 +16,9 @@ import (
 )
 
 type PersistentService struct {
-	store *storage.Store
+	store           *storage.Store
+	walletProvider  WalletProvider
+	providerRouter  ProviderRouter
 }
 
 type scanRows interface {
@@ -23,12 +26,293 @@ type scanRows interface {
 }
 
 func NewPersistent(store *storage.Store) *PersistentService {
-	return &PersistentService{store: store}
+	return &PersistentService{store: store, walletProvider: &MockWalletProvider{}, providerRouter: NewDefaultProviderRouter()}
 }
 
 func (s *PersistentService) RegisterAgent(did string) Agent {
 	_, _ = s.store.DB.Exec(`INSERT IGNORE INTO agent_did (did, status, created_at) VALUES (?, 'ACTIVE', UTC_TIMESTAMP())`, did)
 	return Agent{DID: did}
+}
+
+func (s *PersistentService) BindAgentOwner(agentDID string, userID string) error {
+	if strings.TrimSpace(agentDID) == "" || strings.TrimSpace(userID) == "" {
+		return nil
+	}
+	_, err := s.store.DB.Exec(`
+INSERT INTO agent_owner (agent_did, user_id, created_at, updated_at)
+VALUES (?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())
+ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), updated_at = UTC_TIMESTAMP()`,
+		strings.TrimSpace(agentDID), strings.TrimSpace(userID))
+	return err
+}
+
+func (s *PersistentService) AgentOwner(agentDID string) (string, bool, error) {
+	agent := strings.TrimSpace(agentDID)
+	if agent == "" {
+		return "", false, nil
+	}
+	var owner string
+	err := s.store.DB.QueryRow(`SELECT user_id FROM agent_owner WHERE agent_did = ? LIMIT 1`, agent).Scan(&owner)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return strings.TrimSpace(owner), true, nil
+}
+
+func (s *PersistentService) ListSubscriptionPlans() []SubscriptionPlan {
+	rows, err := s.store.DB.Query(`
+SELECT plan_id, name, amount_monthly, currency, features_json, active
+FROM subscription_plan
+WHERE active = 1
+ORDER BY amount_monthly ASC`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]SubscriptionPlan, 0, 8)
+	for rows.Next() {
+		var item SubscriptionPlan
+		var planID string
+		var planName string
+		var amount float64
+		var currency string
+		var featuresRaw string
+		if err := rows.Scan(&planID, &planName, &amount, &currency, &featuresRaw, new(int)); err != nil {
+			continue
+		}
+		item.PlanCode = planID
+		item.PlanName = planName
+		item.MonthlyPrice = fmt.Sprintf("%.2f", amount)
+		_ = currency
+		_ = featuresRaw
+		out = append(out, item)
+	}
+	return out
+}
+
+func (s *PersistentService) GetUserSubscription(userID string) (UserSubscription, error) {
+	user := strings.TrimSpace(userID)
+	if user == "" {
+		return UserSubscription{}, &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	var item UserSubscription
+	var planID string
+	err := s.store.DB.QueryRow(`
+SELECT user_id, plan_id, status, amount_monthly, currency, started_at, current_period_start, current_period_end, auto_renew, cancelled_at, expires_at, updated_at
+FROM user_subscription
+WHERE user_id = ?
+LIMIT 1`, user).Scan(
+		&item.UserID,
+		&planID,
+		&item.Status,
+		new(float64),
+		new(string),
+		&item.CurrentFrom,
+		&item.CurrentFrom,
+		&item.CurrentTo,
+		&item.AutoRenew,
+		new(sql.NullTime),
+		new(sql.NullTime),
+		&item.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return UserSubscription{}, &APIError{Code: "PAY-010", Message: "subscription not found"}
+	}
+	if err != nil {
+		return UserSubscription{}, err
+	}
+	item.PlanCode = planID
+	return item, nil
+}
+
+func (s *PersistentService) ChangeUserSubscription(userID string, planCode string, autoRenew bool) (UserSubscription, error) {
+	user := strings.TrimSpace(userID)
+	plan := strings.TrimSpace(planCode)
+	if user == "" || plan == "" {
+		return UserSubscription{}, &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	var amount float64
+	var currency string
+	if err := s.store.DB.QueryRow(`
+SELECT amount_monthly, currency
+FROM subscription_plan
+WHERE plan_id = ? AND active = 1
+LIMIT 1`, plan).Scan(&amount, &currency); err != nil {
+		if err == sql.ErrNoRows {
+			return UserSubscription{}, &APIError{Code: "PAY-010", Message: "plan not found"}
+		}
+		return UserSubscription{}, err
+	}
+	tx, err := s.store.DB.BeginTx(context.Background(), nil)
+	if err != nil {
+		return UserSubscription{}, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
+INSERT INTO user_subscription (
+  user_id, plan_id, status, amount_monthly, currency, started_at, current_period_start, current_period_end, auto_renew, cancelled_at, expires_at, updated_at
+) VALUES (
+  ?, ?, 'ACTIVE', ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 MONTH), ?, NULL, NULL, UTC_TIMESTAMP()
+)
+ON DUPLICATE KEY UPDATE
+  plan_id = VALUES(plan_id),
+  status = 'ACTIVE',
+  amount_monthly = VALUES(amount_monthly),
+  currency = VALUES(currency),
+  current_period_start = UTC_TIMESTAMP(),
+  current_period_end = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 MONTH),
+  auto_renew = VALUES(auto_renew),
+  cancelled_at = NULL,
+  expires_at = NULL,
+  updated_at = UTC_TIMESTAMP()`,
+		user, plan, amount, currency, autoRenew); err != nil {
+		return UserSubscription{}, err
+	}
+	invoiceID := fmt.Sprintf("inv_%d", time.Now().UnixNano())
+	if _, err := tx.Exec(`
+INSERT INTO subscription_invoice (invoice_id, user_id, plan_id, amount, currency, status, period_start, period_end, due_at, paid_at, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, 'PAID', UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 MONTH), UTC_TIMESTAMP(), UTC_TIMESTAMP(), UTC_TIMESTAMP(), UTC_TIMESTAMP())`,
+		invoiceID, user, plan, amount, currency); err != nil {
+		return UserSubscription{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return UserSubscription{}, err
+	}
+	item, err := s.GetUserSubscription(user)
+	return item, err
+}
+
+func (s *PersistentService) ListUserInvoices(userID string, limit int) []BillingInvoice {
+	user := strings.TrimSpace(userID)
+	if user == "" {
+		return nil
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	rows, err := s.store.DB.Query(`
+SELECT invoice_id, user_id, plan_id, amount, currency, status, period_start, period_end, due_at, paid_at, created_at, updated_at
+FROM subscription_invoice
+WHERE user_id = ?
+ORDER BY created_at DESC
+LIMIT ?`, user, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]BillingInvoice, 0, limit)
+	for rows.Next() {
+		var item BillingInvoice
+		var planID string
+		var amount float64
+		var paidAt sql.NullTime
+		if err := rows.Scan(
+			&item.InvoiceID,
+			&item.UserID,
+			&planID,
+			&amount,
+			new(string),
+			&item.Status,
+			&item.PeriodFrom,
+			&item.PeriodTo,
+			new(time.Time),
+			&paidAt,
+			&item.CreatedAt,
+			new(time.Time),
+		); err != nil {
+			continue
+		}
+		item.PlanCode = planID
+		item.Amount = fmt.Sprintf("%.2f", amount)
+		_ = paidAt
+		out = append(out, item)
+	}
+	return out
+}
+
+func (s *PersistentService) AdminListSubscriptions(limit int, offset int) []UserSubscription {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := s.store.DB.Query(`
+SELECT user_id, plan_id, status, amount_monthly, currency, started_at, current_period_start, current_period_end, auto_renew, cancelled_at, expires_at, updated_at
+FROM user_subscription
+ORDER BY updated_at DESC
+LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]UserSubscription, 0, limit)
+	for rows.Next() {
+		var item UserSubscription
+		var amount float64
+		var currency string
+		var currentFrom sql.NullTime
+		var currentStart sql.NullTime
+		var currentEnd sql.NullTime
+		var cancelledAt sql.NullTime
+		var expiresAt sql.NullTime
+		if err := rows.Scan(
+			&item.UserID,
+			&item.PlanCode,
+			&item.Status,
+			&amount,
+			&currency,
+			&currentFrom,
+			&currentStart,
+			&currentEnd,
+			&item.AutoRenew,
+			&cancelledAt,
+			&expiresAt,
+			&item.UpdatedAt,
+		); err != nil {
+			continue
+		}
+		_ = amount
+		_ = currency
+		if currentFrom.Valid {
+			item.CurrentFrom = currentFrom.Time
+		}
+		if currentStart.Valid {
+			item.CurrentFrom = currentStart.Time
+		}
+		if currentEnd.Valid {
+			item.CurrentTo = currentEnd.Time
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func (s *PersistentService) AdminUpdateSubscription(userID string, planCode string, status string, autoRenew bool) (UserSubscription, error) {
+	plan := strings.TrimSpace(planCode)
+	st := strings.ToUpper(strings.TrimSpace(status))
+	switch st {
+	case "", "ACTIVE":
+		return s.ChangeUserSubscription(userID, plan, autoRenew)
+	case "CANCELLED":
+		res, err := s.store.DB.Exec(`
+UPDATE user_subscription
+SET status = 'CANCELLED', auto_renew = 0, cancelled_at = UTC_TIMESTAMP(), expires_at = current_period_end, updated_at = UTC_TIMESTAMP()
+WHERE user_id = ?`, strings.TrimSpace(userID))
+		if err != nil {
+			return UserSubscription{}, err
+		}
+		affected, _ := res.RowsAffected()
+		if affected == 0 {
+			return UserSubscription{}, &APIError{Code: "PAY-010", Message: "subscription not found"}
+		}
+		return s.GetUserSubscription(userID)
+	default:
+		return UserSubscription{}, &APIError{Code: "PAY-010", Message: "invalid status"}
+	}
 }
 
 func (s *PersistentService) SetAgentPublicKey(did string, pubKey string) error {
@@ -70,6 +354,565 @@ func (s *PersistentService) UpdateAgentPublicKey(did string, newPubKey string, p
 	return s.SetAgentPublicKey(did, newPubKey)
 }
 
+func (s *PersistentService) BindProviderSubAccount(input ProviderSubAccountBindInput) (ProviderSubAccount, error) {
+	platformVAID := strings.TrimSpace(input.PlatformVAID)
+	provider := strings.ToLower(strings.TrimSpace(input.Provider))
+	providerAccountID := strings.TrimSpace(input.ProviderAccountID)
+	currency := NormalizeCurrency(input.Currency)
+	if platformVAID == "" || provider == "" || providerAccountID == "" || currency == "" {
+		return ProviderSubAccount{}, &APIError{Code: "PAY-010", Message: "invalid provider sub account input"}
+	}
+	var accountExists int
+	if err := s.store.DB.QueryRow(`SELECT COUNT(1) FROM asset_va_account WHERE va_account_id = ?`, platformVAID).Scan(&accountExists); err != nil {
+		return ProviderSubAccount{}, err
+	}
+	if accountExists == 0 {
+		return ProviderSubAccount{}, &APIError{Code: "PAY-010", Message: "platform va account not found"}
+	}
+	metadata := strings.TrimSpace(input.MetadataJSON)
+	if metadata == "" {
+		metadata = "{}"
+	}
+	status := strings.ToUpper(strings.TrimSpace(input.Status))
+	if status == "" {
+		status = "ACTIVE"
+	}
+	subID := fmt.Sprintf("psa_%d", time.Now().UnixNano())
+	_, err := s.store.DB.Exec(`
+INSERT INTO provider_sub_account (sub_account_id, platform_va_id, provider, provider_customer_id, provider_account_id, account_type, currency, status, metadata_json, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())
+ON DUPLICATE KEY UPDATE
+  provider_customer_id = VALUES(provider_customer_id),
+  account_type = VALUES(account_type),
+  status = VALUES(status),
+  metadata_json = VALUES(metadata_json),
+  updated_at = UTC_TIMESTAMP()`,
+		subID,
+		platformVAID,
+		provider,
+		strings.TrimSpace(input.ProviderCustomerID),
+		providerAccountID,
+		strings.TrimSpace(input.AccountType),
+		currency,
+		status,
+		metadata,
+	)
+	if err != nil {
+		return ProviderSubAccount{}, err
+	}
+	return s.GetProviderSubAccount(platformVAID, provider, providerAccountID)
+}
+
+func (s *PersistentService) GetProviderSubAccount(platformVAID string, provider string, providerAccountID string) (ProviderSubAccount, error) {
+	var out ProviderSubAccount
+	va := strings.TrimSpace(platformVAID)
+	p := strings.ToLower(strings.TrimSpace(provider))
+	pa := strings.TrimSpace(providerAccountID)
+	if va == "" || p == "" || pa == "" {
+		return ProviderSubAccount{}, &APIError{Code: "PAY-010", Message: "invalid provider sub account key"}
+	}
+	err := s.store.DB.QueryRow(`
+SELECT sub_account_id, platform_va_id, provider, COALESCE(provider_customer_id,''), provider_account_id, COALESCE(account_type,''), currency, status, COALESCE(metadata_json,'{}'), created_at, updated_at
+FROM provider_sub_account
+WHERE platform_va_id = ? AND provider = ? AND provider_account_id = ?
+LIMIT 1`, va, p, pa).Scan(
+		&out.SubAccountID, &out.PlatformVAID, &out.Provider, &out.ProviderCustomerID, &out.ProviderAccountID, &out.AccountType,
+		&out.Currency, &out.Status, &out.MetadataJSON, &out.CreatedAt, &out.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return ProviderSubAccount{}, &APIError{Code: "PAY-010", Message: "provider sub account not found"}
+	}
+	if err != nil {
+		return ProviderSubAccount{}, err
+	}
+	return out, nil
+}
+
+func (s *PersistentService) ListProviderSubAccounts(platformVAID string) []ProviderSubAccount {
+	va := strings.TrimSpace(platformVAID)
+	if va == "" {
+		return nil
+	}
+	rows, err := s.store.DB.Query(`
+SELECT sub_account_id, platform_va_id, provider, COALESCE(provider_customer_id,''), provider_account_id, COALESCE(account_type,''), currency, status, COALESCE(metadata_json,'{}'), created_at, updated_at
+FROM provider_sub_account
+WHERE platform_va_id = ?
+ORDER BY created_at DESC`, va)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]ProviderSubAccount, 0, 8)
+	for rows.Next() {
+		var item ProviderSubAccount
+		if err := rows.Scan(
+			&item.SubAccountID, &item.PlatformVAID, &item.Provider, &item.ProviderCustomerID, &item.ProviderAccountID, &item.AccountType,
+			&item.Currency, &item.Status, &item.MetadataJSON, &item.CreatedAt, &item.UpdatedAt,
+		); err != nil {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func (s *PersistentService) createPaymentIntentInternal(input PaymentIntentCreateInput) (PaymentIntent, error) {
+	va := strings.TrimSpace(input.PlatformVAID)
+	agent := strings.TrimSpace(input.AgentDID)
+	merchant := strings.TrimSpace(input.MerchantID)
+	currency := NormalizeCurrency(input.Currency)
+	if va == "" || agent == "" || merchant == "" || currency == "" {
+		return PaymentIntent{}, &APIError{Code: "PAY-010", Message: "invalid payment intent input"}
+	}
+	amount, err := parseAmount(input.Amount)
+	if err != nil || amount <= 0 {
+		return PaymentIntent{}, &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	routeProvider := strings.ToLower(strings.TrimSpace(input.RouteProvider))
+	routeSubAccountID := strings.TrimSpace(input.RouteSubAccountID)
+	if routeProvider == "" || routeSubAccountID == "" {
+		autoProvider, autoSubAccountID, routeErr := s.resolveProviderRoute(va, currency, routeProvider)
+		if routeErr != nil {
+			return PaymentIntent{}, routeErr
+		}
+		routeProvider = autoProvider
+		routeSubAccountID = autoSubAccountID
+	}
+	intentID := fmt.Sprintf("pi_%d", time.Now().UnixNano())
+	_, err = s.store.DB.Exec(`
+INSERT INTO payment_intent (intent_id, platform_va_id, agent_did, merchant_id, currency, amount, status, route_provider, route_sub_account_id, idempotency_key, metadata_json, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, 'CREATED', ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP())`,
+		intentID,
+		va,
+		agent,
+		merchant,
+		currency,
+		amount,
+		routeProvider,
+		routeSubAccountID,
+		strings.TrimSpace(input.IdempotencyKey),
+		defaultJSON(input.MetadataJSON),
+	)
+	if err != nil {
+		return PaymentIntent{}, err
+	}
+	return s.getPaymentIntentInternal(intentID)
+}
+
+func (s *PersistentService) getPaymentIntentInternal(intentID string) (PaymentIntent, error) {
+	var out PaymentIntent
+	id := strings.TrimSpace(intentID)
+	if id == "" {
+		return PaymentIntent{}, &APIError{Code: "PAY-010", Message: "invalid intent id"}
+	}
+	err := s.store.DB.QueryRow(`
+SELECT intent_id, platform_va_id, agent_did, merchant_id, currency, amount, status, COALESCE(route_provider,''), COALESCE(route_sub_account_id,''), COALESCE(provider_transaction_id,''), COALESCE(idempotency_key,''), COALESCE(metadata_json,'{}'), created_at, updated_at
+FROM payment_intent
+WHERE intent_id = ?`, id).Scan(
+		&out.IntentID, &out.PlatformVAID, &out.AgentDID, &out.MerchantID, &out.Currency, &out.Amount, &out.Status,
+		&out.RouteProvider, &out.RouteSubAccountID, &out.ProviderTransactionID, &out.IdempotencyKey, &out.MetadataJSON,
+		&out.CreatedAt, &out.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return PaymentIntent{}, &APIError{Code: "PAY-010", Message: "payment intent not found"}
+	}
+	if err != nil {
+		return PaymentIntent{}, err
+	}
+	return out, nil
+}
+
+func (s *PersistentService) executePaymentIntentInternal(input PaymentIntentExecuteInput) (PaymentExecution, error) {
+	intent, err := s.getPaymentIntentInternal(input.IntentID)
+	if err != nil {
+		return PaymentExecution{}, err
+	}
+	if !strings.EqualFold(strings.TrimSpace(intent.Status), "CREATED") {
+		return PaymentExecution{}, &APIError{Code: "PAY-010", Message: "intent is not executable"}
+	}
+	provider := strings.ToLower(strings.TrimSpace(intent.RouteProvider))
+	if provider == "" {
+		return PaymentExecution{}, &APIError{Code: "PAY-010", Message: "route provider missing"}
+	}
+	subAccountID := strings.TrimSpace(intent.RouteSubAccountID)
+	if subAccountID == "" {
+		return PaymentExecution{}, &APIError{Code: "PAY-010", Message: "route sub account missing"}
+	}
+	executionID := fmt.Sprintf("pe_%d", time.Now().UnixNano())
+	result := "SUCCESS"
+	errorCode := ""
+	errorMessage := ""
+	if strings.TrimSpace(input.ForceResult) != "" {
+		result = strings.ToUpper(strings.TrimSpace(input.ForceResult))
+		if result != "SUCCESS" {
+			errorCode = "EXEC-FAILED"
+			errorMessage = "execution failed by force result"
+		}
+	}
+	_, err = s.store.DB.Exec(`
+INSERT INTO payment_execution (execution_id, intent_id, provider, sub_account_id, amount, currency, result, provider_transaction_id, error_code, error_message, raw_response_json, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())`,
+		executionID,
+		intent.IntentID,
+		provider,
+		subAccountID,
+		intent.Amount,
+		intent.Currency,
+		result,
+		deriveProviderTxnID(intent, executionID),
+		errorCode,
+		errorMessage,
+		defaultJSON(input.RawResponseJSON),
+	)
+	if err != nil {
+		return PaymentExecution{}, err
+	}
+	newStatus := "SETTLED"
+	if result != "SUCCESS" {
+		newStatus = "FAILED"
+	}
+	_, _ = s.store.DB.Exec(`UPDATE payment_intent SET status = ?, provider_transaction_id = ?, updated_at = UTC_TIMESTAMP() WHERE intent_id = ?`,
+		newStatus, deriveProviderTxnID(intent, executionID), intent.IntentID)
+	return s.getPaymentExecutionInternal(executionID)
+}
+
+func (s *PersistentService) getPaymentExecutionInternal(executionID string) (PaymentExecution, error) {
+	var out PaymentExecution
+	id := strings.TrimSpace(executionID)
+	if id == "" {
+		return PaymentExecution{}, &APIError{Code: "PAY-010", Message: "invalid execution id"}
+	}
+	err := s.store.DB.QueryRow(`
+SELECT execution_id, intent_id, provider, COALESCE(sub_account_id,''), amount, currency, result, COALESCE(provider_transaction_id,''), COALESCE(error_code,''), COALESCE(error_message,''), COALESCE(raw_response_json,'{}'), created_at
+FROM payment_execution
+WHERE execution_id = ?`, id).Scan(
+		&out.ExecutionID, &out.IntentID, &out.Provider, &out.SubAccountID, &out.Amount, &out.Currency, &out.Result,
+		&out.ProviderTransactionID, &out.ErrorCode, &out.ErrorMessage, &out.RawResponseJSON, &out.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return PaymentExecution{}, &APIError{Code: "PAY-010", Message: "payment execution not found"}
+	}
+	if err != nil {
+		return PaymentExecution{}, err
+	}
+	return out, nil
+}
+
+func (s *PersistentService) listPaymentExecutionsInternal(intentID string) []PaymentExecution {
+	id := strings.TrimSpace(intentID)
+	if id == "" {
+		return nil
+	}
+	rows, err := s.store.DB.Query(`
+SELECT execution_id, intent_id, provider, COALESCE(sub_account_id,''), amount, currency, result, COALESCE(provider_transaction_id,''), COALESCE(error_code,''), COALESCE(error_message,''), COALESCE(raw_response_json,'{}'), created_at
+FROM payment_execution
+WHERE intent_id = ?
+ORDER BY created_at DESC`, id)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make([]PaymentExecution, 0, 4)
+	for rows.Next() {
+		var item PaymentExecution
+		if err := rows.Scan(
+			&item.ExecutionID, &item.IntentID, &item.Provider, &item.SubAccountID, &item.Amount, &item.Currency, &item.Result,
+			&item.ProviderTransactionID, &item.ErrorCode, &item.ErrorMessage, &item.RawResponseJSON, &item.CreatedAt,
+		); err != nil {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func defaultJSON(raw string) string {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return "{}"
+	}
+	return v
+}
+
+func deriveProviderTxnID(intent PaymentIntent, executionID string) string {
+	provider := strings.ToLower(strings.TrimSpace(intent.RouteProvider))
+	if provider == "" {
+		provider = "local"
+	}
+	return fmt.Sprintf("%s_txn_%s", provider, strings.TrimPrefix(executionID, "pe_"))
+}
+
+func (s *PersistentService) pickRouteProviderForIntent(platformVAID string, currency string, preferred string) (string, string, error) {
+	va := strings.TrimSpace(platformVAID)
+	ccy := NormalizeCurrency(currency)
+	if va == "" || ccy == "" {
+		return "", "", &APIError{Code: "PAY-010", Message: "invalid route selection input"}
+	}
+	if p := strings.ToLower(strings.TrimSpace(preferred)); p != "" {
+		var subID string
+		err := s.store.DB.QueryRow(`
+SELECT sub_account_id
+FROM provider_sub_account
+WHERE platform_va_id = ? AND provider = ? AND currency = ? AND status = 'ACTIVE'
+ORDER BY updated_at DESC, created_at DESC
+LIMIT 1`, va, p, ccy).Scan(&subID)
+		if err == nil && strings.TrimSpace(subID) != "" {
+			return p, strings.TrimSpace(subID), nil
+		}
+		if err != nil && err != sql.ErrNoRows {
+			return "", "", err
+		}
+	}
+	var provider string
+	var subID string
+	err := s.store.DB.QueryRow(`
+SELECT provider, sub_account_id
+FROM provider_sub_account
+WHERE platform_va_id = ? AND currency = ? AND status = 'ACTIVE'
+ORDER BY updated_at DESC, created_at DESC
+LIMIT 1`, va, ccy).Scan(&provider, &subID)
+	if err == sql.ErrNoRows {
+		return "", "", &APIError{Code: "PAY-010", Message: "no active provider sub account for currency"}
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return strings.ToLower(strings.TrimSpace(provider)), strings.TrimSpace(subID), nil
+}
+
+func (s *PersistentService) BindProviderAccount(platformVAAccountID string, provider string, providerCustomerID string, providerAccountID string, currency string, metadata string) (ProviderAccountBinding, error) {
+	item, err := s.BindProviderSubAccount(ProviderSubAccountBindInput{
+		PlatformVAID:       platformVAAccountID,
+		Provider:           provider,
+		ProviderCustomerID: providerCustomerID,
+		ProviderAccountID:  providerAccountID,
+		AccountType:        "wallet",
+		Currency:           currency,
+		Status:             "ACTIVE",
+		MetadataJSON:       metadata,
+	})
+	if err != nil {
+		return ProviderAccountBinding{}, err
+	}
+	return ProviderAccountBinding{
+		ID:                time.Now().UnixNano(),
+		PlatformVAAccount: item.PlatformVAID,
+		Provider:          item.Provider,
+		ProviderCustomer:  item.ProviderCustomerID,
+		ProviderAccount:   item.ProviderAccountID,
+		AssetType:         item.AccountType,
+		Currency:          item.Currency,
+		Status:            item.Status,
+		MetadataJSON:      item.MetadataJSON,
+		CreatedAt:         item.CreatedAt,
+		UpdatedAt:         item.UpdatedAt,
+	}, nil
+}
+
+func (s *PersistentService) ListProviderAccounts(platformVAAccountID string) []ProviderAccountBinding {
+	items := s.ListProviderSubAccounts(platformVAAccountID)
+	out := make([]ProviderAccountBinding, 0, len(items))
+	for _, it := range items {
+		out = append(out, ProviderAccountBinding{
+			ID:                time.Now().UnixNano(),
+			PlatformVAAccount: it.PlatformVAID,
+			Provider:          it.Provider,
+			ProviderCustomer:  it.ProviderCustomerID,
+			ProviderAccount:   it.ProviderAccountID,
+			AssetType:         it.AccountType,
+			Currency:          it.Currency,
+			Status:            it.Status,
+			MetadataJSON:      it.MetadataJSON,
+			CreatedAt:         it.CreatedAt,
+			UpdatedAt:         it.UpdatedAt,
+		})
+	}
+	return out
+}
+
+func (s *PersistentService) CreatePaymentIntent(platformVAAccountID string, agentDID string, merchantID string, currency string, amount string, metadata string) (PaymentIntentRecord, error) {
+	routeProvider := ""
+	routeSubAccountID := ""
+	items := s.ListProviderSubAccounts(platformVAAccountID)
+	for _, it := range items {
+		if strings.EqualFold(strings.TrimSpace(it.Status), "ACTIVE") && strings.EqualFold(NormalizeCurrency(it.Currency), NormalizeCurrency(currency)) {
+			routeProvider = strings.ToLower(strings.TrimSpace(it.Provider))
+			routeSubAccountID = strings.TrimSpace(it.SubAccountID)
+			break
+		}
+	}
+	item, err := s.createPaymentIntentInternal(PaymentIntentCreateInput{
+		PlatformVAID:      platformVAAccountID,
+		AgentDID:          agentDID,
+		MerchantID:        merchantID,
+		Currency:          currency,
+		Amount:            amount,
+		RouteProvider:     routeProvider,
+		RouteSubAccountID: routeSubAccountID,
+		IdempotencyKey:    "",
+		MetadataJSON:      metadata,
+	})
+	if err != nil {
+		return PaymentIntentRecord{}, err
+	}
+	return PaymentIntentRecord{
+		IntentID:          item.IntentID,
+		PlatformVAAccount: item.PlatformVAID,
+		AgentDID:          item.AgentDID,
+		Scenario:          "agent_payment",
+		Currency:          item.Currency,
+		Amount:            item.Amount,
+		TargetType:        "merchant",
+		TargetReference:   item.MerchantID,
+		PreferredProvider: item.RouteProvider,
+		SelectedProvider:  item.RouteProvider,
+		Status:            item.Status,
+		IdempotencyKey:    item.IdempotencyKey,
+		CreatedAt:         item.CreatedAt,
+		UpdatedAt:         item.UpdatedAt,
+	}, nil
+}
+
+func (s *PersistentService) ExecutePaymentIntent(intentID string, provider string) (PaymentExecutionRecord, error) {
+	if p := strings.ToLower(strings.TrimSpace(provider)); p != "" {
+		intent, err := s.getPaymentIntentInternal(strings.TrimSpace(intentID))
+		if err != nil {
+			return PaymentExecutionRecord{}, err
+		}
+		var subAccountID string
+		err = s.store.DB.QueryRow(`
+SELECT sub_account_id
+FROM provider_sub_account
+WHERE platform_va_id = ? AND provider = ? AND currency = ? AND status = 'ACTIVE'
+ORDER BY updated_at DESC
+LIMIT 1`, intent.PlatformVAID, p, intent.Currency).Scan(&subAccountID)
+		if err == sql.ErrNoRows {
+			return PaymentExecutionRecord{}, &APIError{Code: "PAY-010", Message: "active provider sub account not found"}
+		}
+		if err != nil {
+			return PaymentExecutionRecord{}, err
+		}
+		_, _ = s.store.DB.Exec(`UPDATE payment_intent SET route_provider = ?, route_sub_account_id = ?, updated_at = UTC_TIMESTAMP() WHERE intent_id = ?`, p, strings.TrimSpace(subAccountID), strings.TrimSpace(intentID))
+	}
+	item, err := s.executePaymentIntentInternal(PaymentIntentExecuteInput{
+		IntentID:        intentID,
+		RawResponseJSON: "",
+		ForceResult:     "",
+	})
+	if err != nil {
+		return PaymentExecutionRecord{}, err
+	}
+	return PaymentExecutionRecord{
+		ID:                time.Now().UnixNano(),
+		IntentID:          item.IntentID,
+		Provider:          item.Provider,
+		ProviderAccountID: item.SubAccountID,
+		ProviderTxnID:     item.ProviderTransactionID,
+		Status:            item.Result,
+		FailureCode:       item.ErrorCode,
+		FailureReason:     item.ErrorMessage,
+		RawResponseJSON:   item.RawResponseJSON,
+		CreatedAt:         item.CreatedAt,
+		UpdatedAt:         item.CreatedAt,
+	}, nil
+}
+
+func (s *PersistentService) resolveProviderRoute(platformVAID string, currency string, preferred string) (string, string, error) {
+	va := strings.TrimSpace(platformVAID)
+	ccy := NormalizeCurrency(currency)
+	pref := strings.ToLower(strings.TrimSpace(preferred))
+	if va == "" || ccy == "" {
+		return "", "", &APIError{Code: "PAY-010", Message: "invalid route input"}
+	}
+	if pref != "" {
+		var subAccountID string
+		err := s.store.DB.QueryRow(`
+SELECT sub_account_id
+FROM provider_sub_account
+WHERE platform_va_id = ? AND provider = ? AND currency = ? AND status = 'ACTIVE'
+ORDER BY updated_at DESC
+LIMIT 1`, va, pref, ccy).Scan(&subAccountID)
+		if err == sql.ErrNoRows {
+			return "", "", &APIError{Code: "PAY-010", Message: "active provider sub account not found"}
+		}
+		if err != nil {
+			return "", "", err
+		}
+		return pref, strings.TrimSpace(subAccountID), nil
+	}
+	var providerName string
+	var subAccountID string
+	err := s.store.DB.QueryRow(`
+SELECT provider, sub_account_id
+FROM provider_sub_account
+WHERE platform_va_id = ? AND currency = ? AND status = 'ACTIVE'
+ORDER BY updated_at DESC
+LIMIT 1`, va, ccy).Scan(&providerName, &subAccountID)
+	if err == sql.ErrNoRows {
+		return "", "", &APIError{Code: "PAY-010", Message: "no active provider route for intent"}
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return strings.ToLower(strings.TrimSpace(providerName)), strings.TrimSpace(subAccountID), nil
+}
+
+func (s *PersistentService) GetPaymentIntentStatus(intentID string) (map[string]any, error) {
+	intent, err := s.getPaymentIntentInternal(intentID)
+	if err != nil {
+		return nil, err
+	}
+	executions := s.listPaymentExecutionsInternal(intentID)
+	return map[string]any{
+		"intent":     intent,
+		"executions": executions,
+	}, nil
+}
+
+func (s *PersistentService) GetPaymentIntent(intentID string) (PaymentIntentRecord, error) {
+	item, err := s.getPaymentIntentInternal(intentID)
+	if err != nil {
+		return PaymentIntentRecord{}, err
+	}
+	return PaymentIntentRecord{
+		IntentID:          item.IntentID,
+		PlatformVAAccount: item.PlatformVAID,
+		AgentDID:          item.AgentDID,
+		Scenario:          "agent_payment",
+		Currency:          item.Currency,
+		Amount:            item.Amount,
+		TargetType:        "merchant",
+		TargetReference:   item.MerchantID,
+		PreferredProvider: item.RouteProvider,
+		SelectedProvider:  item.RouteProvider,
+		Status:            item.Status,
+		IdempotencyKey:    item.IdempotencyKey,
+		CreatedAt:         item.CreatedAt,
+		UpdatedAt:         item.UpdatedAt,
+	}, nil
+}
+
+func (s *PersistentService) ListPaymentExecutions(intentID string) []PaymentExecutionRecord {
+	items := s.listPaymentExecutionsInternal(intentID)
+	out := make([]PaymentExecutionRecord, 0, len(items))
+	for _, it := range items {
+		out = append(out, PaymentExecutionRecord{
+			ID:                time.Now().UnixNano(),
+			IntentID:          it.IntentID,
+			Provider:          it.Provider,
+			ProviderAccountID: it.SubAccountID,
+			ProviderTxnID:     it.ProviderTransactionID,
+			Status:            it.Result,
+			FailureCode:       it.ErrorCode,
+			FailureReason:     it.ErrorMessage,
+			RawResponseJSON:   it.RawResponseJSON,
+			CreatedAt:         it.CreatedAt,
+			UpdatedAt:         it.CreatedAt,
+		})
+	}
+	return out
+}
+
 func (s *PersistentService) CreateAccount(agentDID string) Account {
 	wallet := fmt.Sprintf("0xwallet_%d", time.Now().UnixNano())
 	va := fmt.Sprintf("va_%d", time.Now().UnixNano())
@@ -77,13 +920,17 @@ func (s *PersistentService) CreateAccount(agentDID string) Account {
 	_, _ = s.store.DB.Exec(`
 INSERT INTO asset_va_account (va_account_id, va_card_no, agent_did, wallet_address, balance, status, created_at)
 VALUES (?, ?, ?, ?, 0, 'ACTIVE', UTC_TIMESTAMP())`, va, cardNo, agentDID, wallet)
-	return Account{WalletAddress: wallet, VAAccountID: va, VACardNo: cardNo, AgentDID: agentDID, Balance: 0, FrozenBalance: 0}
+	return Account{WalletAddress: wallet, VAAccountID: va, VACardNo: cardNo, AgentDID: agentDID, Currency: "GUSD", Balance: 0, FrozenBalance: 0}
 }
 
-func (s *PersistentService) Recharge(va string, amount string, idemKey string) error {
+func (s *PersistentService) Recharge(va string, currency string, amount string, idemKey string) error {
 	amountV, err := parseAmount(amount)
 	if err != nil || amountV <= 0 {
 		return &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	curr := NormalizeCurrency(currency)
+	if curr == "" {
+		return &APIError{Code: "PAY-010", Message: "invalid currency"}
 	}
 	if idemKey == "" {
 		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
@@ -110,11 +957,15 @@ func (s *PersistentService) Recharge(va string, amount string, idemKey string) e
 		return &APIError{Code: "PAY-010", Message: "account not found"}
 	}
 	var resolvedVA string
-	if err := tx.QueryRow(`SELECT va_account_id FROM asset_va_account WHERE va_account_id = ? OR va_card_no = ? LIMIT 1`, va, va).Scan(&resolvedVA); err != nil {
+	var accountCurrency string
+	if err := tx.QueryRow(`SELECT va_account_id, COALESCE(currency,'GUSD') FROM asset_va_account WHERE va_account_id = ? OR va_card_no = ? LIMIT 1`, va, va).Scan(&resolvedVA, &accountCurrency); err != nil {
 		return &APIError{Code: "PAY-010", Message: "account not found"}
 	}
-	_, err = tx.Exec(`INSERT INTO fund_recharge_order (recharge_id, va_account_id, amount, status, created_at) VALUES (?, ?, ?, 'SETTLED', UTC_TIMESTAMP())`,
-		rechargeID, resolvedVA, amountV)
+	if NormalizeCurrency(accountCurrency) != curr {
+		return &APIError{Code: "PAY-010", Message: "currency mismatch"}
+	}
+	_, err = tx.Exec(`INSERT INTO fund_recharge_order (recharge_id, va_account_id, currency, amount, status, created_at) VALUES (?, ?, ?, ?, 'SETTLED', UTC_TIMESTAMP())`,
+		rechargeID, resolvedVA, curr, amountV)
 	if err != nil {
 		return &APIError{Code: "PAY-010", Message: "recharge log failed"}
 	}
@@ -308,7 +1159,7 @@ WHERE va_account_id = ?`, accountID).Scan(
 	}, nil
 }
 
-func (s *PersistentService) TransferVA(fromAccountID string, toAccountID string, amount string, idemKey string) error {
+func (s *PersistentService) TransferVA(fromAccountID string, toAccountID string, currency string, amount string, idemKey string) error {
 	if strings.TrimSpace(idemKey) == "" {
 		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
 	}
@@ -498,7 +1349,7 @@ func (s *PersistentService) GetRiskConfig() RiskConfig {
 	return cfg
 }
 
-func (s *PersistentService) SetRiskConfig(enabled bool, singleAmountLimit string, blockedMerchants []string) (RiskConfig, error) {
+func (s *PersistentService) SetRiskConfig(enabled bool, singleAmountLimit string, singleLimitByCurrency map[string]string, blockedMerchants []string) (RiskConfig, error) {
 	limit, err := parseAmount(singleAmountLimit)
 	if err != nil || limit <= 0 {
 		return RiskConfig{}, &APIError{Code: "PAY-010", Message: "invalid singleAmountLimit"}
@@ -518,13 +1369,16 @@ func (s *PersistentService) SetRiskConfig(enabled bool, singleAmountLimit string
 	}
 	raw, _ := json.Marshal(trimmed)
 	if _, err := s.store.DB.Exec(`
-INSERT INTO risk_config (id, enabled, single_amount_limit, blocked_merchants, updated_at)
-VALUES (1, ?, ?, ?, UTC_TIMESTAMP())
+INSERT INTO risk_config (id, enabled, single_amount_limit, single_amount_limit_gusd, single_amount_limit_usdc, single_amount_limit_usdt, blocked_merchants, updated_at)
+VALUES (1, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())
 ON DUPLICATE KEY UPDATE
   enabled = VALUES(enabled),
   single_amount_limit = VALUES(single_amount_limit),
+  single_amount_limit_gusd = VALUES(single_amount_limit_gusd),
+  single_amount_limit_usdc = VALUES(single_amount_limit_usdc),
+  single_amount_limit_usdt = VALUES(single_amount_limit_usdt),
   blocked_merchants = VALUES(blocked_merchants),
-  updated_at = UTC_TIMESTAMP()`, enabled, limit, string(raw)); err != nil {
+  updated_at = UTC_TIMESTAMP()`, enabled, limit, limit, limit, limit, string(raw)); err != nil {
 		return RiskConfig{}, err
 	}
 	return s.getRiskConfig()
@@ -618,7 +1472,7 @@ WHERE agent_did = ?
 	if !merchantInWhitelist(whiteList, req.MerchantID) {
 		return PayResponse{}, &APIError{Code: "PAY-002", Message: "merchant not whitelisted"}
 	}
-	if riskErr := s.evaluateP2Risk(req.MerchantID, amount); riskErr != nil {
+	if riskErr := s.evaluateP2Risk(req.MerchantID, req.Currency, amount); riskErr != nil {
 		return PayResponse{}, riskErr
 	}
 
@@ -925,16 +1779,24 @@ VALUES
 	return nil
 }
 
-func (s *PersistentService) BalanceByVA(va string) (float64, error) {
+func (s *PersistentService) BalanceByVA(va string, currency string) (float64, error) {
+	curr := NormalizeCurrency(currency)
+	if curr == "" {
+		return 0, errors.New("invalid currency")
+	}
 	var balance float64
-	err := s.store.DB.QueryRow(`SELECT balance FROM asset_va_account WHERE va_account_id = ?`, va).Scan(&balance)
+	var accountCurrency string
+	err := s.store.DB.QueryRow(`SELECT balance, COALESCE(currency,'GUSD') FROM asset_va_account WHERE va_account_id = ?`, va).Scan(&balance, &accountCurrency)
 	if err != nil {
 		return 0, err
+	}
+	if NormalizeCurrency(accountCurrency) != curr {
+		return 0, errors.New("currency mismatch")
 	}
 	return balance, nil
 }
 
-func (s *PersistentService) LedgerByVA(va string) []Transaction {
+func (s *PersistentService) LedgerByVA(va string, currency string) []Transaction {
 	rows, err := s.store.DB.Query(`
 SELECT p.order_id, p.agent_did, p.merchant_id, p.amount, p.fee, p.net_amount, p.status, p.created_at
 FROM pay_order p
@@ -1305,7 +2167,7 @@ func merchantInWhitelist(raw string, merchant string) bool {
 
 func formatAmount(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
 
-func (s *PersistentService) TransferFunds(fromAccountID string, toAccountID string, amount string, idemKey string) error {
+func (s *PersistentService) TransferFunds(fromAccountID string, toAccountID string, currency string, amount string, idemKey string) error {
 	if strings.TrimSpace(idemKey) == "" {
 		return &APIError{Code: "PAY-008", Message: "idempotency key required"}
 	}
@@ -1364,7 +2226,7 @@ VALUES (?, ?, ?, ?, 'SETTLED', ?, UTC_TIMESTAMP())`, tid, fromID, toID, amountV,
 	return s.store.Redis.Set(ctx, idem, tid, 24*time.Hour).Err()
 }
 
-func (s *PersistentService) WithdrawFunds(vaAccountID string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error) {
+func (s *PersistentService) WithdrawFunds(vaAccountID string, currency string, amount string, rail string, destinationHint string, idemKey string) (WithdrawRecord, error) {
 	if strings.TrimSpace(idemKey) == "" {
 		return WithdrawRecord{}, &APIError{Code: "PAY-008", Message: "idempotency key required"}
 	}
@@ -1477,7 +2339,7 @@ WHERE agent_did = ?
 	if !merchantInWhitelist(whiteList, merchantID) {
 		return DebitPreview{}, &APIError{Code: "PAY-002", Message: "merchant not whitelisted"}
 	}
-	if riskErr := s.evaluateP2Risk(merchantID, v); riskErr != nil {
+	if riskErr := s.evaluateP2Risk(merchantID, "GUSD", v); riskErr != nil {
 		return DebitPreview{}, riskErr
 	}
 	const feeRate = 0.003
@@ -1506,7 +2368,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, UTC_TIMESTAMP())`,
 	}, nil
 }
 
-func (s *PersistentService) TransferX402Outbound(vaAccountID string, toAddress string, amount string, referenceTransactionID string, idemKey string) error {
+func (s *PersistentService) TransferX402Outbound(vaAccountID string, toAddress string, currency string, amount string, referenceTransactionID string, idemKey string) error {
 	v, err := parseAmount(amount)
 	if err != nil || v <= 0 {
 		return &APIError{Code: "PAY-010", Message: "invalid amount"}
@@ -1720,7 +2582,7 @@ func (s *PersistentService) PayVirtualCard(agentDID string, cardID string, merch
 	} else if err != nil && err != redis.Nil {
 		return "", err
 	}
-	if riskErr := s.evaluateP2Risk(merchantID, amt); riskErr != nil {
+	if riskErr := s.evaluateP2Risk(merchantID, "GUSD", amt); riskErr != nil {
 		s.appendRiskAuditRow("risk.transaction.check", "", merchantID, "", map[string]any{"amount": amt, "decision": "BLOCKED", "reason": riskErr.Message})
 		return "", riskErr
 	}
@@ -1823,7 +2685,7 @@ func (s *PersistentService) RiskTransactionCheck(agentDID string, merchantID str
 	if err != nil || amt <= 0 {
 		return nil, &APIError{Code: "PAY-010", Message: "invalid amount"}
 	}
-	if r := s.evaluateP2Risk(merchantID, amt); r != nil {
+	if r := s.evaluateP2Risk(merchantID, "GUSD", amt); r != nil {
 		s.appendRiskAuditRow("risk.transaction.check", agentDID, merchantID, transactionID, map[string]any{"amount": amt, "decision": "BLOCKED", "code": r.Code})
 		return map[string]any{
 			"decision":      "BLOCK",
@@ -2139,4 +3001,274 @@ SELECT agent_did, merchant_id, amount, status, expires_at, session_id FROM payme
 		_, _ = s.store.DB.Exec(`UPDATE payment_sign_request SET status='COMPLETED' WHERE sign_id=?`, signID)
 	}
 	return resp, apiErr
+}
+
+
+func (s *PersistentService) ListStablecoinConfigs() []StablecoinConfig {
+	rows, err := s.store.DB.Query(`SELECT currency, provider, enabled, chain_id, rpc_url, token_contract, decimals, hot_wallet, min_confirmations, risk_threshold, updated_at FROM stablecoin_config ORDER BY currency`)
+	if err != nil {
+		return []StablecoinConfig{}
+	}
+	defer rows.Close()
+	out := make([]StablecoinConfig, 0)
+	for rows.Next() {
+		var item StablecoinConfig
+		if err := rows.Scan(&item.Currency, &item.Provider, &item.Enabled, &item.ChainID, &item.RPCURL, &item.TokenContract, &item.Decimals, &item.HotWallet, &item.MinConfirmations, &item.RiskThreshold, &item.UpdatedAt); err == nil {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func (s *PersistentService) SetStablecoinConfig(cfg StablecoinConfig) (StablecoinConfig, error) {
+	cfg.Currency = NormalizeCurrency(cfg.Currency)
+	if cfg.Currency == "" {
+		return StablecoinConfig{}, &APIError{Code: "PAY-010", Message: "invalid currency"}
+	}
+	cfg.Provider = NormalizeWalletProvider(cfg.Provider)
+	if cfg.Provider == "" {
+		return StablecoinConfig{}, &APIError{Code: "PAY-010", Message: "invalid provider"}
+	}
+	if cfg.MinConfirmations <= 0 {
+		cfg.MinConfirmations = 1
+	}
+	if _, err := s.store.DB.Exec(`
+INSERT INTO stablecoin_config (currency, provider, enabled, chain_id, rpc_url, token_contract, decimals, hot_wallet, min_confirmations, risk_threshold, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())
+ON DUPLICATE KEY UPDATE
+  provider = VALUES(provider), enabled = VALUES(enabled), chain_id = VALUES(chain_id), rpc_url = VALUES(rpc_url), token_contract = VALUES(token_contract), decimals = VALUES(decimals), hot_wallet = VALUES(hot_wallet), min_confirmations = VALUES(min_confirmations), risk_threshold = VALUES(risk_threshold), updated_at = UTC_TIMESTAMP()`,
+		cfg.Currency, cfg.Provider, cfg.Enabled, cfg.ChainID, cfg.RPCURL, cfg.TokenContract, cfg.Decimals, cfg.HotWallet, cfg.MinConfirmations, cfg.RiskThreshold); err != nil {
+		return StablecoinConfig{}, err
+	}
+	cfg.UpdatedAt = time.Now().UTC()
+	return cfg, nil
+}
+
+func (s *PersistentService) GetRechargeConfirmation(rechargeID string) (RechargeConfirmationStatus, error) {
+	rechargeID = strings.TrimSpace(rechargeID)
+	if rechargeID == "" {
+		return RechargeConfirmationStatus{}, &APIError{Code: "PAY-010", Message: "invalid recharge id"}
+	}
+	var c RechargeConfirmationStatus
+	c.UpdatedAt = time.Now().UTC()
+	if err := s.store.DB.QueryRow(`SELECT recharge_id, COALESCE(currency,'GUSD'), status FROM fund_recharge_order WHERE recharge_id = ?`, rechargeID).Scan(&c.RechargeID, &c.Currency, &c.Status); err != nil {
+		return RechargeConfirmationStatus{}, &APIError{Code: "PAY-010", Message: "recharge not found"}
+	}
+	c.Currency = NormalizeCurrency(c.Currency)
+	c.RequiredConfirm = 12
+	_ = s.store.DB.QueryRow(`SELECT min_confirmations FROM stablecoin_config WHERE currency = ?`, c.Currency).Scan(&c.RequiredConfirm)
+	if strings.EqualFold(c.Status, "SETTLED") {
+		c.CurrentConfirm = c.RequiredConfirm
+	} else {
+		c.CurrentConfirm = c.RequiredConfirm / 2
+	}
+	c.Confirmed = c.CurrentConfirm >= c.RequiredConfirm
+	return c, nil
+}
+
+
+func (s *PersistentService) GetRechargeAddress(agentDID string, currency string, mode string) (RechargeAddress, error) {
+	ccy := NormalizeCurrency(currency)
+	if ccy == "" {
+		return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "invalid currency"}
+	}
+	m := strings.ToLower(strings.TrimSpace(mode))
+	if m == "" {
+		m = "platform"
+	}
+	addr := ""
+	chainID := ""
+	_ = s.store.DB.QueryRow(`SELECT chain_id FROM stablecoin_config WHERE currency = ?`, ccy).Scan(&chainID)
+	if strings.TrimSpace(chainID) == "" {
+		chainID = "unknown-chain"
+	}
+	if m == "self_hosted" {
+		if err := s.store.DB.QueryRow(`SELECT wallet_address FROM self_host_wallet WHERE agent_did = ?`, strings.TrimSpace(agentDID)).Scan(&addr); err != nil || strings.TrimSpace(addr) == "" {
+			return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "self hosted wallet not bound"}
+		}
+	} else {
+		var configuredHotWallet string
+		_ = s.store.DB.QueryRow(`SELECT hot_wallet FROM stablecoin_config WHERE currency = ?`, ccy).Scan(&configuredHotWallet)
+		generatedAddr, genErr := s.ensureWalletAccountAddress(agentDID, ccy, chainID, "platform")
+		if genErr != nil {
+			return RechargeAddress{}, &APIError{Code: "PAY-010", Message: "platform wallet allocate failed: bridge customer missing required address data; complete hosted KYC first"}
+		}
+		if strings.TrimSpace(configuredHotWallet) != "" {
+			addr = strings.TrimSpace(configuredHotWallet)
+		} else {
+			addr = generatedAddr
+		}
+		m = "platform"
+	}
+	return RechargeAddress{Mode: m, AgentDID: strings.TrimSpace(agentDID), Currency: ccy, ChainID: chainID, Address: strings.TrimSpace(addr), IsSelfHosted: m == "self_hosted"}, nil
+}
+
+func (s *PersistentService) HandleRechargeCallback(event RechargeCallback) (RechargeConfirmationStatus, error) {
+	id := strings.TrimSpace(event.RechargeID)
+	if id == "" {
+		return RechargeConfirmationStatus{}, &APIError{Code: "PAY-010", Message: "invalid recharge id"}
+	}
+	status := strings.ToUpper(strings.TrimSpace(event.Status))
+	if status == "" {
+		status = "PENDING"
+	}
+	currency := NormalizeCurrency(event.Currency)
+	if currency == "" {
+		currency = "GUSD"
+	}
+	if _, err := s.store.DB.Exec(`UPDATE fund_recharge_order SET status = ?, currency = ?, updated_at = UTC_TIMESTAMP() WHERE recharge_id = ?`, status, currency, id); err != nil {
+		return RechargeConfirmationStatus{}, &APIError{Code: "PAY-010", Message: "update recharge callback failed"}
+	}
+	return s.GetRechargeConfirmation(id)
+}
+
+
+func (s *PersistentService) ensureWalletAccountAddress(agentDID string, currency string, chainID string, mode string) (string, error) {
+	agent := strings.TrimSpace(agentDID)
+	ccy := NormalizeCurrency(currency)
+	chain := strings.TrimSpace(chainID)
+	m := strings.ToLower(strings.TrimSpace(mode))
+	if m == "" {
+		m = "platform"
+	}
+	if agent == "" || ccy == "" || chain == "" {
+		return "", &APIError{Code: "PAY-010", Message: "invalid wallet account request"}
+	}
+	var addr string
+	err := s.store.DB.QueryRow(`SELECT address FROM wallet_account WHERE agent_did = ? AND currency = ? AND chain_id = ? AND mode = ? LIMIT 1`, agent, ccy, chain, m).Scan(&addr)
+	if err == nil && strings.TrimSpace(addr) != "" {
+		return strings.TrimSpace(addr), nil
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return "", err
+	}
+	providerName := "mock"
+	_ = s.store.DB.QueryRow(`SELECT COALESCE(provider,'mock') FROM stablecoin_config WHERE currency = ? LIMIT 1`, ccy).Scan(&providerName)
+	router := s.providerRouter
+	if router == nil {
+		router = NewDefaultProviderRouter()
+	}
+	provider := router.ResolveProvider(providerName)
+	providerAccountID, createdAddress, createErr := provider.CreateAddress(agent, ccy, chain, m)
+	if createErr != nil {
+		return "", createErr
+	}
+	if _, err := s.store.DB.Exec(`
+INSERT INTO wallet_account (agent_did, currency, chain_id, mode, provider, provider_account_id, address, status, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', UTC_TIMESTAMP(), UTC_TIMESTAMP())
+ON DUPLICATE KEY UPDATE
+  provider = VALUES(provider),
+  provider_account_id = VALUES(provider_account_id),
+  address = VALUES(address),
+  status = 'ACTIVE',
+  updated_at = UTC_TIMESTAMP()`,
+		agent, ccy, chain, m, provider.Name(), providerAccountID, createdAddress); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(createdAddress), nil
+}
+
+func (s *PersistentService) CheckWalletProvider(provider string) error {
+	p := NormalizeWalletProvider(provider)
+	if p == "" {
+		return &APIError{Code: "PAY-010", Message: "invalid provider"}
+	}
+	router := s.providerRouter
+	if router == nil {
+		router = NewDefaultProviderRouter()
+	}
+	if err := router.HealthCheck(p); err != nil {
+		return &APIError{Code: "PAY-010", Message: "provider health check failed"}
+	}
+	return nil
+}
+
+
+func (s *PersistentService) BridgeEnsureCustomer(agentDID string) (BridgeCustomerStatus, error) {
+	a := strings.TrimSpace(agentDID)
+	if a == "" {
+		return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "invalid agent did"}
+	}
+	provider := NewBridgeWalletProviderFromEnv()
+	customerID, err := provider.ensureCustomer(a)
+	if err != nil {
+		_, _ = s.store.DB.Exec(`INSERT INTO bridge_customer_map (agent_did, bridge_customer_id, kyc_status, last_error, updated_at) VALUES (?, '', 'error', ?, UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE kyc_status='error', last_error=VALUES(last_error), updated_at=UTC_TIMESTAMP()`, a, err.Error())
+		return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "bridge ensure customer failed"}
+	}
+	kycStatus := "pending"
+	if status, statusErr := provider.GetCustomerKYCStatus(customerID); statusErr == nil && strings.TrimSpace(status) != "" {
+		kycStatus = strings.ToLower(strings.TrimSpace(status))
+	}
+	_, _ = s.store.DB.Exec(`INSERT INTO bridge_customer_map (agent_did, bridge_customer_id, kyc_status, last_error, updated_at) VALUES (?, ?, ?, '', UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE bridge_customer_id=VALUES(bridge_customer_id), kyc_status=VALUES(kyc_status), last_error='', updated_at=UTC_TIMESTAMP()`, a, customerID, kycStatus)
+	return s.BridgeGetCustomerStatus(a)
+}
+
+func (s *PersistentService) BridgeGetCustomerStatus(agentDID string) (BridgeCustomerStatus, error) {
+	a := strings.TrimSpace(agentDID)
+	if a == "" {
+		return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "invalid agent did"}
+	}
+	out := BridgeCustomerStatus{AgentDID: a}
+	if err := s.store.DB.QueryRow(`SELECT bridge_customer_id, kyc_status, COALESCE(last_error,''), updated_at FROM bridge_customer_map WHERE agent_did = ?`, a).Scan(&out.BridgeCustomerID, &out.KYCStatus, &out.LastError, &out.UpdatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "bridge customer not found"}
+		}
+		return BridgeCustomerStatus{}, &APIError{Code: "PAY-010", Message: "bridge customer query failed"}
+	}
+	if strings.TrimSpace(out.BridgeCustomerID) != "" {
+		provider := NewBridgeWalletProviderFromEnv()
+		if latestStatus, err := provider.GetCustomerKYCStatus(out.BridgeCustomerID); err == nil && strings.TrimSpace(latestStatus) != "" {
+			latestStatus = strings.ToLower(strings.TrimSpace(latestStatus))
+			if latestStatus != strings.ToLower(strings.TrimSpace(out.KYCStatus)) {
+				out.KYCStatus = latestStatus
+				out.LastError = ""
+				out.UpdatedAt = time.Now().UTC()
+				_, _ = s.store.DB.Exec(`UPDATE bridge_customer_map SET kyc_status = ?, last_error = '', updated_at = UTC_TIMESTAMP() WHERE agent_did = ?`, out.KYCStatus, a)
+			}
+		}
+	}
+	return out, nil
+}
+
+func (s *PersistentService) BridgeGetCustomerKYCLink(agentDID string, endorsement string, redirectURI string) (string, error) {
+	a := strings.TrimSpace(agentDID)
+	if a == "" {
+		return "", &APIError{Code: "PAY-010", Message: "invalid agent did"}
+	}
+	status, err := s.BridgeGetCustomerStatus(a)
+	if err != nil {
+		return "", err
+	}
+	customerID := strings.TrimSpace(status.BridgeCustomerID)
+	if customerID == "" {
+		return "", &APIError{Code: "PAY-010", Message: "bridge customer not found"}
+	}
+	provider := NewBridgeWalletProviderFromEnv()
+	link, linkErr := provider.GetCustomerKYCLink(customerID, endorsement, redirectURI)
+	if linkErr != nil {
+		_, _ = s.store.DB.Exec(`UPDATE bridge_customer_map SET last_error = ?, updated_at = UTC_TIMESTAMP() WHERE agent_did = ?`, linkErr.Error(), a)
+		return "", &APIError{Code: "PAY-010", Message: "bridge hosted kyc link fetch failed"}
+	}
+	return link, nil
+}
+
+func (s *PersistentService) BridgeHandleWebhook(rawBody []byte, signatureHeader string) error {
+	provider := NewBridgeWalletProviderFromEnv()
+	if err := provider.VerifyWebhookSignature(rawBody, signatureHeader); err != nil {
+		return &APIError{Code: "PAY-010", Message: "bridge webhook signature invalid"}
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rawBody, &payload); err == nil {
+		eventType, _ := payload["type"].(string)
+		eventID, _ := payload["id"].(string)
+		if strings.TrimSpace(eventID) == "" {
+			eventID = fmt.Sprintf("bridge_evt_%d", time.Now().UnixNano())
+		}
+		_, _ = s.store.DB.Exec(`
+INSERT INTO bridge_webhook_event (event_id, event_type, payload, created_at)
+VALUES (?, ?, ?, UTC_TIMESTAMP())
+ON DUPLICATE KEY UPDATE payload = VALUES(payload), event_type = VALUES(event_type), created_at = UTC_TIMESTAMP()`,
+			eventID, strings.TrimSpace(eventType), string(rawBody))
+	}
+	return nil
 }

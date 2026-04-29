@@ -176,6 +176,70 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RechargeListResponse"
+  /fund/recharge/address:
+    get:
+      tags: [recharge]
+      summary: Query recharge address by mode and currency
+      parameters:
+        - in: query
+          name: agentDid
+          required: true
+          schema: { type: string }
+        - in: query
+          name: currency
+          required: true
+          schema: { $ref: "#/components/schemas/CurrencyCode" }
+        - in: query
+          name: mode
+          required: false
+          schema:
+            type: string
+            enum: [platform, self_hosted]
+      responses:
+        "200":
+          description: Recharge target address
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RechargeAddressResponse"
+  /fund/recharge/confirm:
+    get:
+      tags: [recharge]
+      summary: Query recharge confirmation depth
+      parameters:
+        - in: query
+          name: rechargeId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Recharge confirmation status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RechargeConfirmResponse"
+  /fund/recharge/callback:
+    post:
+      tags: [recharge]
+      summary: Handle recharge callback
+      parameters:
+        - $ref: "#/components/parameters/CallbackToken"
+        - $ref: "#/components/parameters/CallbackTimestamp"
+        - $ref: "#/components/parameters/CallbackNonce"
+        - $ref: "#/components/parameters/CallbackIdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RechargeCallbackRequest"
+      responses:
+        "200":
+          description: Callback processed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RechargeConfirmResponse"
   /fund/transfer:
     post:
       tags: [funds]
@@ -1741,12 +1805,14 @@ components:
             additionalProperties: true
     RechargeRequest:
       type: object
-      required: [amount]
+      required: [amount, currency]
       properties:
         vaAccountId:
           type: string
         vaCardNo:
           type: string
+        currency:
+          $ref: "#/components/schemas/CurrencyCode"
         amount:
           type: string
     RechargeListResponse:
@@ -1782,12 +1848,14 @@ components:
           type: string
     PayRequest:
       type: object
-      required: [payerDid, merchantId, amount, signature]
+      required: [payerDid, merchantId, currency, amount, signature]
       properties:
         payerDid:
           type: string
         merchantId:
           type: string
+        currency:
+          $ref: "#/components/schemas/CurrencyCode"
         amount:
           type: string
         signature:
@@ -2652,3 +2720,46 @@ components:
           type: string
         data:
           $ref: "#/components/schemas/PayInnerData"
+
+    CurrencyCode:
+      type: string
+      enum: [GUSD, USDC, USDT]
+    RechargeAddress:
+      type: object
+      properties:
+        mode: { type: string }
+        agentDid: { type: string }
+        currency: { $ref: "#/components/schemas/CurrencyCode" }
+        chainId: { type: string }
+        address: { type: string }
+        isSelfHosted: { type: boolean }
+    RechargeAddressResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code: { type: string }
+        data: { $ref: "#/components/schemas/RechargeAddress" }
+    RechargeCallbackRequest:
+      type: object
+      required: [rechargeId]
+      properties:
+        rechargeId: { type: string }
+        currency: { $ref: "#/components/schemas/CurrencyCode" }
+        status: { type: string }
+        confirmations: { type: integer }
+    RechargeConfirmation:
+      type: object
+      properties:
+        rechargeId: { type: string }
+        currency: { $ref: "#/components/schemas/CurrencyCode" }
+        requiredConfirmations: { type: integer }
+        currentConfirmations: { type: integer }
+        confirmed: { type: boolean }
+        status: { type: string }
+        updatedAt: { type: string, format: date-time }
+    RechargeConfirmResponse:
+      type: object
+      required: [code, data]
+      properties:
+        code: { type: string }
+        data: { $ref: "#/components/schemas/RechargeConfirmation" }

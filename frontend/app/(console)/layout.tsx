@@ -1,9 +1,11 @@
 import { ConsoleShell } from "@/components/console-shell";
+import { getCurrentSession } from "@/lib/current-session";
 
-export default function ConsoleLayout({
+export default async function ConsoleLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  return <ConsoleShell>{children}</ConsoleShell>;
+  const session = await getCurrentSession();
+  return <ConsoleShell session={session}>{children}</ConsoleShell>;
 }

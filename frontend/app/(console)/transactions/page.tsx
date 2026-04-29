@@ -64,6 +64,7 @@ export default function TransactionsPage() {
   const [draft] = useState<FilterDraft>(() => loadFilterDraft());
   const [payerDid, setPayerDid] = useState("");
   const [merchantId, setMerchantId] = useState("m1");
+  const [payCurrency, setPayCurrency] = useState<"GUSD" | "USDC" | "USDT">("GUSD");
   const [amount, setAmount] = useState("1");
   const [queryTxId, setQueryTxId] = useState(draft.queryTxId);
   const [queryVa, setQueryVa] = useState(draft.queryVa);
@@ -111,7 +112,7 @@ export default function TransactionsPage() {
   const pageCount = Math.max(1, Math.ceil(filteredRows.length / pageSize));
 
   const payMutation = useMutation({
-    mutationFn: () => pay({ payerDid, merchantId, amount }),
+    mutationFn: () => pay({ payerDid, merchantId, currency: payCurrency, amount }),
     onSuccess: (data) => {
       setRows((prev) => [
         {
@@ -266,6 +267,15 @@ export default function TransactionsPage() {
               placeholder={t("transactions.amount")}
               className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
             />
+            <select
+              value={payCurrency}
+              onChange={(e) => setPayCurrency(e.target.value as "GUSD" | "USDC" | "USDT")}
+              className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+            >
+              <option value="GUSD">GUSD</option>
+              <option value="USDC">USDC</option>
+              <option value="USDT">USDT</option>
+            </select>
             <button className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white">
               {t("transactions.pay")}
             </button>
