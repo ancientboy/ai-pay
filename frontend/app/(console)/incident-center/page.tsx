@@ -90,6 +90,26 @@ export default function IncidentCenterPage() {
             : "按错误码严重级别标准化处置路径。"}
         </p>
       </div>
+      <div className="rounded-xl border border-blue-700/50 bg-blue-950/30 p-4 text-sm text-blue-100">
+        <p className="font-medium">{isEN ? "RequestId linkage guide" : "requestId 联动指引"}</p>
+        <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs text-blue-200">
+          <li>
+            {isEN
+              ? "When payment fails, copy requestId from error panel in Recharge/Transactions."
+              : "支付失败时先从充值/交易页错误面板复制 requestId。"}
+          </li>
+          <li>
+            {isEN
+              ? "Match requestId with backend logs to find exact failure stage."
+              : "在后端日志中检索 requestId，定位具体失败阶段。"}
+          </li>
+          <li>
+            {isEN
+              ? "Apply actions below by error code level, then retry with new idempotency key."
+              : "按下方错误码分级执行处置后，使用新幂等键重试。"}
+          </li>
+        </ol>
+      </div>
       <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
         <table className="w-full text-sm">
           <thead>

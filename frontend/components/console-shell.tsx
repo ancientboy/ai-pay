@@ -23,6 +23,7 @@ export function ConsoleShell({
   const navItems = [
     { href: "/console", label: t("nav.home") },
     { href: "/onboarding", label: t("nav.gettingStarted") },
+    { href: "/launch-readiness", label: t("nav.launchReadiness") },
     { href: "/incident-center", label: t("nav.incidentCenter") },
     { href: "/dashboard", label: t("nav.dashboard") },
     { href: "/agents", label: t("nav.agents") },
