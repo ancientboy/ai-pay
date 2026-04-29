@@ -7,6 +7,11 @@ type StoredUser = {
   passwordHash: string;
   role: string;
   disabled?: boolean;
+  onboarding?: {
+    dismissed?: boolean;
+    completedSteps?: string[];
+    updatedAt?: string;
+  };
   createdAt: string;
 };
 
@@ -116,6 +121,11 @@ export async function findStoredUserByUsername(username: string) {
     username: hit.username,
     role: hit.role || "operator",
     disabled: !!hit.disabled,
+    onboarding: {
+      dismissed: !!hit.onboarding?.dismissed,
+      completedSteps: Array.isArray(hit.onboarding?.completedSteps) ? hit.onboarding?.completedSteps : [],
+      updatedAt: hit.onboarding?.updatedAt || hit.createdAt,
+    },
     createdAt: hit.createdAt,
   };
 }
@@ -166,6 +176,13 @@ export async function updateStoredUser(input: {
       username: store.users[idx].username,
       role: store.users[idx].role || "operator",
       disabled: !!store.users[idx].disabled,
+      onboarding: {
+        dismissed: !!store.users[idx].onboarding?.dismissed,
+        completedSteps: Array.isArray(store.users[idx].onboarding?.completedSteps)
+          ? store.users[idx].onboarding?.completedSteps
+          : [],
+        updatedAt: store.users[idx].onboarding?.updatedAt || store.users[idx].createdAt,
+      },
       createdAt: store.users[idx].createdAt,
     },
   };
@@ -185,4 +202,52 @@ export async function resetStoredUserPassword(username: string, password: string
     return { ok: false as const, code: result.code };
   }
   return { ok: true as const, user: result.user };
+}
+
+export async function getStoredUserOnboarding(username: string) {
+  const user = await findStoredUserByUsername(username);
+  if (!user) {
+    return null;
+  }
+  const completed = new Set(user.onboarding?.completedSteps ?? []);
+  return {
+    username: user.username,
+    dismissed: !!user.onboarding?.dismissed,
+    agent: completed.has("agent"),
+    kyc: completed.has("kyc"),
+    recharge: completed.has("recharge"),
+    authorize: completed.has("authorize"),
+    pay: completed.has("pay"),
+    selfhosted: completed.has("selfhosted"),
+    updatedAt: user.onboarding?.updatedAt || user.createdAt,
+  };
+}
+
+export async function updateStoredUserOnboarding(input: {
+  username: string;
+  dismissed?: boolean;
+  completedStep?: string;
+}) {
+  const uname = normalizeUsername(input.username);
+  if (!uname) {
+    return { ok: false as const, code: "AUTH-001" };
+  }
+  const store = await readStore();
+  const idx = store.users.findIndex((u) => normalizeUsername(u.username) === uname);
+  if (idx < 0) {
+    return { ok: false as const, code: "AUTH-008" };
+  }
+  const current = store.users[idx].onboarding ?? { dismissed: false, completedSteps: [] as string[] };
+  const completedSteps = new Set(Array.isArray(current.completedSteps) ? current.completedSteps : []);
+  if (input.completedStep && input.completedStep.trim()) {
+    completedSteps.add(input.completedStep.trim());
+  }
+  store.users[idx].onboarding = {
+    dismissed: typeof input.dismissed === "boolean" ? input.dismissed : !!current.dismissed,
+    completedSteps: Array.from(completedSteps),
+    updatedAt: new Date().toISOString(),
+  };
+  await writeStore(store);
+  const latest = await getStoredUserOnboarding(uname);
+  return { ok: true as const, onboarding: latest };
 }

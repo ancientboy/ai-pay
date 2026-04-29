@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
 import { useLocale } from "@/components/locale-provider";
+import { getOnboardingProgress, saveOnboardingProgress, type OnboardingProgress } from "@/lib/console-api";
 
 type StepItem = {
   key: string;
@@ -14,12 +16,46 @@ export function OnboardingBanner() {
   const pathname = usePathname();
   const { locale } = useLocale();
   const isEN = locale === "en-US";
+  const [progress, setProgress] = useState<OnboardingProgress | null>(null);
+  const currentStep = useMemo(() => {
+    if (pathname.startsWith("/agents")) return "agent";
+    if (pathname.startsWith("/kyc")) return "kyc";
+    if (pathname.startsWith("/recharge")) return "recharge";
+    if (pathname.startsWith("/transactions")) return "pay";
+    if (pathname.startsWith("/self-hosted")) return "selfhosted";
+    return "";
+  }, [pathname]);
+  useEffect(() => {
+    let mounted = true;
+    void getOnboardingProgress()
+      .then((data) => {
+        if (mounted) {
+          setProgress(data);
+        }
+      })
+      .catch(() => {
+        if (mounted) {
+          setProgress(null);
+        }
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (!currentStep) {
+      return;
+    }
+    void saveOnboardingProgress({ step: currentStep, completed: true })
+      .then(setProgress)
+      .catch(() => undefined);
+  }, [currentStep]);
   const steps: StepItem[] = [
-    { key: "agent", href: "/agents", done: pathname.startsWith("/agents") },
-    { key: "kyc", href: "/kyc", done: pathname.startsWith("/kyc") },
-    { key: "recharge", href: "/recharge", done: pathname.startsWith("/recharge") },
-    { key: "pay", href: "/transactions", done: pathname.startsWith("/transactions") },
-    { key: "selfhosted", href: "/self-hosted", done: pathname.startsWith("/self-hosted") },
+    { key: "agent", href: "/agents", done: !!progress?.agent },
+    { key: "kyc", href: "/kyc", done: !!progress?.kyc },
+    { key: "recharge", href: "/recharge", done: !!progress?.recharge },
+    { key: "pay", href: "/transactions", done: !!progress?.pay },
+    { key: "selfhosted", href: "/self-hosted", done: !!progress?.selfhosted },
   ];
   const doneCount = steps.filter((s) => s.done).length;
 

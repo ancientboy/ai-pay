@@ -1147,6 +1147,40 @@ export type ListAdminAuditLogsInput = {
   targetUsername?: string;
 };
 
+export type OnboardingProgress = {
+  username: string;
+  agent: boolean;
+  kyc: boolean;
+  recharge: boolean;
+  authorize: boolean;
+  pay: boolean;
+  selfhosted: boolean;
+  updatedAt?: string;
+};
+
+export function getOnboardingProgress() {
+  return request<OnboardingProgress>("/onboarding/progress");
+}
+
+export function saveOnboardingProgress(input: {
+  step?: "agent" | "kyc" | "recharge" | "authorize" | "pay" | "selfhosted";
+  completed?: boolean;
+  dismissed?: boolean;
+}) {
+  return request<OnboardingProgress>("/onboarding/progress", {
+    method: "POST",
+    body: JSON.stringify({
+      step: input.step,
+      done: input.completed !== false,
+      dismissed: input.dismissed,
+    }),
+  });
+}
+
+export function setOnboardingStepDone(step: "agent" | "kyc" | "recharge" | "authorize" | "pay" | "selfhosted") {
+  return saveOnboardingProgress({ step, completed: true });
+}
+
 export function listAdminAuditLogs(input?: ListAdminAuditLogsInput) {
   const query = new URLSearchParams();
   if (input?.limit && Number.isFinite(input.limit) && input.limit > 0) {

@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useLocale } from "@/components/locale-provider";
+import { useMutation } from "@tanstack/react-query";
+import { saveOnboardingProgress } from "@/lib/console-api";
 
 const FIRST_RUN_KEY = "ai-pay.onboarding.dismissed.v1";
 
@@ -15,6 +17,9 @@ export function FirstRunGuideModal() {
     }
     const dismissed = window.localStorage.getItem(FIRST_RUN_KEY) === "1";
     return !dismissed;
+  });
+  const progressMutation = useMutation({
+    mutationFn: () => saveOnboardingProgress({ dismissed: true }),
   });
 
   if (!open) {
@@ -42,6 +47,7 @@ export function FirstRunGuideModal() {
             type="button"
             onClick={() => {
               window.localStorage.setItem(FIRST_RUN_KEY, "1");
+              progressMutation.mutate();
               setOpen(false);
             }}
             className="rounded border border-slate-700 px-3 py-1.5 text-sm text-slate-300"
@@ -52,6 +58,7 @@ export function FirstRunGuideModal() {
             href="/onboarding"
             onClick={() => {
               window.localStorage.setItem(FIRST_RUN_KEY, "1");
+              progressMutation.mutate();
               setOpen(false);
             }}
             className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white"
