@@ -762,6 +762,26 @@ func (s *Server) handleBillingStripeWebhook(w http.ResponseWriter, r *http.Reque
 			CancelAtPeriodEnd:      sub.CancelAtPeriodEnd,
 			RawEvent:               payload,
 		})
+	case "charge.refunded", "charge.dispute.created":
+		var obj struct {
+			ID       string `json:"id"`
+			Metadata map[string]string `json:"metadata"`
+		}
+		if err := json.Unmarshal(rawObj, &obj); err != nil {
+			break
+		}
+		chargeID := strings.TrimSpace(obj.ID)
+		vaAccountID := strings.TrimSpace(obj.Metadata["va_account_id"])
+		requestedAmount := strings.TrimSpace(obj.Metadata["requested_amount"])
+		if chargeID == "" || vaAccountID == "" || requestedAmount == "" {
+			break
+		}
+		// Reverse VA credit on refund/dispute via same transfer API using opposite direction.
+		// If insufficient VA balance, we only log now and let ops handle negative settlement.
+		idem := "stripe_reverse_" + strings.ReplaceAll(strings.TrimSpace(envelope.Type)+"_"+chargeID, ".", "_")
+		if err := s.svc.TransferVA(vaAccountID, "_platform_reserve_", requestedAmount, idem); err != nil {
+			log.Printf("stripe reverse va failed type=%s charge=%s va=%s err=%v", envelope.Type, chargeID, vaAccountID, err)
+		}
 	case "checkout.session.expired":
 		var sess struct {
 			ID string `json:"id"`

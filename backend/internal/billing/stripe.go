@@ -21,6 +21,12 @@ type CheckoutSessionResult struct {
 	Status string
 }
 
+type PaymentIntentChargeSummary struct {
+	ID             string
+	AmountRefunded int64
+	Currency       string
+}
+
 func stripeSecretKey() string {
 	return strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY"))
 }
@@ -117,6 +123,7 @@ func CreatePaymentCheckout(amountMinor int64, currency, successURL, cancelURL st
 			continue
 		}
 		form.Set("metadata["+k+"]", v)
+		form.Set("payment_intent_data[metadata]["+k+"]", v)
 	}
 
 	req, err := http.NewRequest(http.MethodPost, stripeAPI+"/checkout/sessions", strings.NewReader(form.Encode()))
@@ -146,6 +153,41 @@ func CreatePaymentCheckout(amountMinor int64, currency, successURL, cancelURL st
 		return CheckoutSessionResult{}, fmt.Errorf("stripe returned empty checkout url")
 	}
 	return CheckoutSessionResult{ID: parsed.ID, URL: parsed.URL, Status: parsed.Status}, nil
+}
+
+// FindCheckoutSessionByPaymentIntent finds checkout session id and metadata from a payment_intent id.
+func FindCheckoutSessionByPaymentIntent(paymentIntentID string) (sessionID string, metadata map[string]string, err error) {
+	sk := stripeSecretKey()
+	if sk == "" || strings.TrimSpace(paymentIntentID) == "" {
+		return "", nil, fmt.Errorf("missing stripe config or payment_intent id")
+	}
+	req, err := http.NewRequest(http.MethodGet, stripeAPI+"/checkout/sessions?payment_intent="+url.QueryEscape(strings.TrimSpace(paymentIntentID))+"&limit=1", nil)
+	if err != nil {
+		return "", nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+sk)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", nil, fmt.Errorf("stripe checkout list failed: %s: %s", resp.Status, truncate(string(body), 500))
+	}
+	var parsed struct {
+		Data []struct {
+			ID       string            `json:"id"`
+			Metadata map[string]string `json:"metadata"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", nil, err
+	}
+	if len(parsed.Data) == 0 {
+		return "", nil, fmt.Errorf("checkout session not found for payment_intent")
+	}
+	return parsed.Data[0].ID, parsed.Data[0].Metadata, nil
 }
 
 func truncate(s string, n int) string {
@@ -207,6 +249,48 @@ func RetrieveCheckoutSession(sessionID string) (subscriptionID string, customerI
 		}
 	}
 	return sub, cust, parsed.Metadata, nil
+}
+
+func RetrievePaymentIntentCharges(paymentIntentID string) ([]PaymentIntentChargeSummary, error) {
+	sk := stripeSecretKey()
+	if sk == "" || strings.TrimSpace(paymentIntentID) == "" {
+		return nil, fmt.Errorf("missing stripe config or payment_intent id")
+	}
+	req, err := http.NewRequest(http.MethodGet, stripeAPI+"/payment_intents/"+url.PathEscape(paymentIntentID)+"?expand[]=charges.data", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+sk)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("stripe payment_intent retrieve failed: %s: %s", resp.Status, truncate(string(body), 500))
+	}
+	var parsed struct {
+		Charges struct {
+			Data []struct {
+				ID             string `json:"id"`
+				AmountRefunded int64  `json:"amount_refunded"`
+				Currency       string `json:"currency"`
+			} `json:"data"`
+		} `json:"charges"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+	out := make([]PaymentIntentChargeSummary, 0, len(parsed.Charges.Data))
+	for _, c := range parsed.Charges.Data {
+		out = append(out, PaymentIntentChargeSummary{
+			ID:             strings.TrimSpace(c.ID),
+			AmountRefunded: c.AmountRefunded,
+			Currency:       strings.ToUpper(strings.TrimSpace(c.Currency)),
+		})
+	}
+	return out, nil
 }
 
 // RetrieveSubscription loads subscription status from Stripe (includes metadata and billing currency).
