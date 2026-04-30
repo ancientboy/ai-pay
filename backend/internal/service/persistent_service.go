@@ -2140,3 +2140,69 @@ SELECT agent_did, merchant_id, amount, status, expires_at, session_id FROM payme
 	}
 	return resp, apiErr
 }
+
+func (s *PersistentService) GetBillingCapabilities() []BillingCapability {
+	return []BillingCapability{
+		{
+			Provider:      "stripe",
+			Channels:      []string{"fiat"},
+			FiatEnabled:   true,
+			StableEnabled: false,
+			Description:   "Recommended for card/bank subscription checkout and invoicing.",
+		},
+		{
+			Provider:      "bridge",
+			Channels:      []string{"stablecoin"},
+			FiatEnabled:   false,
+			StableEnabled: true,
+			Description:   "Recommended for stablecoin funding rails (USDC/USDT).",
+		},
+	}
+}
+
+func (s *PersistentService) CreateBillingQuote(provider string, channel string, currency string, amount string, planID string) (BillingQuote, error) {
+	amountV, err := parseAmount(amount)
+	if err != nil || amountV <= 0 {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	if provider == "" || channel == "" || currency == "" {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	if provider == "stripe" && channel != "fiat" {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "stripe currently routes fiat channel only"}
+	}
+	if provider == "bridge" && channel != "stablecoin" {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "bridge currently routes stablecoin channel only"}
+	}
+	if provider != "stripe" && provider != "bridge" {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "unsupported provider"}
+	}
+	if channel == "fiat" && currency != "USD" && currency != "EUR" {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "fiat channel supports USD/EUR in this stage"}
+	}
+	if channel == "stablecoin" && currency != "USDC" && currency != "USDT" {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "stablecoin channel supports USDC/USDT in this stage"}
+	}
+	now := time.Now().UTC()
+	checkoutType := "redirect"
+	checkoutURL := fmt.Sprintf(
+		"https://checkout.mock.local/%s/%s?planId=%s&currency=%s&amount=%s",
+		provider,
+		channel,
+		strings.TrimSpace(planID),
+		currency,
+		strconv.FormatFloat(amountV, 'f', -1, 64),
+	)
+	return BillingQuote{
+		Provider:     provider,
+		Channel:      channel,
+		Currency:     currency,
+		Amount:       strconv.FormatFloat(amountV, 'f', -1, 64),
+		CheckoutType: checkoutType,
+		CheckoutURL:  checkoutURL,
+		ExpiresAt:    now.Add(15 * time.Minute).Format(time.RFC3339),
+	}, nil
+}

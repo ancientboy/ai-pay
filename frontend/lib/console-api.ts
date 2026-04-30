@@ -521,3 +521,44 @@ export function createDeveloperWebhook(input: { url: string; event: string }) {
 }
 export const listDeveloperWebhookDeliveries = listWebhookDeliveries;
 export const getDeveloperWebhookDeliveryStats = getWebhookDeliveryStats;
+
+export type BillingProviderCapability = {
+  provider: string;
+  methods: string[];
+  currencies: string[];
+  supportsSubscription: boolean;
+  defaultMethod: string;
+};
+
+export type BillingCapabilitiesResponse = {
+  capabilities: BillingProviderCapability[];
+};
+
+export type BillingIntentResponse = {
+  checkoutId: string;
+  provider: string;
+  paymentRail: string;
+  currency: string;
+  status: string;
+  checkoutURL: string;
+  customerHint?: string;
+  requestedPlan?: string;
+};
+
+export function getBillingCapabilities() {
+  return request<BillingCapabilitiesResponse>("/billing/provider/capabilities");
+}
+
+export function createBillingIntent(input: {
+  provider: string;
+  paymentRail: string;
+  currency: string;
+  planCode: string;
+  customerIdHint?: string;
+}) {
+  return request<BillingIntentResponse>("/billing/checkout/create", {
+    method: "POST",
+    body: JSON.stringify(input),
+    idempotencyKey: `billing-checkout-ui-${Date.now()}`,
+  });
+}
