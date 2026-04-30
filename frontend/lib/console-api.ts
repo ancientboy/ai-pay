@@ -560,6 +560,21 @@ export type BillingSubscriptionView = {
   cancelAtPeriodEnd: boolean;
 };
 
+export type BillingReconciliationItem = {
+  checkoutId: string;
+  providerSessionId: string;
+  provider: string;
+  status: string;
+  checkoutType: string;
+  paymentRail: string;
+  currency: string;
+  amountMinor?: number;
+  vaAccountId?: string;
+  userId: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export type BillingCapabilitiesEnvelope = BillingCapabilitiesResponse & {
   stripeCheckoutConfigured?: boolean;
   stripeWebhookSecretConfigured?: boolean;
@@ -588,6 +603,20 @@ export function createBillingIntent(input: {
 
 export function getBillingSubscription() {
   return request<{ subscription: BillingSubscriptionView | null }>("/billing/subscription");
+}
+
+export function getBillingReconciliation(input?: { limit?: number; userId?: string }) {
+  const q = new URLSearchParams();
+  if (input?.limit && input.limit > 0) {
+    q.set("limit", String(input.limit));
+  }
+  if (input?.userId?.trim()) {
+    q.set("userId", input.userId.trim());
+  }
+  const suffix = q.toString();
+  return request<{ items: BillingReconciliationItem[] }>(
+    `/billing/reconciliation${suffix ? `?${suffix}` : ""}`,
+  );
 }
 
 export function syncBillingCheckout(sessionId: string) {

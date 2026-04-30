@@ -149,6 +149,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /billing/plans", s.handleBillingPlans)
 	mux.HandleFunc("GET /billing/provider/capabilities", s.handleBillingProviderCapabilities)
 	mux.HandleFunc("GET /billing/subscription", s.handleBillingSubscription)
+	mux.HandleFunc("GET /billing/reconciliation", s.handleBillingReconciliation)
 	mux.HandleFunc("GET /billing/checkout/sync", s.handleBillingCheckoutSync)
 	mux.HandleFunc("POST /billing/checkout/create", s.handleBillingCheckoutCreate)
 	mux.HandleFunc("POST /billing/intent/create", s.handleBillingCheckoutCreate)
@@ -366,6 +367,28 @@ func (s *Server) handleBillingSubscription(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"subscription": sub}})
+}
+
+func (s *Server) handleBillingReconciliation(w http.ResponseWriter, r *http.Request) {
+	userID := strings.TrimSpace(r.Header.Get("X-User-Id"))
+	if userID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "missing user context"})
+		return
+	}
+	limit := 20
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+	items := s.svc.ListBillingReconciliation(userID, limit, 0)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"code": "0",
+		"data": map[string]any{
+			"items": items,
+			"meta":  map[string]any{"limit": limit, "count": len(items)},
+		},
+	})
 }
 
 func resolveBillingProvider(rail string, preferred string) string {

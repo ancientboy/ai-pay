@@ -8,6 +8,7 @@ import { useToast } from "@/components/toast-provider";
 import {
   createBillingIntent,
   getBillingCapabilities,
+  getBillingReconciliation,
   getBillingSubscription,
   syncBillingCheckout,
 } from "@/lib/console-api";
@@ -49,6 +50,10 @@ export default function BillingPage() {
   const subscriptionQuery = useQuery({
     queryKey: ["billing-subscription"],
     queryFn: getBillingSubscription,
+  });
+  const reconciliationQuery = useQuery({
+    queryKey: ["billing-reconciliation"],
+    queryFn: () => getBillingReconciliation({ limit: 20 }),
   });
 
   useEffect(() => {
@@ -260,6 +265,48 @@ export default function BillingPage() {
           </dl>
         </article>
       ) : null}
+
+      <article className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+        <h3 className="text-sm font-medium text-slate-200">{t("billing.reconciliationTitle")}</h3>
+        <p className="mt-1 text-xs text-slate-500">{t("billing.reconciliationDesc")}</p>
+        <div className="mt-3 overflow-x-auto">
+          <table className="min-w-full text-left text-xs text-slate-300">
+            <thead className="text-slate-500">
+              <tr>
+                <th className="px-2 py-1">{t("billing.reconCreatedAt")}</th>
+                <th className="px-2 py-1">{t("billing.reconStatus")}</th>
+                <th className="px-2 py-1">{t("billing.reconType")}</th>
+                <th className="px-2 py-1">VA</th>
+                <th className="px-2 py-1">{t("billing.reconAmount")}</th>
+                <th className="px-2 py-1">{t("billing.reconProviderSession")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(reconciliationQuery.data?.items ?? []).map((item) => (
+                <tr key={item.checkoutId} className="border-t border-slate-800">
+                  <td className="px-2 py-1">{item.createdAt ?? "-"}</td>
+                  <td className="px-2 py-1">{item.status}</td>
+                  <td className="px-2 py-1">{item.checkoutType || "-"}</td>
+                  <td className="px-2 py-1">{item.vaAccountId || "-"}</td>
+                  <td className="px-2 py-1">
+                    {item.amountMinor !== null && item.amountMinor !== undefined
+                      ? `${(item.amountMinor / 100).toFixed(2)} ${item.currency}`
+                      : `- ${item.currency}`}
+                  </td>
+                  <td className="px-2 py-1 break-all">{item.providerSessionId || "-"}</td>
+                </tr>
+              ))}
+              {(reconciliationQuery.data?.items?.length ?? 0) === 0 ? (
+                <tr>
+                  <td className="px-2 py-2 text-slate-500" colSpan={6}>
+                    {t("billing.reconEmpty")}
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </article>
 
       {errorMessage ? (
         <div className="rounded-md border border-rose-700/60 bg-rose-950/30 p-3 text-sm text-rose-100">

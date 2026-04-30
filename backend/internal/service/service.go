@@ -136,11 +136,11 @@ type InterestQuote struct {
 }
 
 type VATopupConfig struct {
-	AccountID         string    `json:"accountId"`
-	AutoTopupEnabled  bool      `json:"autoTopupEnabled"`
-	ThresholdAmount   float64   `json:"thresholdAmount"`
-	TargetAmount      float64   `json:"targetAmount"`
-	UpdatedAt         time.Time `json:"updatedAt"`
+	AccountID        string    `json:"accountId"`
+	AutoTopupEnabled bool      `json:"autoTopupEnabled"`
+	ThresholdAmount  float64   `json:"thresholdAmount"`
+	TargetAmount     float64   `json:"targetAmount"`
+	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
 type VATransferRecord struct {
@@ -279,37 +279,37 @@ type BillingQuote struct {
 }
 
 type Service struct {
-	mu             sync.Mutex
-	agents         map[string]Agent
-	accounts       map[string]*Account
-	accountsByVA   map[string]*Account
-	accountsByCard map[string]*Account
-	rules          map[string]AuthorizeRule
-	orders         map[string]Transaction
-	recharges      []RechargeOrder
-	rechargeIdem   map[string]string
-	idemMap        map[string]string
-	dailySpent     map[string]float64
-	holds          map[string]holdRecord
-	actionIdem     map[string]struct{}
-	apiKeys        []DeveloperAPIKey
-	webhooks       []DeveloperWebhook
-	webhookDeliver []WebhookDelivery
-	webhookSeq     int64
-	accountCreated map[string]time.Time
-	topupConfig    map[string]VATopupConfig
-	vaTransfers    []VATransferRecord
-	auditLogs      []AuditLog
-	auditSeq       int64
-	riskConfig     RiskConfig
-	channelRoutes  map[string]ChannelRoute
-	fundTransfers  []FundTransferRecord
-	fundWithdraws  []WithdrawRecord
-	debitPreviews  map[string]DebitPreview
-	x402Outbound   []X402OutboundTransfer
-	virtualCards   []VirtualCardRecord
-	cardPayIdem    map[string]string
-	kycByAgent     map[string]PartyKYCStatus
+	mu               sync.Mutex
+	agents           map[string]Agent
+	accounts         map[string]*Account
+	accountsByVA     map[string]*Account
+	accountsByCard   map[string]*Account
+	rules            map[string]AuthorizeRule
+	orders           map[string]Transaction
+	recharges        []RechargeOrder
+	rechargeIdem     map[string]string
+	idemMap          map[string]string
+	dailySpent       map[string]float64
+	holds            map[string]holdRecord
+	actionIdem       map[string]struct{}
+	apiKeys          []DeveloperAPIKey
+	webhooks         []DeveloperWebhook
+	webhookDeliver   []WebhookDelivery
+	webhookSeq       int64
+	accountCreated   map[string]time.Time
+	topupConfig      map[string]VATopupConfig
+	vaTransfers      []VATransferRecord
+	auditLogs        []AuditLog
+	auditSeq         int64
+	riskConfig       RiskConfig
+	channelRoutes    map[string]ChannelRoute
+	fundTransfers    []FundTransferRecord
+	fundWithdraws    []WithdrawRecord
+	debitPreviews    map[string]DebitPreview
+	x402Outbound     []X402OutboundTransfer
+	virtualCards     []VirtualCardRecord
+	cardPayIdem      map[string]string
+	kycByAgent       map[string]PartyKYCStatus
 	riskAuditEntries []RiskAuditEntry
 	riskAuditSeq     int64
 	walletBindings   map[string]WalletBinding
@@ -396,6 +396,7 @@ type PaymentService interface {
 	RecordBillingCheckoutSession(in BillingCheckoutSessionInput) error
 	UpdateBillingCheckoutSessionByProviderSession(in BillingCheckoutSessionUpdate) error
 	GetBillingSubscription(userID string) (BillingSubscriptionView, bool)
+	ListBillingReconciliation(userID string, limit int, offset int) []BillingReconciliationEntry
 	UpsertBillingSubscription(u BillingSubscriptionUpsert) error
 }
 

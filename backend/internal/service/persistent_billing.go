@@ -7,6 +7,79 @@ import (
 	"time"
 )
 
+func (s *PersistentService) ListBillingReconciliation(userID string, limit int, offset int) []BillingReconciliationEntry {
+	if strings.TrimSpace(userID) == "" {
+		return []BillingReconciliationEntry{}
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := s.store.DB.Query(`
+SELECT
+  id, provider, plan_code, payment_rail, currency, amount_minor, status,
+  provider_session_id, checkout_url, metadata_json, created_at, updated_at
+FROM billing_checkout_session
+WHERE user_id = ?
+ORDER BY created_at DESC
+LIMIT ? OFFSET ?`, userID, limit, offset)
+	if err != nil {
+		return []BillingReconciliationEntry{}
+	}
+	defer rows.Close()
+	out := make([]BillingReconciliationEntry, 0, limit)
+	for rows.Next() {
+		var (
+			id, provider, planCode, paymentRail, currency, status string
+			providerSessionID, checkoutURL                        sql.NullString
+			amountMinor                                           sql.NullInt64
+			metadataJSON                                          sql.NullString
+			createdAt, updatedAt                                  time.Time
+		)
+		if err := rows.Scan(
+			&id, &provider, &planCode, &paymentRail, &currency, &amountMinor, &status,
+			&providerSessionID, &checkoutURL, &metadataJSON, &createdAt, &updatedAt,
+		); err != nil {
+			continue
+		}
+		entry := BillingReconciliationEntry{
+			ProviderSessionID: providerSessionID.String,
+			UserID:            userID,
+			Currency:          currency,
+			CheckoutStatus:    status,
+			CreatedAt:         createdAt.UTC().Format(time.RFC3339),
+		}
+		if amountMinor.Valid {
+			entry.AmountMinor = amountMinor.Int64
+		}
+		if metadataJSON.Valid && strings.TrimSpace(metadataJSON.String) != "" {
+			var meta map[string]string
+			if json.Unmarshal([]byte(metadataJSON.String), &meta) == nil {
+				entry.VAAccountID = strings.TrimSpace(meta["va_account_id"])
+				entry.CheckoutType = strings.TrimSpace(meta["checkout_type"])
+			}
+		}
+		if entry.CheckoutType == "" {
+			// Heuristic for older rows.
+			if paymentRail == "fiat" && entry.AmountMinor > 0 {
+				entry.CheckoutType = "payment_link"
+			} else {
+				entry.CheckoutType = "subscription"
+			}
+		}
+		if checkoutURL.Valid {
+			_ = checkoutURL.String
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
 func (s *PersistentService) RecordBillingCheckoutSession(in BillingCheckoutSessionInput) error {
 	var metaStr interface{}
 	if in.Metadata != nil {

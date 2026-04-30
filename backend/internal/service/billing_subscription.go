@@ -41,6 +41,30 @@ type BillingCheckoutSessionUpdate struct {
 	Status            string
 }
 
+type BillingCheckoutSessionView struct {
+	LocalID           string            `json:"localId"`
+	UserID            string            `json:"userId"`
+	Provider          string            `json:"provider"`
+	PlanCode          string            `json:"planCode"`
+	PaymentRail       string            `json:"paymentRail"`
+	Currency          string            `json:"currency"`
+	AmountMinor       int64             `json:"amountMinor"`
+	Status            string            `json:"status"`
+	ProviderSessionID string            `json:"providerSessionId,omitempty"`
+	Metadata          map[string]string `json:"metadata,omitempty"`
+}
+
+type BillingReconciliationEntry struct {
+	ProviderSessionID string `json:"providerSessionId"`
+	UserID            string `json:"userId"`
+	VAAccountID       string `json:"vaAccountId,omitempty"`
+	CheckoutType      string `json:"checkoutType,omitempty"`
+	Currency          string `json:"currency"`
+	AmountMinor       int64  `json:"amountMinor"`
+	CheckoutStatus    string `json:"checkoutStatus"`
+	CreatedAt         string `json:"createdAt"`
+}
+
 // BillingSubscriptionUpsert updates subscription row after Stripe webhook or sync.
 type BillingSubscriptionUpsert struct {
 	UserID                 string
@@ -99,6 +123,74 @@ func (s *Service) UpdateBillingCheckoutSessionByProviderSession(in BillingChecko
 		}
 	}
 	return nil
+}
+
+func (s *Service) ListBillingCheckoutSessions(userID string, limit int, offset int) []BillingCheckoutSessionView {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.billing == nil || strings.TrimSpace(userID) == "" {
+		return nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	items := make([]BillingCheckoutSessionView, 0, len(s.billing.checkoutByID))
+	for _, v := range s.billing.checkoutByID {
+		if strings.TrimSpace(v.UserID) != strings.TrimSpace(userID) {
+			continue
+		}
+		amt := int64(0)
+		if v.AmountMinor != nil {
+			amt = *v.AmountMinor
+		}
+		items = append(items, BillingCheckoutSessionView{
+			LocalID:           v.LocalID,
+			UserID:            v.UserID,
+			Provider:          v.Provider,
+			PlanCode:          v.PlanCode,
+			PaymentRail:       v.PaymentRail,
+			Currency:          v.Currency,
+			AmountMinor:       amt,
+			Status:            v.Status,
+			ProviderSessionID: v.ProviderSessionID,
+			Metadata:          v.Metadata,
+		})
+	}
+	if offset >= len(items) {
+		return []BillingCheckoutSessionView{}
+	}
+	end := offset + limit
+	if end > len(items) {
+		end = len(items)
+	}
+	return items[offset:end]
+}
+
+func (s *Service) ListBillingReconciliation(userID string, limit int, offset int) []BillingReconciliationEntry {
+	sessions := s.ListBillingCheckoutSessions(userID, limit, offset)
+	out := make([]BillingReconciliationEntry, 0, len(sessions))
+	for _, item := range sessions {
+		entry := BillingReconciliationEntry{
+			ProviderSessionID: item.ProviderSessionID,
+			UserID:            item.UserID,
+			Currency:          item.Currency,
+			AmountMinor:       item.AmountMinor,
+			CheckoutStatus:    item.Status,
+			CreatedAt:         time.Now().UTC().Format(time.RFC3339),
+		}
+		if item.Metadata != nil {
+			entry.VAAccountID = strings.TrimSpace(item.Metadata["va_account_id"])
+			entry.CheckoutType = strings.TrimSpace(item.Metadata["checkout_type"])
+		}
+		if entry.CheckoutType == "" {
+			entry.CheckoutType = "subscription"
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func (s *Service) GetBillingSubscription(userID string) (BillingSubscriptionView, bool) {
