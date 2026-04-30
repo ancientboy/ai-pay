@@ -260,6 +260,24 @@ type RiskAuditEntry struct {
 	CreatedAt     time.Time       `json:"createdAt"`
 }
 
+type BillingCapability struct {
+	Provider      string   `json:"provider"`
+	Channels      []string `json:"channels"`
+	FiatEnabled   bool     `json:"fiatEnabled"`
+	StableEnabled bool     `json:"stableEnabled"`
+	Description   string   `json:"description"`
+}
+
+type BillingQuote struct {
+	Provider     string `json:"provider"`
+	Channel      string `json:"channel"`
+	Currency     string `json:"currency"`
+	Amount       string `json:"amount"`
+	CheckoutType string `json:"checkoutType"`
+	CheckoutURL  string `json:"checkoutUrl"`
+	ExpiresAt    string `json:"expiresAt"`
+}
+
 type Service struct {
 	mu             sync.Mutex
 	agents         map[string]Agent
@@ -372,6 +390,8 @@ type PaymentService interface {
 	RevokeAuthSession(agentDID string, sessionID string, idemKey string) error
 	RequestPaymentSign(agentDID string, merchantID string, amount string, sessionID string, idemKey string) (PaymentSignRequestRecord, error)
 	SubmitSignedPayment(signID string, req PayRequest) (PayResponse, *APIError)
+	GetBillingCapabilities() []BillingCapability
+	CreateBillingQuote(provider string, channel string, currency string, amount string, planID string) (BillingQuote, error)
 }
 
 func New() *Service {
@@ -914,6 +934,73 @@ func parseAmount(v string) (float64, error) {
 		return 0, err
 	}
 	return n, nil
+}
+
+func (s *Service) GetBillingCapabilities() []BillingCapability {
+	return []BillingCapability{
+		{
+			Provider:      "stripe",
+			Channels:      []string{"fiat"},
+			FiatEnabled:   true,
+			StableEnabled: false,
+			Description:   "Recommended for card/bank subscription checkout and invoicing.",
+		},
+		{
+			Provider:      "bridge",
+			Channels:      []string{"stablecoin"},
+			FiatEnabled:   false,
+			StableEnabled: true,
+			Description:   "Recommended for stablecoin funding rails (USDC/USDT).",
+		},
+	}
+}
+
+func (s *Service) CreateBillingQuote(provider string, channel string, currency string, amount string, planID string) (BillingQuote, error) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	amount = strings.TrimSpace(amount)
+	planID = strings.TrimSpace(planID)
+	if provider == "" || channel == "" || currency == "" || amount == "" {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	if _, err := parseAmount(amount); err != nil {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	if provider == "stripe" && channel != "fiat" {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "stripe currently routes fiat channel only"}
+	}
+	if provider == "bridge" && channel != "stablecoin" {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "bridge currently routes stablecoin channel only"}
+	}
+	if provider != "stripe" && provider != "bridge" {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "unsupported provider"}
+	}
+	if channel == "fiat" && currency != "USD" && currency != "EUR" {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "fiat channel supports USD/EUR in this stage"}
+	}
+	if channel == "stablecoin" && currency != "USDC" && currency != "USDT" {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "stablecoin channel supports USDC/USDT in this stage"}
+	}
+	now := time.Now().UTC()
+	checkoutType := "redirect"
+	checkoutURL := fmt.Sprintf(
+		"https://checkout.mock.local/%s/%s?planId=%s&currency=%s&amount=%s",
+		provider,
+		channel,
+		planID,
+		currency,
+		amount,
+	)
+	return BillingQuote{
+		Provider:     provider,
+		Channel:      channel,
+		Currency:     currency,
+		Amount:       amount,
+		CheckoutType: checkoutType,
+		CheckoutURL:  checkoutURL,
+		ExpiresAt:    now.Add(15 * time.Minute).Format(time.RFC3339),
+	}, nil
 }
 
 func calcFee(amount float64) float64 {

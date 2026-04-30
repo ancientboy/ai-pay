@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -144,6 +145,10 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /authorize/session/revoke", s.withM8SelfHosted(http.HandlerFunc(s.handleSessionRevoke)))
 	mux.Handle("POST /payment/sign/request", s.withM8SelfHosted(http.HandlerFunc(s.handlePaymentSignRequest)))
 	mux.Handle("POST /payment/sign/submit", s.withM8SelfHosted(http.HandlerFunc(s.handlePaymentSignSubmit)))
+	mux.HandleFunc("GET /billing/plans", s.handleBillingPlans)
+	mux.HandleFunc("GET /billing/provider/capabilities", s.handleBillingProviderCapabilities)
+	mux.HandleFunc("POST /billing/checkout/create", s.handleBillingCheckoutCreate)
+	mux.HandleFunc("POST /billing/intent/create", s.handleBillingCheckoutCreate)
 	return s.withRequestID(mux)
 }
 
@@ -171,6 +176,148 @@ func writeInternalError(w http.ResponseWriter, r *http.Request, operation string
 type registerAgentReq struct {
 	AgentDID  string `json:"agentDid"`
 	DIDPubKey string `json:"didPubKey"`
+}
+
+type billingPlan struct {
+	Code           string   `json:"code"`
+	Name           string   `json:"name"`
+	Description    string   `json:"description"`
+	PriceMonthly   string   `json:"priceMonthly"`
+	Currency       string   `json:"currency"`
+	SupportedRails []string `json:"supportedRails"`
+}
+
+type billingProviderCapability struct {
+	Provider      string   `json:"provider"`
+	Capabilities  []string `json:"capabilities"`
+	Enabled       bool     `json:"enabled"`
+	CheckoutModes []string `json:"checkoutModes"`
+}
+
+type billingCheckoutCreateReq struct {
+	PlanCode       string `json:"planCode"`
+	PaymentRail    string `json:"paymentRail"`
+	Currency       string `json:"currency"`
+	Provider       string `json:"provider"`
+	CustomerIDHint string `json:"customerIdHint"`
+}
+
+func (s *Server) handleBillingPlans(w http.ResponseWriter, r *http.Request) {
+	plans := []billingPlan{
+		{
+			Code:           "starter",
+			Name:           "Starter",
+			Description:    "For PoC and small pilot workloads",
+			PriceMonthly:   "49",
+			Currency:       "USD",
+			SupportedRails: []string{"fiat", "stablecoin"},
+		},
+		{
+			Code:           "growth",
+			Name:           "Growth",
+			Description:    "For production workloads and team collaboration",
+			PriceMonthly:   "199",
+			Currency:       "USD",
+			SupportedRails: []string{"fiat", "stablecoin"},
+		},
+		{
+			Code:           "enterprise",
+			Name:           "Enterprise",
+			Description:    "For compliance-heavy and high-volume organizations",
+			PriceMonthly:   "custom",
+			Currency:       "USD",
+			SupportedRails: []string{"fiat", "stablecoin"},
+		},
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": plans})
+}
+
+func envEnabled(name string, defaultEnabled bool) bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(name)))
+	if value == "" {
+		return defaultEnabled
+	}
+	return value == "1" || value == "true" || value == "yes"
+}
+
+func (s *Server) handleBillingProviderCapabilities(w http.ResponseWriter, r *http.Request) {
+	items := []billingProviderCapability{
+		{
+			Provider:      "stripe",
+			Capabilities:  []string{"fiat", "stablecoin"},
+			Enabled:       envEnabled("BILLING_PROVIDER_STRIPE_ENABLED", true),
+			CheckoutModes: []string{"subscription", "one_time"},
+		},
+		{
+			Provider:      "bridge",
+			Capabilities:  []string{"stablecoin"},
+			Enabled:       envEnabled("BILLING_PROVIDER_BRIDGE_ENABLED", true),
+			CheckoutModes: []string{"deposit", "transfer"},
+		},
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": items})
+}
+
+func resolveBillingProvider(rail string, preferred string) string {
+	preferred = strings.TrimSpace(strings.ToLower(preferred))
+	if preferred == "stripe" || preferred == "bridge" {
+		return preferred
+	}
+	rail = strings.TrimSpace(strings.ToLower(rail))
+	if rail == "fiat" {
+		return "stripe"
+	}
+	return "bridge"
+}
+
+func (s *Server) handleBillingCheckoutCreate(w http.ResponseWriter, r *http.Request) {
+	var req billingCheckoutCreateReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	planCode := strings.TrimSpace(strings.ToLower(req.PlanCode))
+	rail := strings.TrimSpace(strings.ToLower(req.PaymentRail))
+	currency := strings.TrimSpace(strings.ToUpper(req.Currency))
+	if planCode == "" || rail == "" || currency == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "missing required fields"})
+		return
+	}
+	if rail != "fiat" && rail != "stablecoin" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid payment rail"})
+		return
+	}
+	provider := resolveBillingProvider(rail, req.Provider)
+	if provider == "stripe" && !envEnabled("BILLING_PROVIDER_STRIPE_ENABLED", true) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "stripe provider disabled"})
+		return
+	}
+	if provider == "bridge" && !envEnabled("BILLING_PROVIDER_BRIDGE_ENABLED", true) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "bridge provider disabled"})
+		return
+	}
+	checkoutID := fmt.Sprintf("chk_%d", time.Now().UnixNano())
+	redirectURL := fmt.Sprintf(
+		"https://checkout.mock.%s.local/%s?plan=%s&rail=%s&currency=%s",
+		provider,
+		checkoutID,
+		planCode,
+		rail,
+		currency,
+	)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"code": "0",
+		"data": map[string]any{
+			"checkoutId":    checkoutID,
+			"provider":      provider,
+			"paymentRail":   rail,
+			"currency":      currency,
+			"status":        "PENDING",
+			"checkoutURL":   redirectURL,
+			"customerHint":  strings.TrimSpace(req.CustomerIDHint),
+			"requestedPlan": planCode,
+		},
+	})
 }
 
 func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {

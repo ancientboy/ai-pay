@@ -15,6 +15,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
   const canManageDeveloper = defaultRole !== "readonly";
   const navItems = [
     { href: "/dashboard", label: t("nav.dashboard") },
+    { href: "/billing", label: t("nav.billing") },
     { href: "/agents", label: t("nav.agents") },
     { href: "/authorize", label: t("nav.authorize") },
     { href: "/recharge", label: t("nav.recharge") },
