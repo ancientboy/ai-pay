@@ -445,11 +445,11 @@ func (s *Server) handleBillingCheckoutCreate(w http.ResponseWriter, r *http.Requ
 			successURL := base + "/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}&checkoutType=payment_link"
 			cancelURL := base + "/billing?checkout=cancel&checkoutType=payment_link"
 			meta := map[string]string{
-				"plan_code":      planCode,
-				"user_id":        userID,
-				"checkout_type":  "payment_link",
-				"payment_rail":   rail,
-				"currency":       strings.ToLower(currency),
+				"plan_code":        planCode,
+				"user_id":          userID,
+				"checkout_type":    "payment_link",
+				"payment_rail":     rail,
+				"currency":         strings.ToLower(currency),
 				"requested_amount": strings.TrimSpace(req.Amount),
 			}
 			res, err := billing.CreatePaymentCheckout(amountMinor, currency, successURL, cancelURL, meta)
@@ -502,8 +502,8 @@ func (s *Server) handleBillingCheckoutCreate(w http.ResponseWriter, r *http.Requ
 			successURL := base + "/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}"
 			cancelURL := base + "/billing?checkout=cancel"
 			meta := map[string]string{
-				"plan_code": planCode,
-				"user_id":   userID,
+				"plan_code":     planCode,
+				"user_id":       userID,
 				"checkout_type": "subscription",
 			}
 			res, err := billing.CreateSubscriptionCheckout(priceID, successURL, cancelURL, meta)
@@ -720,12 +720,12 @@ func (s *Server) handleBillingStripeWebhook(w http.ResponseWriter, r *http.Reque
 
 	case "customer.subscription.updated", "customer.subscription.deleted":
 		var sub struct {
-			ID                   string `json:"id"`
-			Status               string `json:"status"`
-			Currency             string `json:"currency"`
-			CancelAtPeriodEnd    bool   `json:"cancel_at_period_end"`
-			CurrentPeriodEnd     int64  `json:"current_period_end"`
-			Metadata             map[string]string `json:"metadata"`
+			ID                string            `json:"id"`
+			Status            string            `json:"status"`
+			Currency          string            `json:"currency"`
+			CancelAtPeriodEnd bool              `json:"cancel_at_period_end"`
+			CurrentPeriodEnd  int64             `json:"current_period_end"`
+			Metadata          map[string]string `json:"metadata"`
 		}
 		if err := json.Unmarshal(rawObj, &sub); err != nil {
 			break
@@ -764,7 +764,7 @@ func (s *Server) handleBillingStripeWebhook(w http.ResponseWriter, r *http.Reque
 		})
 	case "charge.refunded", "charge.dispute.created":
 		var obj struct {
-			ID       string `json:"id"`
+			ID       string            `json:"id"`
 			Metadata map[string]string `json:"metadata"`
 		}
 		if err := json.Unmarshal(rawObj, &obj); err != nil {
@@ -773,14 +773,34 @@ func (s *Server) handleBillingStripeWebhook(w http.ResponseWriter, r *http.Reque
 		chargeID := strings.TrimSpace(obj.ID)
 		vaAccountID := strings.TrimSpace(obj.Metadata["va_account_id"])
 		requestedAmount := strings.TrimSpace(obj.Metadata["requested_amount"])
-		if chargeID == "" || vaAccountID == "" || requestedAmount == "" {
+		if chargeID == "" {
 			break
 		}
-		// Reverse VA credit on refund/dispute via same transfer API using opposite direction.
-		// If insufficient VA balance, we only log now and let ops handle negative settlement.
+		if vaAccountID == "" || requestedAmount == "" {
+			meta, amountMinor, currency, err := billing.RetrieveChargeMetadata(chargeID)
+			if err != nil {
+				log.Printf("stripe reversal skip: retrieve charge failed type=%s charge=%s err=%v", envelope.Type, chargeID, err)
+				break
+			}
+			if vaAccountID == "" {
+				vaAccountID = strings.TrimSpace(meta["va_account_id"])
+			}
+			if requestedAmount == "" && amountMinor > 0 {
+				requestedAmount = strconv.FormatFloat(float64(amountMinor)/100.0, 'f', 2, 64)
+			}
+			_ = currency
+		}
+		if vaAccountID == "" || requestedAmount == "" {
+			log.Printf("stripe reversal skip: missing va/amount type=%s charge=%s va=%s amount=%s", envelope.Type, chargeID, vaAccountID, requestedAmount)
+			break
+		}
+		reverseAmount := strings.TrimSpace(requestedAmount)
+		if !strings.HasPrefix(reverseAmount, "-") {
+			reverseAmount = "-" + reverseAmount
+		}
 		idem := "stripe_reverse_" + strings.ReplaceAll(strings.TrimSpace(envelope.Type)+"_"+chargeID, ".", "_")
-		if err := s.svc.TransferVA(vaAccountID, "_platform_reserve_", requestedAmount, idem); err != nil {
-			log.Printf("stripe reverse va failed type=%s charge=%s va=%s err=%v", envelope.Type, chargeID, vaAccountID, err)
+		if err := s.svc.Recharge(vaAccountID, reverseAmount, idem); err != nil {
+			log.Printf("stripe reverse va failed type=%s charge=%s va=%s amount=%s err=%v", envelope.Type, chargeID, vaAccountID, reverseAmount, err)
 		}
 	case "checkout.session.expired":
 		var sess struct {
@@ -1678,9 +1698,9 @@ func (s *Server) handleRiskTransactionCheck(w http.ResponseWriter, r *http.Reque
 }
 
 type riskKYCReq struct {
-	AgentDID           string `json:"agentDid"`
-	DocumentReference  string `json:"documentReference"`
-	Signature          string `json:"signature"`
+	AgentDID          string `json:"agentDid"`
+	DocumentReference string `json:"documentReference"`
+	Signature         string `json:"signature"`
 }
 
 func (s *Server) handleRiskKYCVerify(w http.ResponseWriter, r *http.Request) {
@@ -1827,9 +1847,9 @@ func (s *Server) handleWalletUnbind(w http.ResponseWriter, r *http.Request) {
 }
 
 type sessionCreateReq struct {
-	AgentDID    string `json:"agentDid"`
-	TTLMinutes  int    `json:"ttlMinutes"`
-	Signature   string `json:"signature"`
+	AgentDID   string `json:"agentDid"`
+	TTLMinutes int    `json:"ttlMinutes"`
+	Signature  string `json:"signature"`
 }
 
 func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
@@ -1967,12 +1987,12 @@ func (s *Server) handlePaymentSignRequest(w http.ResponseWriter, r *http.Request
 }
 
 type paymentSignSubmitReq struct {
-	SignID       string `json:"signId"`
-	PayerDID     string `json:"payerDid"`
-	MerchantID   string `json:"merchantId"`
-	Amount       string `json:"amount"`
+	SignID         string `json:"signId"`
+	PayerDID       string `json:"payerDid"`
+	MerchantID     string `json:"merchantId"`
+	Amount         string `json:"amount"`
 	IdempotencyKey string `json:"idempotencyKey"`
-	Signature    string `json:"signature"`
+	Signature      string `json:"signature"`
 }
 
 func (s *Server) handlePaymentSignSubmit(w http.ResponseWriter, r *http.Request) {

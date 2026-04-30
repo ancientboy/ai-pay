@@ -530,7 +530,7 @@ func (s *Service) CreateAccount(agentDID string) Account {
 
 func (s *Service) Recharge(va string, amount string, idemKey string) error {
 	v, err := parseAmount(amount)
-	if err != nil || v <= 0 {
+	if err != nil || v == 0 {
 		return &APIError{Code: "PAY-010", Message: "invalid amount"}
 	}
 	if idemKey == "" {
@@ -547,6 +547,9 @@ func (s *Service) Recharge(va string, amount string, idemKey string) error {
 	}
 	if !ok {
 		return &APIError{Code: "PAY-010", Message: "account not found"}
+	}
+	if v < 0 && acc.Balance+v < 0 {
+		return &APIError{Code: "PAY-003", Message: "agent va insufficient balance"}
 	}
 	acc.Balance += v
 	s.recharges = append([]RechargeOrder{

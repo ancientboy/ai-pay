@@ -219,8 +219,8 @@ func RetrieveCheckoutSession(sessionID string) (subscriptionID string, customerI
 		return "", "", nil, fmt.Errorf("stripe session retrieve failed: %s: %s", resp.Status, truncate(string(body), 500))
 	}
 	var parsed struct {
-		Subscription json.RawMessage `json:"subscription"`
-		Customer     json.RawMessage `json:"customer"`
+		Subscription json.RawMessage   `json:"subscription"`
+		Customer     json.RawMessage   `json:"customer"`
 		Metadata     map[string]string `json:"metadata"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
@@ -326,6 +326,37 @@ func RetrieveSubscription(subscriptionID string) (status string, currency string
 	t := time.Unix(parsed.CurrentPeriodEnd, 0).UTC()
 	cur := strings.ToUpper(strings.TrimSpace(parsed.Currency))
 	return parsed.Status, cur, parsed.CancelAtPeriodEnd, t, parsed.Metadata, nil
+}
+
+// RetrieveChargeMetadata fetches charge metadata and refunded amount.
+func RetrieveChargeMetadata(chargeID string) (metadata map[string]string, amountRefundedMinor int64, currency string, err error) {
+	sk := stripeSecretKey()
+	if sk == "" || strings.TrimSpace(chargeID) == "" {
+		return nil, 0, "", fmt.Errorf("missing stripe config or charge id")
+	}
+	req, err := http.NewRequest(http.MethodGet, stripeAPI+"/charges/"+url.PathEscape(chargeID), nil)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+sk)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, 0, "", fmt.Errorf("stripe charge retrieve failed: %s: %s", resp.Status, truncate(string(body), 500))
+	}
+	var parsed struct {
+		Metadata       map[string]string `json:"metadata"`
+		AmountRefunded int64             `json:"amount_refunded"`
+		Currency       string            `json:"currency"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, 0, "", err
+	}
+	return parsed.Metadata, parsed.AmountRefunded, strings.ToUpper(strings.TrimSpace(parsed.Currency)), nil
 }
 
 // WebhookConfigured reports whether webhook verification can run.
