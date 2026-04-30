@@ -563,16 +563,14 @@ export type BillingSubscriptionView = {
 export type BillingReconciliationItem = {
   checkoutId: string;
   providerSessionId: string;
-  provider: string;
   status: string;
   checkoutType: string;
-  paymentRail: string;
   currency: string;
   amountMinor?: number;
   vaAccountId?: string;
   userId: string;
   createdAt?: string;
-  updatedAt?: string;
+  mismatch?: boolean;
 };
 
 export type BillingCapabilitiesEnvelope = BillingCapabilitiesResponse & {
@@ -614,7 +612,7 @@ export function getBillingReconciliation(input?: { limit?: number; userId?: stri
     q.set("userId", input.userId.trim());
   }
   const suffix = q.toString();
-  return request<{ items: BillingReconciliationItem[] }>(
+  return request<{ items: BillingReconciliationItem[]; meta?: { count: number; limit: number } }>(
     `/billing/reconciliation${suffix ? `?${suffix}` : ""}`,
   );
 }

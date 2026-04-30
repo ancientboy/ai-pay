@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -150,6 +151,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /billing/provider/capabilities", s.handleBillingProviderCapabilities)
 	mux.HandleFunc("GET /billing/subscription", s.handleBillingSubscription)
 	mux.HandleFunc("GET /billing/reconciliation", s.handleBillingReconciliation)
+	mux.HandleFunc("GET /billing/reconciliation/export", s.handleBillingReconciliationExportCSV)
 	mux.HandleFunc("GET /billing/checkout/sync", s.handleBillingCheckoutSync)
 	mux.HandleFunc("POST /billing/checkout/create", s.handleBillingCheckoutCreate)
 	mux.HandleFunc("POST /billing/intent/create", s.handleBillingCheckoutCreate)
@@ -376,19 +378,103 @@ func (s *Server) handleBillingReconciliation(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	limit := 20
+	offset := 0
+	statusFilter := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("status")))
+	typeFilter := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("checkoutType")))
+	vaFilter := strings.TrimSpace(r.URL.Query().Get("vaAccountId"))
+	anomalyOnly := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("anomalyOnly"))) == "1" ||
+		strings.TrimSpace(strings.ToLower(r.URL.Query().Get("anomalyOnly"))) == "true"
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 100 {
 			limit = n
 		}
 	}
-	items := s.svc.ListBillingReconciliation(userID, limit, 0)
+	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	items := s.svc.ListBillingReconciliation(userID, 200, 0)
+	filtered := make([]service.BillingReconciliationEntry, 0, len(items))
+	for _, item := range items {
+		if statusFilter != "" && strings.ToLower(strings.TrimSpace(item.CheckoutStatus)) != statusFilter {
+			continue
+		}
+		if typeFilter != "" && strings.ToLower(strings.TrimSpace(item.CheckoutType)) != typeFilter {
+			continue
+		}
+		if vaFilter != "" && strings.TrimSpace(item.VAAccountID) != vaFilter {
+			continue
+		}
+		if anomalyOnly {
+			if item.CheckoutType == "payment_link" && item.CheckoutStatus == "completed" && strings.TrimSpace(item.VAAccountID) == "" {
+				// missing target VA mapping
+			} else {
+				continue
+			}
+		}
+		filtered = append(filtered, item)
+	}
+	if offset > len(filtered) {
+		offset = len(filtered)
+	}
+	end := offset + limit
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	page := filtered[offset:end]
 	writeJSON(w, http.StatusOK, map[string]any{
 		"code": "0",
 		"data": map[string]any{
-			"items": items,
-			"meta":  map[string]any{"limit": limit, "count": len(items)},
+			"items": page,
+			"meta":  map[string]any{"limit": limit, "offset": offset, "count": len(page), "total": len(filtered)},
 		},
 	})
+}
+
+func (s *Server) handleBillingReconciliationExportCSV(w http.ResponseWriter, r *http.Request) {
+	userID := strings.TrimSpace(r.Header.Get("X-User-Id"))
+	if userID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "missing user context"})
+		return
+	}
+	statusFilter := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("status")))
+	typeFilter := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("checkoutType")))
+	vaFilter := strings.TrimSpace(r.URL.Query().Get("vaAccountId"))
+	anomalyOnly := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("anomalyOnly"))) == "1" ||
+		strings.TrimSpace(strings.ToLower(r.URL.Query().Get("anomalyOnly"))) == "true"
+	items := s.svc.ListBillingReconciliation(userID, 1000, 0)
+
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"billing_reconciliation.csv\"")
+	cw := csv.NewWriter(w)
+	_ = cw.Write([]string{"providerSessionId", "checkoutType", "checkoutStatus", "vaAccountId", "amountMinor", "currency", "createdAt", "anomaly"})
+	for _, item := range items {
+		if statusFilter != "" && strings.ToLower(strings.TrimSpace(item.CheckoutStatus)) != statusFilter {
+			continue
+		}
+		if typeFilter != "" && strings.ToLower(strings.TrimSpace(item.CheckoutType)) != typeFilter {
+			continue
+		}
+		if vaFilter != "" && strings.TrimSpace(item.VAAccountID) != vaFilter {
+			continue
+		}
+		anomaly := item.CheckoutType == "payment_link" && item.CheckoutStatus == "completed" && strings.TrimSpace(item.VAAccountID) == ""
+		if anomalyOnly && !anomaly {
+			continue
+		}
+		_ = cw.Write([]string{
+			item.ProviderSessionID,
+			item.CheckoutType,
+			item.CheckoutStatus,
+			item.VAAccountID,
+			strconv.FormatInt(item.AmountMinor, 10),
+			item.Currency,
+			item.CreatedAt,
+			fmt.Sprintf("%v", anomaly),
+		})
+	}
+	cw.Flush()
 }
 
 func resolveBillingProvider(rail string, preferred string) string {
