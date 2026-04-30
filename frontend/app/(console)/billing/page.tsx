@@ -154,6 +154,42 @@ export default function BillingPage() {
   const reconMeta = reconciliationQuery.data?.meta;
   const canPrev = (reconMeta?.offset ?? 0) > 0;
   const canNext = (reconMeta?.offset ?? 0) + (reconMeta?.count ?? 0) < (reconMeta?.total ?? 0);
+  const copyContextMutation = useMutation({
+    mutationFn: async () => {
+      const contextPayload = {
+        page: "/billing",
+        filters: {
+          checkoutType: reconCheckoutType || "all",
+          status: reconStatus || "all",
+          vaAccountId: reconVA || "",
+          anomalyOnly: reconAnomalyOnly,
+          offset: reconOffset,
+          limit: reconLimit,
+        },
+        summary: {
+          count: reconMeta?.count ?? reconItems.length,
+          total: reconMeta?.total ?? reconItems.length,
+        },
+        sampleItems: reconItems.slice(0, 5).map((item) => ({
+          providerSessionId: item.providerSessionId,
+          status: item.status,
+          checkoutType: item.checkoutType,
+          vaAccountId: item.vaAccountId,
+          amountMinor: item.amountMinor,
+          currency: item.currency,
+          anomaly: item.anomaly ?? false,
+          createdAt: item.createdAt,
+        })),
+      };
+      const text = JSON.stringify(contextPayload, null, 2);
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("clipboard unavailable");
+      }
+      await navigator.clipboard.writeText(text);
+    },
+    onSuccess: () => showToast("success", t("common.copySuccess")),
+    onError: () => showToast("error", t("common.copyFailed")),
+  });
 
   const exportMutation = useMutation({
     mutationFn: () =>
@@ -384,6 +420,16 @@ export default function BillingPage() {
             disabled={exportMutation.isPending}
           >
             {exportMutation.isPending ? t("common.loading") : t("billing.reconExportCsv")}
+          </button>
+        </div>
+        <div className="mt-2 flex justify-end">
+          <button
+            type="button"
+            onClick={() => copyContextMutation.mutate()}
+            disabled={copyContextMutation.isPending}
+            className="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+          >
+            {copyContextMutation.isPending ? t("common.loading") : t("billing.reconCopyContext")}
           </button>
         </div>
         <div className="mt-3 overflow-x-auto">
