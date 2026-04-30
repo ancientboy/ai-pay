@@ -543,10 +543,29 @@ export type BillingIntentResponse = {
   checkoutURL: string;
   customerHint?: string;
   requestedPlan?: string;
+  checkoutMode?: string;
+  providerSession?: string;
+};
+
+export type BillingSubscriptionView = {
+  userId: string;
+  planCode: string;
+  status: string;
+  currency: string;
+  provider: string;
+  providerCustomerId?: string;
+  providerSubscriptionId?: string;
+  currentPeriodEnd?: string;
+  cancelAtPeriodEnd: boolean;
+};
+
+export type BillingCapabilitiesEnvelope = BillingCapabilitiesResponse & {
+  stripeCheckoutConfigured?: boolean;
+  stripeWebhookSecretConfigured?: boolean;
 };
 
 export function getBillingCapabilities() {
-  return request<BillingCapabilitiesResponse>("/billing/provider/capabilities");
+  return request<BillingCapabilitiesEnvelope>("/billing/provider/capabilities");
 }
 
 export function createBillingIntent(input: {
@@ -554,6 +573,7 @@ export function createBillingIntent(input: {
   paymentRail: string;
   currency: string;
   planCode: string;
+  amount?: string;
   customerIdHint?: string;
 }) {
   return request<BillingIntentResponse>("/billing/checkout/create", {
@@ -561,4 +581,15 @@ export function createBillingIntent(input: {
     body: JSON.stringify(input),
     idempotencyKey: `billing-checkout-ui-${Date.now()}`,
   });
+}
+
+export function getBillingSubscription() {
+  return request<{ subscription: BillingSubscriptionView | null }>("/billing/subscription");
+}
+
+export function syncBillingCheckout(sessionId: string) {
+  const q = new URLSearchParams({ session_id: sessionId });
+  return request<{ subscription: BillingSubscriptionView | null }>(
+    `/billing/checkout/sync?${q.toString()}`,
+  );
 }

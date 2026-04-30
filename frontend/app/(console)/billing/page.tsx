@@ -1,26 +1,41 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { useSearchParams } from "next/navigation";
 import { useLocale } from "@/components/locale-provider";
 import { useToast } from "@/components/toast-provider";
-import { createBillingIntent, getBillingCapabilities } from "@/lib/console-api";
+import {
+  createBillingIntent,
+  getBillingCapabilities,
+  getBillingSubscription,
+  syncBillingCheckout,
+} from "@/lib/console-api";
 import { toReadableError } from "@/lib/error-map";
 import { getValidationSchemas } from "@/lib/validation";
+
+const PLANS = [
+  { code: "starter", labelKey: "billing.planStarter" },
+  { code: "growth", labelKey: "billing.planGrowth" },
+] as const;
 
 export default function BillingPage() {
   const { t, locale } = useLocale();
   const { showToast } = useToast();
+  const searchParams = useSearchParams();
   const { amountSchema } = useMemo(() => getValidationSchemas(locale), [locale]);
+
   const [amount, setAmount] = useState("49.9");
   const [currency, setCurrency] = useState("USD");
-  const [note, setNote] = useState("");
+  const [planCode, setPlanCode] = useState<string>("starter");
+  const [customerHint, setCustomerHint] = useState("");
   const [checkout, setCheckout] = useState<{
     checkoutId: string;
     provider: string;
     paymentRail: string;
     currency: string;
     checkoutURL: string;
+    checkoutMode?: string;
   } | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
 
@@ -29,14 +44,49 @@ export default function BillingPage() {
     queryFn: getBillingCapabilities,
   });
 
+  const subscriptionQuery = useQuery({
+    queryKey: ["billing-subscription"],
+    queryFn: getBillingSubscription,
+  });
+
+  useEffect(() => {
+    const checkoutParam = searchParams.get("checkout");
+    const sessionId = searchParams.get("session_id");
+    if (checkoutParam !== "success" || !sessionId?.trim()) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const data = await syncBillingCheckout(sessionId.trim());
+        if (cancelled) {
+          return;
+        }
+        await subscriptionQuery.refetch();
+        if (data.subscription) {
+          showToast("success", t("billing.syncSuccess"));
+        }
+      } catch (e) {
+        if (!cancelled) {
+          showToast("error", toReadableError(e, locale));
+        }
+      }
+      window.history.replaceState({}, "", "/billing");
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams, subscriptionQuery, showToast, t, locale]);
+
   const checkoutMutation = useMutation({
     mutationFn: () =>
       createBillingIntent({
         currency,
         provider: currency === "USD" ? "stripe" : "bridge",
         paymentRail: currency === "USD" ? "fiat" : "stablecoin",
-        planCode: note.trim() || "starter",
-        customerIdHint: note.trim() || undefined,
+        planCode,
+        amount,
+        customerIdHint: customerHint.trim() || undefined,
       }),
     onSuccess: (data) => {
       setCheckout(data);
@@ -55,6 +105,9 @@ export default function BillingPage() {
   const stableCap = caps.find((c) => c.methods.includes("stablecoin_transfer"));
   const canFiat = !!fiatCap;
   const canStablecoin = !!stableCap;
+
+  const stripeReady = capabilitiesQuery.data?.stripeCheckoutConfigured === true;
+  const sub = subscriptionQuery.data?.subscription ?? null;
 
   return (
     <section className="space-y-6">
@@ -81,12 +134,29 @@ export default function BillingPage() {
                   : t("billing.disabled")}
               </span>
             </li>
+            <li className="text-xs text-slate-500">
+              Stripe {t("billing.liveCheckout")}: {stripeReady ? t("billing.configured") : t("billing.notConfigured")}
+            </li>
           </ul>
         </article>
 
         <article className="rounded-xl border border-slate-800 bg-slate-900 p-4">
           <h3 className="text-sm font-medium text-slate-200">{t("billing.checkoutTitle")}</h3>
           <div className="mt-3 space-y-2">
+            <label className="block text-sm text-slate-300">
+              {t("billing.planLabel")}
+              <select
+                value={planCode}
+                onChange={(e) => setPlanCode(e.target.value)}
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+              >
+                {PLANS.map((p) => (
+                  <option key={p.code} value={p.code}>
+                    {t(p.labelKey)}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label className="block text-sm text-slate-300">
               {t("billing.amount")}
               <input
@@ -110,8 +180,9 @@ export default function BillingPage() {
             <label className="block text-sm text-slate-300">
               {t("billing.note")}
               <input
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
+                value={customerHint}
+                onChange={(e) => setCustomerHint(e.target.value)}
+                placeholder={t("billing.notePlaceholder")}
                 className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
               />
             </label>
@@ -136,6 +207,34 @@ export default function BillingPage() {
         </article>
       </div>
 
+      {sub ? (
+        <article className="rounded-xl border border-emerald-900/50 bg-emerald-950/20 p-4">
+          <h3 className="text-sm font-medium text-emerald-200">{t("billing.currentSubscription")}</h3>
+          <dl className="mt-2 grid gap-1 font-mono text-xs text-slate-300 sm:grid-cols-2">
+            <div>
+              <dt className="text-slate-500">{t("billing.subPlan")}</dt>
+              <dd>{sub.planCode}</dd>
+            </div>
+            <div>
+              <dt className="text-slate-500">{t("billing.subStatus")}</dt>
+              <dd>{sub.status}</dd>
+            </div>
+            <div>
+              <dt className="text-slate-500">{t("billing.subCurrency")}</dt>
+              <dd>{sub.currency}</dd>
+            </div>
+            <div>
+              <dt className="text-slate-500">{t("billing.subPeriodEnd")}</dt>
+              <dd>{sub.currentPeriodEnd ?? "—"}</dd>
+            </div>
+            <div className="sm:col-span-2">
+              <dt className="text-slate-500">{t("billing.subProviderSub")}</dt>
+              <dd className="break-all">{sub.providerSubscriptionId ?? "—"}</dd>
+            </div>
+          </dl>
+        </article>
+      ) : null}
+
       {errorMessage ? (
         <div className="rounded-md border border-rose-700/60 bg-rose-950/30 p-3 text-sm text-rose-100">
           {errorMessage}
@@ -150,6 +249,9 @@ export default function BillingPage() {
             <p>provider: {checkout.provider}</p>
             <p>rail: {checkout.paymentRail}</p>
             <p>currency: {checkout.currency}</p>
+            <p>
+              mode: {checkout.checkoutMode === "live" ? t("billing.modeLive") : t("billing.modeMock")}
+            </p>
           </div>
           <a
             href={checkout.checkoutURL}

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { parseSessionToken, SESSION_COOKIE_NAME } from "@/lib/session";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8080";
@@ -27,6 +28,13 @@ async function proxy(request: NextRequest, path: string[]) {
       }
     },
   );
+
+  const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
+  const claims = await parseSessionToken(token);
+  const userId = claims?.sub?.trim();
+  if (userId && !headers.has("x-user-id")) {
+    headers.set("X-User-Id", userId);
+  }
 
   const body =
     request.method === "GET" || request.method === "HEAD"

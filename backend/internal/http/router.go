@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"ai-pay-backend/internal/billing"
 	"ai-pay-backend/internal/service"
 )
 
@@ -147,8 +148,11 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /payment/sign/submit", s.withM8SelfHosted(http.HandlerFunc(s.handlePaymentSignSubmit)))
 	mux.HandleFunc("GET /billing/plans", s.handleBillingPlans)
 	mux.HandleFunc("GET /billing/provider/capabilities", s.handleBillingProviderCapabilities)
+	mux.HandleFunc("GET /billing/subscription", s.handleBillingSubscription)
+	mux.HandleFunc("GET /billing/checkout/sync", s.handleBillingCheckoutSync)
 	mux.HandleFunc("POST /billing/checkout/create", s.handleBillingCheckoutCreate)
 	mux.HandleFunc("POST /billing/intent/create", s.handleBillingCheckoutCreate)
+	mux.HandleFunc("POST /billing/webhook/stripe", s.handleBillingStripeWebhook)
 	return s.withRequestID(mux)
 }
 
@@ -200,6 +204,7 @@ type billingCheckoutCreateReq struct {
 	Currency       string `json:"currency"`
 	Provider       string `json:"provider"`
 	CustomerIDHint string `json:"customerIdHint"`
+	Amount         string `json:"amount"`
 }
 
 func (s *Server) handleBillingPlans(w http.ResponseWriter, r *http.Request) {
@@ -241,21 +246,124 @@ func envEnabled(name string, defaultEnabled bool) bool {
 }
 
 func (s *Server) handleBillingProviderCapabilities(w http.ResponseWriter, r *http.Request) {
-	items := []billingProviderCapability{
-		{
-			Provider:      "stripe",
-			Capabilities:  []string{"fiat", "stablecoin"},
-			Enabled:       envEnabled("BILLING_PROVIDER_STRIPE_ENABLED", true),
-			CheckoutModes: []string{"subscription", "one_time"},
-		},
-		{
-			Provider:      "bridge",
-			Capabilities:  []string{"stablecoin"},
-			Enabled:       envEnabled("BILLING_PROVIDER_BRIDGE_ENABLED", true),
-			CheckoutModes: []string{"deposit", "transfer"},
-		},
+	// Response shape matches console billing page: { capabilities: [...] }
+	type capRow struct {
+		Provider             string   `json:"provider"`
+		Methods              []string `json:"methods"`
+		Currencies           []string `json:"currencies"`
+		SupportsSubscription bool     `json:"supportsSubscription"`
+		DefaultMethod        string   `json:"defaultMethod"`
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": items})
+	stripeReady := strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")) != "" &&
+		strings.TrimSpace(os.Getenv("STRIPE_PRICE_STARTER")) != ""
+	var caps []capRow
+	if envEnabled("BILLING_PROVIDER_STRIPE_ENABLED", true) {
+		caps = append(caps, capRow{
+			Provider:             "stripe",
+			Methods:              []string{"fiat_card", "fiat_bank"},
+			Currencies:           []string{"USD", "EUR"},
+			SupportsSubscription: true,
+			DefaultMethod:        "fiat_card",
+		})
+	}
+	if envEnabled("BILLING_PROVIDER_BRIDGE_ENABLED", true) {
+		caps = append(caps, capRow{
+			Provider:             "bridge",
+			Methods:              []string{"stablecoin_transfer"},
+			Currencies:           []string{"USDC", "USDT"},
+			SupportsSubscription: false,
+			DefaultMethod:        "stablecoin_transfer",
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"code": "0",
+		"data": map[string]any{
+			"capabilities":                  caps,
+			"stripeCheckoutConfigured":      stripeReady,
+			"stripeWebhookSecretConfigured": strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")) != "",
+		},
+	})
+}
+
+func (s *Server) handleBillingCheckoutSync(w http.ResponseWriter, r *http.Request) {
+	userID := strings.TrimSpace(r.Header.Get("X-User-Id"))
+	if userID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "missing user context"})
+		return
+	}
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "missing session_id"})
+		return
+	}
+	subID, custID, meta, err := billing.RetrieveCheckoutSession(sessionID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": err.Error()})
+		return
+	}
+	uid := strings.TrimSpace(meta["user_id"])
+	if uid != "" && uid != userID {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "session user mismatch"})
+		return
+	}
+	planCode := strings.TrimSpace(meta["plan_code"])
+	if planCode == "" {
+		planCode = "starter"
+	}
+	st := "active"
+	currency := "USD"
+	cancelEnd := false
+	var periodEnd *time.Time
+	if subID != "" {
+		st2, cur, cancelAt, tEnd, smeta, err := billing.RetrieveSubscription(subID)
+		if err == nil {
+			st = st2
+			cancelEnd = cancelAt
+			if !tEnd.IsZero() {
+				periodEnd = &tEnd
+			}
+			if cur != "" {
+				currency = cur
+			}
+			if smeta != nil {
+				if v := strings.TrimSpace(smeta["plan_code"]); v != "" {
+					planCode = v
+				}
+			}
+		}
+	}
+	_ = s.svc.UpsertBillingSubscription(service.BillingSubscriptionUpsert{
+		UserID:                 userID,
+		PlanCode:               planCode,
+		Status:                 st,
+		Currency:               currency,
+		Provider:               "stripe",
+		ProviderCustomerID:     custID,
+		ProviderSubscriptionID: subID,
+		CurrentPeriodEnd:       periodEnd,
+		CancelAtPeriodEnd:      cancelEnd,
+		RawEvent:               nil,
+	})
+	sub, ok := s.svc.GetBillingSubscription(userID)
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"subscription": nil}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"subscription": sub}})
+}
+
+func (s *Server) handleBillingSubscription(w http.ResponseWriter, r *http.Request) {
+	userID := strings.TrimSpace(r.Header.Get("X-User-Id"))
+	if userID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "missing user context"})
+		return
+	}
+	sub, ok := s.svc.GetBillingSubscription(userID)
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"subscription": nil}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"subscription": sub}})
 }
 
 func resolveBillingProvider(rail string, preferred string) string {
@@ -276,6 +384,12 @@ func (s *Server) handleBillingCheckoutCreate(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
 		return
 	}
+	userID := strings.TrimSpace(r.Header.Get("X-User-Id"))
+	if userID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "missing user context (X-User-Id)"})
+		return
+	}
+
 	planCode := strings.TrimSpace(strings.ToLower(req.PlanCode))
 	rail := strings.TrimSpace(strings.ToLower(req.PaymentRail))
 	currency := strings.TrimSpace(strings.ToUpper(req.Currency))
@@ -296,8 +410,9 @@ func (s *Server) handleBillingCheckoutCreate(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "bridge provider disabled"})
 		return
 	}
+
 	checkoutID := fmt.Sprintf("chk_%d", time.Now().UnixNano())
-	redirectURL := fmt.Sprintf(
+	mockURL := fmt.Sprintf(
 		"https://checkout.mock.%s.local/%s?plan=%s&rail=%s&currency=%s",
 		provider,
 		checkoutID,
@@ -305,6 +420,86 @@ func (s *Server) handleBillingCheckoutCreate(w http.ResponseWriter, r *http.Requ
 		rail,
 		currency,
 	)
+
+	// --- Stripe subscription (fiat USD path) ---
+	if provider == "stripe" && rail == "fiat" && currency == "USD" {
+		priceID, hasPrice := billing.PriceIDForPlan(planCode)
+		if strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")) != "" && hasPrice {
+			base := strings.TrimRight(strings.TrimSpace(os.Getenv("APP_PUBLIC_URL")), "/")
+			if base == "" {
+				base = "http://127.0.0.1:3000"
+			}
+			successURL := base + "/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}"
+			cancelURL := base + "/billing?checkout=cancel"
+			meta := map[string]string{
+				"plan_code": planCode,
+				"user_id":   userID,
+			}
+			res, err := billing.CreateSubscriptionCheckout(priceID, successURL, cancelURL, meta)
+			if err != nil {
+				log.Printf("billing stripe checkout error: %v", err)
+				writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": err.Error()})
+				return
+			}
+			var amtMinor *int64
+			if m, ok := billing.AmountMinor(strings.TrimSpace(req.Amount)); ok {
+				amtMinor = &m
+			}
+			_ = s.svc.RecordBillingCheckoutSession(service.BillingCheckoutSessionInput{
+				LocalID:           checkoutID,
+				UserID:            userID,
+				Provider:          "stripe",
+				PlanCode:          planCode,
+				PaymentRail:       rail,
+				Currency:          currency,
+				AmountMinor:       amtMinor,
+				Status:            "open",
+				CheckoutURL:       res.URL,
+				ProviderSessionID: res.ID,
+				Metadata:          meta,
+			})
+			writeJSON(w, http.StatusOK, map[string]any{
+				"code": "0",
+				"data": map[string]any{
+					"checkoutId":      checkoutID,
+					"provider":        "stripe",
+					"paymentRail":     rail,
+					"currency":        currency,
+					"status":          res.Status,
+					"checkoutURL":     res.URL,
+					"providerSession": res.ID,
+					"customerHint":    strings.TrimSpace(req.CustomerIDHint),
+					"requestedPlan":   planCode,
+					"checkoutMode":    "live",
+				},
+			})
+			return
+		}
+		if strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")) != "" && !hasPrice {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"code":    "PAY-010",
+				"message": "set STRIPE_PRICE_" + strings.ToUpper(planCode) + " for this plan or choose starter/growth",
+			})
+			return
+		}
+	}
+
+	// --- Fallback mock checkout (dev / missing keys / bridge) ---
+	_ = s.svc.RecordBillingCheckoutSession(service.BillingCheckoutSessionInput{
+		LocalID:     checkoutID,
+		UserID:      userID,
+		Provider:    provider,
+		PlanCode:    planCode,
+		PaymentRail: rail,
+		Currency:    currency,
+		Status:      "mock_open",
+		CheckoutURL: mockURL,
+		Metadata: map[string]string{
+			"plan_code": planCode,
+			"user_id":   userID,
+			"mode":      "mock",
+		},
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"code": "0",
 		"data": map[string]any{
@@ -313,11 +508,173 @@ func (s *Server) handleBillingCheckoutCreate(w http.ResponseWriter, r *http.Requ
 			"paymentRail":   rail,
 			"currency":      currency,
 			"status":        "PENDING",
-			"checkoutURL":   redirectURL,
+			"checkoutURL":   mockURL,
 			"customerHint":  strings.TrimSpace(req.CustomerIDHint),
 			"requestedPlan": planCode,
+			"checkoutMode":  "mock",
 		},
 	})
+}
+
+func (s *Server) handleBillingStripeWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"code": "PAY-010", "message": "method not allowed"})
+		return
+	}
+	sig := r.Header.Get("Stripe-Signature")
+	payload, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "read body failed"})
+		return
+	}
+	if err := billing.VerifyWebhookSignature(payload, sig); err != nil {
+		log.Printf("stripe webhook verify: %v", err)
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid signature"})
+		return
+	}
+	var envelope struct {
+		Type string `json:"type"`
+		Data struct {
+			Object json.RawMessage `json:"object"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid json"})
+		return
+	}
+	rawObj := envelope.Data.Object
+	if len(rawObj) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"received": true})
+		return
+	}
+
+	switch envelope.Type {
+	case "checkout.session.completed":
+		var sess struct {
+			ID            string            `json:"id"`
+			Mode          string            `json:"mode"`
+			Subscription  json.RawMessage   `json:"subscription"`
+			Customer      json.RawMessage   `json:"customer"`
+			Metadata      map[string]string `json:"metadata"`
+			PaymentStatus string            `json:"payment_status"`
+		}
+		if err := json.Unmarshal(rawObj, &sess); err != nil {
+			break
+		}
+		userID := strings.TrimSpace(sess.Metadata["user_id"])
+		planCode := strings.TrimSpace(sess.Metadata["plan_code"])
+		if userID == "" {
+			break
+		}
+		subID := ""
+		if len(sess.Subscription) > 0 && sess.Subscription[0] == '"' {
+			_ = json.Unmarshal(sess.Subscription, &subID)
+		} else if len(sess.Subscription) > 0 {
+			var so struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal(sess.Subscription, &so) == nil {
+				subID = so.ID
+			}
+		}
+		custID := ""
+		if len(sess.Customer) > 0 && sess.Customer[0] == '"' {
+			_ = json.Unmarshal(sess.Customer, &custID)
+		} else if len(sess.Customer) > 0 {
+			var co struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal(sess.Customer, &co) == nil {
+				custID = co.ID
+			}
+		}
+		if planCode == "" {
+			planCode = "starter"
+		}
+		// Refresh from Stripe if subscription id present
+		var periodEnd *time.Time
+		st := "active"
+		currency := "USD"
+		cancelEnd := false
+		if subID != "" {
+			st2, billCur, cancelAt, tEnd, meta, err := billing.RetrieveSubscription(subID)
+			if err == nil {
+				st = st2
+				cancelEnd = cancelAt
+				if !tEnd.IsZero() {
+					periodEnd = &tEnd
+				}
+				if billCur != "" {
+					currency = billCur
+				}
+				if meta != nil {
+					if v := strings.TrimSpace(meta["plan_code"]); v != "" {
+						planCode = v
+					}
+				}
+			}
+		}
+		_ = s.svc.UpsertBillingSubscription(service.BillingSubscriptionUpsert{
+			UserID:                 userID,
+			PlanCode:               planCode,
+			Status:                 st,
+			Currency:               currency,
+			Provider:               "stripe",
+			ProviderCustomerID:     custID,
+			ProviderSubscriptionID: subID,
+			CurrentPeriodEnd:       periodEnd,
+			CancelAtPeriodEnd:      cancelEnd,
+			RawEvent:               payload,
+		})
+
+	case "customer.subscription.updated", "customer.subscription.deleted":
+		var sub struct {
+			ID                   string `json:"id"`
+			Status               string `json:"status"`
+			Currency             string `json:"currency"`
+			CancelAtPeriodEnd    bool   `json:"cancel_at_period_end"`
+			CurrentPeriodEnd     int64  `json:"current_period_end"`
+			Metadata             map[string]string `json:"metadata"`
+		}
+		if err := json.Unmarshal(rawObj, &sub); err != nil {
+			break
+		}
+		userID := strings.TrimSpace(sub.Metadata["user_id"])
+		planCode := strings.TrimSpace(sub.Metadata["plan_code"])
+		if userID == "" {
+			break
+		}
+		if planCode == "" {
+			planCode = "starter"
+		}
+		cur := strings.ToUpper(strings.TrimSpace(sub.Currency))
+		if cur == "" {
+			cur = "USD"
+		}
+		var pe *time.Time
+		if sub.CurrentPeriodEnd > 0 {
+			t := time.Unix(sub.CurrentPeriodEnd, 0).UTC()
+			pe = &t
+		}
+		st := sub.Status
+		if envelope.Type == "customer.subscription.deleted" {
+			st = "canceled"
+		}
+		_ = s.svc.UpsertBillingSubscription(service.BillingSubscriptionUpsert{
+			UserID:                 userID,
+			PlanCode:               planCode,
+			Status:                 st,
+			Currency:               cur,
+			Provider:               "stripe",
+			ProviderSubscriptionID: sub.ID,
+			CurrentPeriodEnd:       pe,
+			CancelAtPeriodEnd:      sub.CancelAtPeriodEnd,
+			RawEvent:               payload,
+		})
+	default:
+		// ignore
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"received": true})
 }
 
 func (s *Server) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {

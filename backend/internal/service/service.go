@@ -317,6 +317,7 @@ type Service struct {
 	m8signReqs       map[string]m8signReq
 	m8sessCreateIdem map[string]string
 	m8signReqIdem    map[string]string
+	billing          *billingMem
 }
 
 type holdRecord struct {
@@ -392,6 +393,9 @@ type PaymentService interface {
 	SubmitSignedPayment(signID string, req PayRequest) (PayResponse, *APIError)
 	GetBillingCapabilities() []BillingCapability
 	CreateBillingQuote(provider string, channel string, currency string, amount string, planID string) (BillingQuote, error)
+	RecordBillingCheckoutSession(in BillingCheckoutSessionInput) error
+	GetBillingSubscription(userID string) (BillingSubscriptionView, bool)
+	UpsertBillingSubscription(u BillingSubscriptionUpsert) error
 }
 
 func New() *Service {
