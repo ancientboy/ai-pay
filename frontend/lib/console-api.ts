@@ -578,8 +578,26 @@ export type BillingCapabilitiesEnvelope = BillingCapabilitiesResponse & {
   stripeWebhookSecretConfigured?: boolean;
 };
 
+export type HelpSuggestion = {
+  label: string;
+  href?: string;
+  action?: "export_reconciliation_csv" | "none";
+};
+
+export type HelpAnswer = {
+  answer: string;
+  suggestions: HelpSuggestion[];
+};
+
 export function getBillingCapabilities() {
   return request<BillingCapabilitiesEnvelope>("/billing/provider/capabilities");
+}
+
+export function queryHelp(input: { question: string; pagePath?: string; locale?: string }) {
+  return request<HelpAnswer>("/help/query", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export function createBillingIntent(input: {
