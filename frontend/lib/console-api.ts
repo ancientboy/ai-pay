@@ -570,7 +570,7 @@ export type BillingReconciliationItem = {
   vaAccountId?: string;
   userId: string;
   createdAt?: string;
-  mismatch?: boolean;
+  anomaly?: boolean;
 };
 
 export type BillingCapabilitiesEnvelope = BillingCapabilitiesResponse & {
@@ -603,18 +603,67 @@ export function getBillingSubscription() {
   return request<{ subscription: BillingSubscriptionView | null }>("/billing/subscription");
 }
 
-export function getBillingReconciliation(input?: { limit?: number; userId?: string }) {
+export function getBillingReconciliation(input?: {
+  limit?: number;
+  offset?: number;
+  checkoutType?: string;
+  status?: string;
+  vaAccountId?: string;
+  anomalyOnly?: boolean;
+}) {
   const q = new URLSearchParams();
   if (input?.limit && input.limit > 0) {
     q.set("limit", String(input.limit));
   }
-  if (input?.userId?.trim()) {
-    q.set("userId", input.userId.trim());
+  if (typeof input?.offset === "number" && input.offset >= 0) {
+    q.set("offset", String(input.offset));
+  }
+  if (input?.checkoutType?.trim()) {
+    q.set("checkoutType", input.checkoutType.trim());
+  }
+  if (input?.status?.trim()) {
+    q.set("status", input.status.trim());
+  }
+  if (input?.vaAccountId?.trim()) {
+    q.set("vaAccountId", input.vaAccountId.trim());
+  }
+  if (input?.anomalyOnly) {
+    q.set("anomalyOnly", "true");
   }
   const suffix = q.toString();
-  return request<{ items: BillingReconciliationItem[]; meta?: { count: number; limit: number } }>(
+  return request<{
+    items: BillingReconciliationItem[];
+    meta?: { count: number; limit: number; offset?: number; total?: number };
+  }>(
     `/billing/reconciliation${suffix ? `?${suffix}` : ""}`,
   );
+}
+
+export function exportBillingReconciliationCsv(input?: {
+  limit?: number;
+  offset?: number;
+  checkoutType?: string;
+  status?: string;
+  vaAccountId?: string;
+  anomalyOnly?: boolean;
+}) {
+  const q = new URLSearchParams();
+  if (input?.limit && input.limit > 0) q.set("limit", String(input.limit));
+  if (typeof input?.offset === "number" && input.offset >= 0) q.set("offset", String(input.offset));
+  if (input?.checkoutType?.trim()) q.set("checkoutType", input.checkoutType.trim());
+  if (input?.status?.trim()) q.set("status", input.status.trim());
+  if (input?.vaAccountId?.trim()) q.set("vaAccountId", input.vaAccountId.trim());
+  if (input?.anomalyOnly) q.set("anomalyOnly", "true");
+  const suffix = q.toString();
+  return fetch(`/api/backend/billing/reconciliation/export${suffix ? `?${suffix}` : ""}`, {
+    method: "GET",
+    cache: "no-store",
+  }).then(async (resp) => {
+    if (!resp.ok) {
+      throw new ApiClientError("PAY-010", "export failed");
+    }
+    return resp.text();
+  });
 }
 
 export function syncBillingCheckout(sessionId: string) {

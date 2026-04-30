@@ -7,6 +7,7 @@ import { useLocale } from "@/components/locale-provider";
 import { useToast } from "@/components/toast-provider";
 import {
   createBillingIntent,
+  exportBillingReconciliationCsv,
   getBillingCapabilities,
   getBillingReconciliation,
   getBillingSubscription,
@@ -32,6 +33,12 @@ export default function BillingPage() {
   const [checkoutType, setCheckoutType] = useState<"subscription" | "payment_link">("subscription");
   const [vaAccountId, setVaAccountId] = useState("");
   const [customerHint, setCustomerHint] = useState("");
+  const [reconCheckoutType, setReconCheckoutType] = useState("");
+  const [reconStatus, setReconStatus] = useState("");
+  const [reconVA, setReconVA] = useState("");
+  const [reconAnomalyOnly, setReconAnomalyOnly] = useState(false);
+  const [reconOffset, setReconOffset] = useState(0);
+  const reconLimit = 20;
   const [checkout, setCheckout] = useState<{
     checkoutId: string;
     provider: string;
@@ -52,8 +59,23 @@ export default function BillingPage() {
     queryFn: getBillingSubscription,
   });
   const reconciliationQuery = useQuery({
-    queryKey: ["billing-reconciliation"],
-    queryFn: () => getBillingReconciliation({ limit: 20 }),
+    queryKey: [
+      "billing-reconciliation",
+      reconCheckoutType,
+      reconStatus,
+      reconVA,
+      reconAnomalyOnly,
+      reconOffset,
+    ],
+    queryFn: () =>
+      getBillingReconciliation({
+        limit: reconLimit,
+        offset: reconOffset,
+        checkoutType: reconCheckoutType || undefined,
+        status: reconStatus || undefined,
+        vaAccountId: reconVA.trim() || undefined,
+        anomalyOnly: reconAnomalyOnly || undefined,
+      }),
   });
 
   useEffect(() => {
@@ -117,6 +139,35 @@ export default function BillingPage() {
 
   const stripeReady = capabilitiesQuery.data?.stripeCheckoutConfigured === true;
   const sub = subscriptionQuery.data?.subscription ?? null;
+  const reconItems = reconciliationQuery.data?.items ?? [];
+  const reconMeta = reconciliationQuery.data?.meta;
+  const canPrev = (reconMeta?.offset ?? 0) > 0;
+  const canNext = (reconMeta?.offset ?? 0) + (reconMeta?.count ?? 0) < (reconMeta?.total ?? 0);
+
+  const exportMutation = useMutation({
+    mutationFn: () =>
+      exportBillingReconciliationCsv({
+        limit: reconLimit,
+        offset: reconOffset,
+        checkoutType: reconCheckoutType || undefined,
+        status: reconStatus || undefined,
+        vaAccountId: reconVA.trim() || undefined,
+        anomalyOnly: reconAnomalyOnly || undefined,
+      }),
+    onSuccess: (csv) => {
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = href;
+      a.download = `billing_reconciliation_${Date.now()}.csv`;
+      a.click();
+      URL.revokeObjectURL(href);
+      showToast("success", t("common.success"));
+    },
+    onError: (err) => {
+      showToast("error", toReadableError(err, locale));
+    },
+  });
 
   return (
     <section className="space-y-6">
@@ -269,6 +320,61 @@ export default function BillingPage() {
       <article className="rounded-xl border border-slate-800 bg-slate-900 p-4">
         <h3 className="text-sm font-medium text-slate-200">{t("billing.reconciliationTitle")}</h3>
         <p className="mt-1 text-xs text-slate-500">{t("billing.reconciliationDesc")}</p>
+        <div className="mt-3 grid gap-2 md:grid-cols-5">
+          <select
+            value={reconCheckoutType}
+            onChange={(e) => {
+              setReconOffset(0);
+              setReconCheckoutType(e.target.value);
+            }}
+            className="rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-xs text-slate-100"
+          >
+            <option value="">{t("billing.reconFilterAllType")}</option>
+            <option value="subscription">{t("billing.checkoutTypeSubscription")}</option>
+            <option value="payment_link">{t("billing.checkoutTypePaymentLink")}</option>
+          </select>
+          <select
+            value={reconStatus}
+            onChange={(e) => {
+              setReconOffset(0);
+              setReconStatus(e.target.value);
+            }}
+            className="rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-xs text-slate-100"
+          >
+            <option value="">{t("billing.reconFilterAllStatus")}</option>
+            <option value="open">open</option>
+            <option value="completed">completed</option>
+            <option value="expired">expired</option>
+          </select>
+          <input
+            value={reconVA}
+            onChange={(e) => {
+              setReconOffset(0);
+              setReconVA(e.target.value);
+            }}
+            placeholder={t("billing.reconFilterVAPlaceholder")}
+            className="rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-xs text-slate-100"
+          />
+          <label className="flex items-center gap-2 rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-xs text-slate-200">
+            <input
+              type="checkbox"
+              checked={reconAnomalyOnly}
+              onChange={(e) => {
+                setReconOffset(0);
+                setReconAnomalyOnly(e.target.checked);
+              }}
+            />
+            {t("billing.reconAnomalyOnly")}
+          </label>
+          <button
+            type="button"
+            onClick={() => exportMutation.mutate()}
+            className="rounded-md border border-blue-700/60 px-2 py-2 text-xs text-blue-200 hover:bg-blue-950/40"
+            disabled={exportMutation.isPending}
+          >
+            {exportMutation.isPending ? t("common.loading") : t("billing.reconExportCsv")}
+          </button>
+        </div>
         <div className="mt-3 overflow-x-auto">
           <table className="min-w-full text-left text-xs text-slate-300">
             <thead className="text-slate-500">
@@ -282,8 +388,11 @@ export default function BillingPage() {
               </tr>
             </thead>
             <tbody>
-              {(reconciliationQuery.data?.items ?? []).map((item) => (
-                <tr key={item.checkoutId} className="border-t border-slate-800">
+              {reconItems.map((item) => (
+                <tr
+                  key={item.providerSessionId || `${item.createdAt}-${item.amountMinor}`}
+                  className={`border-t border-slate-800 ${item.anomaly ? "bg-rose-950/30" : ""}`}
+                >
                   <td className="px-2 py-1">{item.createdAt ?? "-"}</td>
                   <td className="px-2 py-1">{item.status}</td>
                   <td className="px-2 py-1">{item.checkoutType || "-"}</td>
@@ -296,7 +405,7 @@ export default function BillingPage() {
                   <td className="px-2 py-1 break-all">{item.providerSessionId || "-"}</td>
                 </tr>
               ))}
-              {(reconciliationQuery.data?.items?.length ?? 0) === 0 ? (
+              {reconItems.length === 0 ? (
                 <tr>
                   <td className="px-2 py-2 text-slate-500" colSpan={6}>
                     {t("billing.reconEmpty")}
@@ -305,6 +414,32 @@ export default function BillingPage() {
               ) : null}
             </tbody>
           </table>
+        </div>
+        <div className="mt-3 flex items-center justify-between text-xs text-slate-400">
+          <span>
+            {(t("billing.reconPagination") || "{offset}/{count}/{total}")
+              .replace("{offset}", String(reconMeta?.offset ?? 0))
+              .replace("{count}", String(reconMeta?.count ?? reconItems.length))
+              .replace("{total}", String(reconMeta?.total ?? reconItems.length))}
+          </span>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={!canPrev}
+              onClick={() => setReconOffset((v) => Math.max(0, v - reconLimit))}
+              className="rounded border border-slate-700 px-2 py-1 disabled:opacity-50"
+            >
+              {t("billing.reconPrev")}
+            </button>
+            <button
+              type="button"
+              disabled={!canNext}
+              onClick={() => setReconOffset((v) => v + reconLimit)}
+              className="rounded border border-slate-700 px-2 py-1 disabled:opacity-50"
+            >
+              {t("billing.reconNext")}
+            </button>
+          </div>
         </div>
       </article>
 
