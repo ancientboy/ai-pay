@@ -74,19 +74,87 @@ function billingAnswer(question: string, en: boolean): HelpResponse {
   };
 }
 
+type BillingContext = {
+  checkoutType?: string;
+  status?: string;
+  vaAccountId?: string;
+  anomalyOnly?: boolean;
+};
+
+function billingFixLink(ctx: BillingContext) {
+  const q = new URLSearchParams();
+  if (ctx.checkoutType) q.set("reconCheckoutType", ctx.checkoutType);
+  if (ctx.status) q.set("reconStatus", ctx.status);
+  if (ctx.vaAccountId) q.set("reconVA", ctx.vaAccountId);
+  if (ctx.anomalyOnly) q.set("reconAnomalyOnly", "true");
+  const suffix = q.toString();
+  return `/billing${suffix ? `?${suffix}` : ""}`;
+}
+
+function billingFixAnswer(question: string, en: boolean, ctx: BillingContext): HelpResponse {
+  const q = normalizeText(question);
+  const zh = !en;
+  const fixHref = billingFixLink({
+    checkoutType: ctx.checkoutType || "payment_link",
+    status: ctx.status || "completed",
+    vaAccountId: ctx.vaAccountId,
+    anomalyOnly: ctx.anomalyOnly ?? true,
+  });
+
+  if (q.includes("异常") || q.includes("anomaly") || q.includes("对账") || q.includes("reconciliation")) {
+    return {
+      answer: zh
+        ? "已为你生成修复向导入口：打开后会自动带上对账筛选参数，优先定位异常 payment_link 记录。"
+        : "I generated a fix wizard entry with prefilled reconciliation filters to locate anomalous payment_link records first.",
+      suggestions: [
+        { label: zh ? "打开修复向导" : "Open Fix Wizard", href: fixHref },
+        { label: zh ? "导出当前筛选 CSV" : "Export Filtered CSV", href: fixHref },
+      ],
+    };
+  }
+
+  if (q.includes("充值") || q.includes("topup") || q.includes("退款") || q.includes("refund")) {
+    return {
+      answer: zh
+        ? "建议先用修复向导筛选 VA 和状态，确认 Stripe 事件与 VA 记账是否一致，再决定补记账或回滚。"
+        : "Use the fix wizard to filter by VA/status first, verify Stripe events vs VA ledger consistency, then decide credit replay or rollback.",
+      suggestions: [
+        { label: zh ? "打开修复向导" : "Open Fix Wizard", href: fixHref },
+        { label: zh ? "查看交易页" : "Open Transactions", href: "/transactions" },
+      ],
+    };
+  }
+
+  return billingAnswer(question, en);
+}
+
 export async function POST(request: NextRequest) {
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
   const claims = await parseSessionToken(token);
   if (!claims?.sub) {
     return NextResponse.json({ code: "AUTH-001", message: "unauthorized" }, { status: 401 });
   }
-  let body: { question?: string; locale?: string } = {};
+  let body: {
+    question?: string;
+    locale?: string;
+    page?: string;
+    context?: BillingContext;
+  } = {};
   try {
-    body = (await request.json()) as { question?: string; locale?: string };
+    body = (await request.json()) as {
+      question?: string;
+      locale?: string;
+      page?: string;
+      context?: BillingContext;
+    };
   } catch {
     body = {};
   }
   const en = isEN(body.locale);
-  const data = billingAnswer(body.question ?? "", en);
+  const page = normalizeText(body.page);
+  const data =
+    page === "billing" || body.context
+      ? billingFixAnswer(body.question ?? "", en, body.context ?? {})
+      : billingAnswer(body.question ?? "", en);
   return NextResponse.json({ code: "0", data });
 }

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useLocale } from "@/components/locale-provider";
 
 type HelpSuggestion = {
@@ -25,6 +25,7 @@ function inferPage(pathname: string) {
 
 export function HelpAssistantWidget() {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { locale, t } = useLocale();
   const [open, setOpen] = useState(false);
   const [question, setQuestion] = useState("");
@@ -61,6 +62,15 @@ export function HelpAssistantWidget() {
           question: q,
           page: inferPage(pathname),
           locale,
+          context:
+            pathname.startsWith("/billing")
+              ? {
+                  checkoutType: searchParams.get("checkoutType") ?? "",
+                  status: searchParams.get("status") ?? "",
+                  vaAccountId: searchParams.get("vaAccountId") ?? "",
+                  anomalyOnly: searchParams.get("anomalyOnly") === "true",
+                }
+              : undefined,
         }),
       });
       const payload = (await resp.json()) as {

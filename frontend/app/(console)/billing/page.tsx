@@ -33,11 +33,22 @@ export default function BillingPage() {
   const [checkoutType, setCheckoutType] = useState<"subscription" | "payment_link">("subscription");
   const [vaAccountId, setVaAccountId] = useState("");
   const [customerHint, setCustomerHint] = useState("");
-  const [reconCheckoutType, setReconCheckoutType] = useState("");
-  const [reconStatus, setReconStatus] = useState("");
-  const [reconVA, setReconVA] = useState("");
-  const [reconAnomalyOnly, setReconAnomalyOnly] = useState(false);
-  const [reconOffset, setReconOffset] = useState(0);
+  const [reconCheckoutType, setReconCheckoutType] = useState(
+    () => searchParams.get("checkoutType") ?? "",
+  );
+  const [reconStatus, setReconStatus] = useState(() => searchParams.get("status") ?? "");
+  const [reconVA, setReconVA] = useState(() => searchParams.get("vaAccountId") ?? "");
+  const [reconAnomalyOnly, setReconAnomalyOnly] = useState(
+    () => searchParams.get("anomalyOnly") === "true",
+  );
+  const [reconOffset, setReconOffset] = useState(() => {
+    const raw = searchParams.get("offset");
+    if (!raw) {
+      return 0;
+    }
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  });
   const reconLimit = 20;
   const [checkout, setCheckout] = useState<{
     checkoutId: string;

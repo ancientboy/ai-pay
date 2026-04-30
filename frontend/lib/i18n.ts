@@ -63,6 +63,9 @@ const messages: Record<Locale, DictObject> = {
       openSettings: "去设置",
       open: "打开助手",
       close: "关闭助手",
+      actionOpenBillingFiltered: "按当前筛选打开账单对账",
+      actionRunTopupChecklist: "打开充值排查向导",
+      actionRunReversalChecklist: "打开回退排查向导",
     },
     app: {
       title: "AI 支付控制台",
@@ -458,6 +461,9 @@ const messages: Record<Locale, DictObject> = {
       openSettings: "Go to Settings",
       open: "Open assistant",
       close: "Close assistant",
+      actionOpenBillingFiltered: "Open billing with current filters",
+      actionRunTopupChecklist: "Open top-up troubleshooting guide",
+      actionRunReversalChecklist: "Open reversal troubleshooting guide",
     },
     app: {
       title: "AI Pay Console",
