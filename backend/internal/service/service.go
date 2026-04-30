@@ -394,6 +394,7 @@ type PaymentService interface {
 	GetBillingCapabilities() []BillingCapability
 	CreateBillingQuote(provider string, channel string, currency string, amount string, planID string) (BillingQuote, error)
 	RecordBillingCheckoutSession(in BillingCheckoutSessionInput) error
+	UpdateBillingCheckoutSessionByProviderSession(in BillingCheckoutSessionUpdate) error
 	GetBillingSubscription(userID string) (BillingSubscriptionView, bool)
 	UpsertBillingSubscription(u BillingSubscriptionUpsert) error
 }

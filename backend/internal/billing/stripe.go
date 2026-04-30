@@ -91,6 +91,63 @@ func CreateSubscriptionCheckout(priceID, successURL, cancelURL string, metadata 
 	return CheckoutSessionResult{ID: parsed.ID, URL: parsed.URL, Status: parsed.Status}, nil
 }
 
+// CreatePaymentCheckout creates a one-time Checkout Session for custom top-up amounts.
+func CreatePaymentCheckout(amountMinor int64, currency, successURL, cancelURL string, metadata map[string]string) (CheckoutSessionResult, error) {
+	sk := stripeSecretKey()
+	if sk == "" {
+		return CheckoutSessionResult{}, fmt.Errorf("STRIPE_SECRET_KEY not configured")
+	}
+	if amountMinor <= 0 {
+		return CheckoutSessionResult{}, fmt.Errorf("invalid amount")
+	}
+	currency = strings.ToLower(strings.TrimSpace(currency))
+	if currency == "" {
+		currency = "usd"
+	}
+	form := url.Values{}
+	form.Set("mode", "payment")
+	form.Set("success_url", successURL)
+	form.Set("cancel_url", cancelURL)
+	form.Set("line_items[0][price_data][currency]", currency)
+	form.Set("line_items[0][price_data][product_data][name]", "AI Pay Card Top-up")
+	form.Set("line_items[0][price_data][unit_amount]", strconv.FormatInt(amountMinor, 10))
+	form.Set("line_items[0][quantity]", "1")
+	for k, v := range metadata {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
+		form.Set("metadata["+k+"]", v)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, stripeAPI+"/checkout/sessions", strings.NewReader(form.Encode()))
+	if err != nil {
+		return CheckoutSessionResult{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+sk)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return CheckoutSessionResult{}, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return CheckoutSessionResult{}, fmt.Errorf("stripe checkout failed: %s: %s", resp.Status, truncate(string(body), 500))
+	}
+	var parsed struct {
+		ID     string `json:"id"`
+		URL    string `json:"url"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return CheckoutSessionResult{}, fmt.Errorf("stripe response decode: %w", err)
+	}
+	if parsed.URL == "" {
+		return CheckoutSessionResult{}, fmt.Errorf("stripe returned empty checkout url")
+	}
+	return CheckoutSessionResult{ID: parsed.ID, URL: parsed.URL, Status: parsed.Status}, nil
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

@@ -545,6 +545,7 @@ export type BillingIntentResponse = {
   requestedPlan?: string;
   checkoutMode?: string;
   providerSession?: string;
+  checkoutType?: string;
 };
 
 export type BillingSubscriptionView = {
@@ -575,6 +576,7 @@ export function createBillingIntent(input: {
   planCode: string;
   amount?: string;
   customerIdHint?: string;
+  checkoutType?: "subscription" | "payment_link";
 }) {
   return request<BillingIntentResponse>("/billing/checkout/create", {
     method: "POST",

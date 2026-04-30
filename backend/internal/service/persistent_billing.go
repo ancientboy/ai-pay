@@ -3,6 +3,7 @@ package service
 import (
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -30,6 +31,20 @@ ON DUPLICATE KEY UPDATE
   provider_subscription_id=VALUES(provider_subscription_id), metadata_json=VALUES(metadata_json), updated_at=UTC_TIMESTAMP()`,
 		in.LocalID, in.UserID, in.Provider, in.PlanCode, in.PaymentRail, in.Currency, amount, in.Status, in.CheckoutURL,
 		nullIfEmpty(in.ProviderSessionID), nullIfEmpty(in.ProviderSubscriptionID), metaStr,
+	)
+	return err
+}
+
+func (s *PersistentService) UpdateBillingCheckoutSessionByProviderSession(in BillingCheckoutSessionUpdate) error {
+	if strings.TrimSpace(in.ProviderSessionID) == "" {
+		return nil
+	}
+	_, err := s.store.DB.Exec(`
+UPDATE billing_checkout_session
+   SET status = ?, updated_at = UTC_TIMESTAMP()
+ WHERE provider_session_id = ?`,
+		strings.TrimSpace(in.Status),
+		strings.TrimSpace(in.ProviderSessionID),
 	)
 	return err
 }

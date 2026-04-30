@@ -205,6 +205,7 @@ type billingCheckoutCreateReq struct {
 	Provider       string `json:"provider"`
 	CustomerIDHint string `json:"customerIdHint"`
 	Amount         string `json:"amount"`
+	CheckoutType   string `json:"checkoutType"`
 }
 
 func (s *Server) handleBillingPlans(w http.ResponseWriter, r *http.Request) {
@@ -393,6 +394,10 @@ func (s *Server) handleBillingCheckoutCreate(w http.ResponseWriter, r *http.Requ
 	planCode := strings.TrimSpace(strings.ToLower(req.PlanCode))
 	rail := strings.TrimSpace(strings.ToLower(req.PaymentRail))
 	currency := strings.TrimSpace(strings.ToUpper(req.Currency))
+	checkoutType := strings.TrimSpace(strings.ToLower(req.CheckoutType))
+	if checkoutType == "" {
+		checkoutType = "subscription"
+	}
 	if planCode == "" || rail == "" || currency == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "missing required fields"})
 		return
@@ -421,8 +426,72 @@ func (s *Server) handleBillingCheckoutCreate(w http.ResponseWriter, r *http.Requ
 		currency,
 	)
 
+	// --- Stripe payment checkout (custom amount) for card top-up ---
+	if provider == "stripe" && rail == "fiat" && checkoutType == "payment_link" {
+		if strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")) != "" {
+			amountMinor, ok := billing.AmountMinor(strings.TrimSpace(req.Amount))
+			if !ok || amountMinor <= 0 {
+				writeJSON(w, http.StatusBadRequest, map[string]any{
+					"code":    "PAY-010",
+					"message": "payment_link requires positive amount",
+				})
+				return
+			}
+			base := strings.TrimRight(strings.TrimSpace(os.Getenv("APP_PUBLIC_URL")), "/")
+			if base == "" {
+				base = "http://127.0.0.1:3000"
+			}
+			successURL := base + "/billing?checkout=success&session_id={CHECKOUT_SESSION_ID}&checkoutType=payment_link"
+			cancelURL := base + "/billing?checkout=cancel&checkoutType=payment_link"
+			meta := map[string]string{
+				"plan_code":      planCode,
+				"user_id":        userID,
+				"checkout_type":  "payment_link",
+				"payment_rail":   rail,
+				"currency":       strings.ToLower(currency),
+				"requested_amount": strings.TrimSpace(req.Amount),
+			}
+			res, err := billing.CreatePaymentCheckout(amountMinor, currency, successURL, cancelURL, meta)
+			if err != nil {
+				log.Printf("billing stripe payment checkout error: %v", err)
+				writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": err.Error()})
+				return
+			}
+			_ = s.svc.RecordBillingCheckoutSession(service.BillingCheckoutSessionInput{
+				LocalID:           checkoutID,
+				UserID:            userID,
+				Provider:          "stripe",
+				PlanCode:          planCode,
+				PaymentRail:       rail,
+				Currency:          currency,
+				AmountMinor:       &amountMinor,
+				Status:            "open",
+				CheckoutURL:       res.URL,
+				ProviderSessionID: res.ID,
+				Metadata:          meta,
+			})
+			writeJSON(w, http.StatusOK, map[string]any{
+				"code": "0",
+				"data": map[string]any{
+					"checkoutId":      checkoutID,
+					"provider":        "stripe",
+					"paymentRail":     rail,
+					"currency":        currency,
+					"status":          res.Status,
+					"checkoutURL":     res.URL,
+					"providerSession": res.ID,
+					"customerHint":    strings.TrimSpace(req.CustomerIDHint),
+					"requestedPlan":   planCode,
+					"checkoutMode":    "live",
+					"checkoutType":    "payment_link",
+				},
+			})
+			return
+		}
+	}
+
 	// --- Stripe subscription (fiat USD path) ---
-	if provider == "stripe" && rail == "fiat" && currency == "USD" {
+	if provider == "stripe" && rail == "fiat" && currency == "USD" && checkoutType == "subscription" {
 		priceID, hasPrice := billing.PriceIDForPlan(planCode)
 		if strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")) != "" && hasPrice {
 			base := strings.TrimRight(strings.TrimSpace(os.Getenv("APP_PUBLIC_URL")), "/")
@@ -434,6 +503,7 @@ func (s *Server) handleBillingCheckoutCreate(w http.ResponseWriter, r *http.Requ
 			meta := map[string]string{
 				"plan_code": planCode,
 				"user_id":   userID,
+				"checkout_type": "subscription",
 			}
 			res, err := billing.CreateSubscriptionCheckout(priceID, successURL, cancelURL, meta)
 			if err != nil {
@@ -471,6 +541,7 @@ func (s *Server) handleBillingCheckoutCreate(w http.ResponseWriter, r *http.Requ
 					"customerHint":    strings.TrimSpace(req.CustomerIDHint),
 					"requestedPlan":   planCode,
 					"checkoutMode":    "live",
+					"checkoutType":    "subscription",
 				},
 			})
 			return
@@ -512,6 +583,7 @@ func (s *Server) handleBillingCheckoutCreate(w http.ResponseWriter, r *http.Requ
 			"customerHint":  strings.TrimSpace(req.CustomerIDHint),
 			"requestedPlan": planCode,
 			"checkoutMode":  "mock",
+			"checkoutType":  checkoutType,
 		},
 	})
 }
@@ -561,9 +633,18 @@ func (s *Server) handleBillingStripeWebhook(w http.ResponseWriter, r *http.Reque
 		if err := json.Unmarshal(rawObj, &sess); err != nil {
 			break
 		}
+		_ = s.svc.UpdateBillingCheckoutSessionByProviderSession(service.BillingCheckoutSessionUpdate{
+			ProviderSessionID: strings.TrimSpace(sess.ID),
+			Status:            "completed",
+		})
 		userID := strings.TrimSpace(sess.Metadata["user_id"])
 		planCode := strings.TrimSpace(sess.Metadata["plan_code"])
+		checkoutType := strings.TrimSpace(sess.Metadata["checkout_type"])
 		if userID == "" {
+			break
+		}
+		// one-time top-up flow: mark as paid without creating subscription record
+		if checkoutType == "payment_link" || strings.TrimSpace(sess.Mode) == "payment" {
 			break
 		}
 		subID := ""
@@ -671,6 +752,16 @@ func (s *Server) handleBillingStripeWebhook(w http.ResponseWriter, r *http.Reque
 			CancelAtPeriodEnd:      sub.CancelAtPeriodEnd,
 			RawEvent:               payload,
 		})
+	case "checkout.session.expired":
+		var sess struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(rawObj, &sess); err == nil {
+			_ = s.svc.UpdateBillingCheckoutSessionByProviderSession(service.BillingCheckoutSessionUpdate{
+				ProviderSessionID: strings.TrimSpace(sess.ID),
+				Status:            "expired",
+			})
+		}
 	default:
 		// ignore
 	}

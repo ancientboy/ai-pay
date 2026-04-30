@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 )
@@ -33,6 +34,11 @@ type BillingCheckoutSessionInput struct {
 	ProviderSessionID      string
 	ProviderSubscriptionID string
 	Metadata               map[string]string
+}
+
+type BillingCheckoutSessionUpdate struct {
+	ProviderSessionID string
+	Status            string
 }
 
 // BillingSubscriptionUpsert updates subscription row after Stripe webhook or sync.
@@ -73,6 +79,25 @@ func (s *Service) RecordBillingCheckoutSession(in BillingCheckoutSessionInput) e
 	defer s.mu.Unlock()
 	s.initBillingMem()
 	s.billing.checkoutByID[in.LocalID] = in
+	return nil
+}
+
+func (s *Service) UpdateBillingCheckoutSessionByProviderSession(in BillingCheckoutSessionUpdate) error {
+	if strings.TrimSpace(in.ProviderSessionID) == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.billing == nil {
+		return nil
+	}
+	for id, v := range s.billing.checkoutByID {
+		if strings.TrimSpace(v.ProviderSessionID) == strings.TrimSpace(in.ProviderSessionID) {
+			v.Status = in.Status
+			s.billing.checkoutByID[id] = v
+			break
+		}
+	}
 	return nil
 }
 

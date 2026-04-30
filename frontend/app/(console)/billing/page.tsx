@@ -28,6 +28,7 @@ export default function BillingPage() {
   const [amount, setAmount] = useState("49.9");
   const [currency, setCurrency] = useState("USD");
   const [planCode, setPlanCode] = useState<string>("starter");
+  const [checkoutType, setCheckoutType] = useState<"subscription" | "payment_link">("subscription");
   const [customerHint, setCustomerHint] = useState("");
   const [checkout, setCheckout] = useState<{
     checkoutId: string;
@@ -84,6 +85,7 @@ export default function BillingPage() {
         currency,
         provider: currency === "USD" ? "stripe" : "bridge",
         paymentRail: currency === "USD" ? "fiat" : "stablecoin",
+        checkoutType,
         planCode,
         amount,
         customerIdHint: customerHint.trim() || undefined,
@@ -143,6 +145,17 @@ export default function BillingPage() {
         <article className="rounded-xl border border-slate-800 bg-slate-900 p-4">
           <h3 className="text-sm font-medium text-slate-200">{t("billing.checkoutTitle")}</h3>
           <div className="mt-3 space-y-2">
+            <label className="block text-sm text-slate-300">
+              {t("billing.checkoutTypeLabel")}
+              <select
+                value={checkoutType}
+                onChange={(e) => setCheckoutType(e.target.value as "subscription" | "payment_link")}
+                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+              >
+                <option value="subscription">{t("billing.checkoutTypeSubscription")}</option>
+                <option value="payment_link">{t("billing.checkoutTypePaymentLink")}</option>
+              </select>
+            </label>
             <label className="block text-sm text-slate-300">
               {t("billing.planLabel")}
               <select
