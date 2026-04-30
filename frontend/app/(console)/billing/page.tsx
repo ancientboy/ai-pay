@@ -29,6 +29,7 @@ export default function BillingPage() {
   const [currency, setCurrency] = useState("USD");
   const [planCode, setPlanCode] = useState<string>("starter");
   const [checkoutType, setCheckoutType] = useState<"subscription" | "payment_link">("subscription");
+  const [vaAccountId, setVaAccountId] = useState("");
   const [customerHint, setCustomerHint] = useState("");
   const [checkout, setCheckout] = useState<{
     checkoutId: string;
@@ -88,6 +89,7 @@ export default function BillingPage() {
         checkoutType,
         planCode,
         amount,
+        vaAccountId: checkoutType === "payment_link" ? vaAccountId.trim() || undefined : undefined,
         customerIdHint: customerHint.trim() || undefined,
       }),
     onSuccess: (data) => {
@@ -178,6 +180,17 @@ export default function BillingPage() {
                 className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
               />
             </label>
+            {checkoutType === "payment_link" ? (
+              <label className="block text-sm text-slate-300">
+                {t("billing.vaAccountId")}
+                <input
+                  value={vaAccountId}
+                  onChange={(e) => setVaAccountId(e.target.value)}
+                  placeholder={t("billing.vaAccountPlaceholder")}
+                  className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                />
+              </label>
+            ) : null}
             <label className="block text-sm text-slate-300">
               {t("billing.currency")}
               <select

@@ -576,6 +576,7 @@ export function createBillingIntent(input: {
   planCode: string;
   amount?: string;
   customerIdHint?: string;
+  vaAccountId?: string;
   checkoutType?: "subscription" | "payment_link";
 }) {
   return request<BillingIntentResponse>("/billing/checkout/create", {

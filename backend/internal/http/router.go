@@ -206,6 +206,7 @@ type billingCheckoutCreateReq struct {
 	CustomerIDHint string `json:"customerIdHint"`
 	Amount         string `json:"amount"`
 	CheckoutType   string `json:"checkoutType"`
+	VAAccountID    string `json:"vaAccountId"`
 }
 
 func (s *Server) handleBillingPlans(w http.ResponseWriter, r *http.Request) {
@@ -643,8 +644,17 @@ func (s *Server) handleBillingStripeWebhook(w http.ResponseWriter, r *http.Reque
 		if userID == "" {
 			break
 		}
-		// one-time top-up flow: mark as paid without creating subscription record
+		// one-time top-up flow: mark as paid and optionally recharge VA without creating subscription record
 		if checkoutType == "payment_link" || strings.TrimSpace(sess.Mode) == "payment" {
+			vaAccountID := strings.TrimSpace(sess.Metadata["va_account_id"])
+			requestedAmount := strings.TrimSpace(sess.Metadata["requested_amount"])
+			log.Printf("stripe payment_link completed session=%s va=%s amount=%s", sess.ID, vaAccountID, requestedAmount)
+			if vaAccountID != "" && requestedAmount != "" {
+				idem := "stripe_payment_link_" + strings.TrimSpace(sess.ID)
+				if err := s.svc.Recharge(vaAccountID, requestedAmount, idem); err != nil {
+					log.Printf("stripe payment_link recharge failed session=%s va=%s err=%v", sess.ID, vaAccountID, err)
+				}
+			}
 			break
 		}
 		subID := ""
