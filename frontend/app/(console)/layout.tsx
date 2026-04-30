@@ -1,9 +1,15 @@
 import { ConsoleShell } from "@/components/console-shell";
+import { HelpAssistantWidget } from "@/components/help-assistant-widget";
 
 export default function ConsoleLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  return <ConsoleShell>{children}</ConsoleShell>;
+  return (
+    <ConsoleShell>
+      {children}
+      <HelpAssistantWidget />
+    </ConsoleShell>
+  );
 }

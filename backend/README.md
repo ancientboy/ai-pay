@@ -151,7 +151,18 @@ Webhook 投递任务表（重试 + 死信）由 `migrations/008_add_webhook_deli
 VA 自动充值配置与 VA 转账流水表由 `migrations/009_add_va_topup_and_transfer.sql` 提供。
 审计日志表由 `migrations/010_add_audit_log.sql` 提供。
 风控配置与渠道路由表由 `migrations/011_add_risk_and_channel_route.sql` 提供。
+订阅与结账会话表由 `migrations/015_billing_subscription.sql` 提供（持久化模式需要）。
 默认 docker 映射端口为 `3307 -> 3306`，避免与本机已有 MySQL 冲突。
+
+### 订阅收款（Stripe）
+
+1. 在 Stripe Dashboard 创建**订阅型** Product 与**月付** Price，将 Price ID 写入 `STRIPE_PRICE_STARTER` / `STRIPE_PRICE_GROWTH`。
+2. 设置 `STRIPE_SECRET_KEY`（`sk_test_...` 或 `sk_live_...`）与 `STRIPE_WEBHOOK_SECRET`（以 `whsec_` 开头）。
+3. 在 Stripe 开发者后台将 Webhook 端点指向 `https://<你的后端>/billing/webhook/stripe`，并订阅事件：`checkout.session.completed`、`customer.subscription.updated`、`customer.subscription.deleted`。
+4. 设置 `APP_PUBLIC_URL` 为前端公网地址，用于 Checkout 成功/取消跳转（例如 `https://app.example.com`）。
+5. 前端经 `/api/backend` 代理时自动携带 `X-User-Id`（登录用户），与订阅记录关联。
+
+未配置密钥时，法币通道仍返回**模拟**结账 URL 便于开发联调。
 
 如果你在本地已经初始化过数据库，请手动执行：
 
@@ -166,6 +177,7 @@ mysql -uroot -proot ai_pay < migrations/008_add_webhook_delivery_task.sql
 mysql -uroot -proot ai_pay < migrations/009_add_va_topup_and_transfer.sql
 mysql -uroot -proot ai_pay < migrations/010_add_audit_log.sql
 mysql -uroot -proot ai_pay < migrations/011_add_risk_and_channel_route.sql
+mysql -uroot -proot ai_pay < migrations/015_billing_subscription.sql
 ```
 
 ## 运行

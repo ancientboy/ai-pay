@@ -82,7 +82,7 @@ VALUES (?, ?, ?, ?, 0, 'ACTIVE', UTC_TIMESTAMP())`, va, cardNo, agentDID, wallet
 
 func (s *PersistentService) Recharge(va string, amount string, idemKey string) error {
 	amountV, err := parseAmount(amount)
-	if err != nil || amountV <= 0 {
+	if err != nil || amountV == 0 {
 		return &APIError{Code: "PAY-010", Message: "invalid amount"}
 	}
 	if idemKey == "" {
@@ -112,6 +112,15 @@ func (s *PersistentService) Recharge(va string, amount string, idemKey string) e
 	var resolvedVA string
 	if err := tx.QueryRow(`SELECT va_account_id FROM asset_va_account WHERE va_account_id = ? OR va_card_no = ? LIMIT 1`, va, va).Scan(&resolvedVA); err != nil {
 		return &APIError{Code: "PAY-010", Message: "account not found"}
+	}
+	if amountV < 0 {
+		var current float64
+		if err := tx.QueryRow(`SELECT balance FROM asset_va_account WHERE va_account_id = ? LIMIT 1`, resolvedVA).Scan(&current); err != nil {
+			return &APIError{Code: "PAY-010", Message: "account not found"}
+		}
+		if current < -amountV {
+			return &APIError{Code: "PAY-003", Message: "agent va insufficient balance"}
+		}
 	}
 	_, err = tx.Exec(`INSERT INTO fund_recharge_order (recharge_id, va_account_id, amount, status, created_at) VALUES (?, ?, ?, 'SETTLED', UTC_TIMESTAMP())`,
 		rechargeID, resolvedVA, amountV)
