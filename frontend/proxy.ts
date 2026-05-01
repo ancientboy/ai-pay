@@ -8,6 +8,7 @@ const protectedPaths = [
   "/authorize",
   "/recharge",
   "/transactions",
+  "/billing",
   "/settings",
   "/developer",
 ];
@@ -22,7 +23,8 @@ export function proxy(request: NextRequest) {
   return (async () => {
     const claims = await parseSessionToken(session);
     if (claims) {
-      if (pathname.startsWith("/developer") && claims.role === "readonly") {
+      const role = claims.role ?? "operator";
+      if (pathname.startsWith("/developer") && role !== "admin") {
         return NextResponse.redirect(new URL("/dashboard", request.url));
       }
       return NextResponse.next();
@@ -40,6 +42,7 @@ export const config = {
     "/authorize/:path*",
     "/recharge/:path*",
     "/transactions/:path*",
+    "/billing/:path*",
     "/settings/:path*",
     "/developer/:path*",
   ],

@@ -6,6 +6,11 @@ import { DetailModal } from "@/components/detail-modal";
 import { useLocale } from "@/components/locale-provider";
 import { useToast } from "@/components/toast-provider";
 import {
+  adminCreateUser,
+  adminListUsers,
+  adminResetUserPassword,
+  adminSetUserDisabled,
+  adminSetUserRole,
   createDeveloperApiKey,
   createDeveloperWebhook,
   deleteChannelRoute,
@@ -41,6 +46,13 @@ type DeliveryItem = {
   updatedAt: string;
 };
 
+type AdminUserItem = {
+  username: string;
+  role: "admin" | "operator" | "readonly";
+  disabled: boolean;
+  createdAt: string;
+};
+
 export default function DeveloperPage() {
   const { t, locale } = useLocale();
   const { showToast } = useToast();
@@ -60,6 +72,9 @@ export default function DeveloperPage() {
   const [routeMode, setRouteMode] = useState<"SETTLE" | "ASYNC" | "FAIL">("SETTLE");
   const [auditAction, setAuditAction] = useState("");
   const [auditResource, setAuditResource] = useState("");
+  const [newUserName, setNewUserName] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
+  const [newUserRole, setNewUserRole] = useState<"operator" | "readonly">("operator");
   const pageSize = 10;
 
   const apiKeysQuery = useQuery({
@@ -99,6 +114,10 @@ export default function DeveloperPage() {
   const auditLogsQuery = useQuery({
     queryKey: ["developer", "auditLogs", auditAction, auditResource],
     queryFn: () => listAuditLogs({ action: auditAction.trim(), resource: auditResource.trim(), limit: 20, offset: 0 }),
+  });
+  const adminUsersQuery = useQuery({
+    queryKey: ["developer", "adminUsers"],
+    queryFn: adminListUsers,
   });
 
   const createApiKeyMutation = useMutation({
@@ -190,6 +209,44 @@ export default function DeveloperPage() {
     },
     onError: (err) => showToast("error", toReadableError(err, locale)),
   });
+  const adminCreateUserMutation = useMutation({
+    mutationFn: (input: { username: string; password: string; role: "operator" | "readonly" }) =>
+      adminCreateUser(input),
+    onSuccess: () => {
+      setNewUserName("");
+      setNewUserPassword("");
+      setNewUserRole("operator");
+      showToast("success", t("developer.userCreated"));
+      queryClient.invalidateQueries({ queryKey: ["developer", "adminUsers"] });
+    },
+    onError: (err) => showToast("error", toReadableError(err, locale)),
+  });
+  const adminSetUserDisabledMutation = useMutation({
+    mutationFn: (input: { username: string; disabled: boolean }) =>
+      adminSetUserDisabled(input.username, input.disabled),
+    onSuccess: () => {
+      showToast("success", t("developer.userStatusUpdated"));
+      queryClient.invalidateQueries({ queryKey: ["developer", "adminUsers"] });
+    },
+    onError: (err) => showToast("error", toReadableError(err, locale)),
+  });
+  const adminSetUserRoleMutation = useMutation({
+    mutationFn: (input: { username: string; role: "admin" | "operator" | "readonly" }) =>
+      adminSetUserRole(input.username, input.role),
+    onSuccess: () => {
+      showToast("success", t("developer.userRoleUpdated"));
+      queryClient.invalidateQueries({ queryKey: ["developer", "adminUsers"] });
+    },
+    onError: (err) => showToast("error", toReadableError(err, locale)),
+  });
+  const adminResetUserPasswordMutation = useMutation({
+    mutationFn: (input: { username: string; password: string }) =>
+      adminResetUserPassword(input.username, input.password),
+    onSuccess: () => {
+      showToast("success", t("developer.userPasswordReset"));
+    },
+    onError: (err) => showToast("error", toReadableError(err, locale)),
+  });
 
   const stats = deliveryStatsQuery.data ?? {
     pending: 0,
@@ -219,6 +276,126 @@ export default function DeveloperPage() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
+        <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 md:col-span-2">
+          <h3 className="text-sm font-medium text-slate-200">{t("developer.userAdminTitle")}</h3>
+          <p className="mt-1 text-xs text-slate-400">{t("developer.userAdminSubtitle")}</p>
+          <div className="mt-3 grid gap-2 md:grid-cols-4">
+            <input
+              value={newUserName}
+              onChange={(e) => setNewUserName(e.target.value)}
+              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+              placeholder={t("developer.userName")}
+            />
+            <input
+              value={newUserPassword}
+              onChange={(e) => setNewUserPassword(e.target.value)}
+              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+              placeholder={t("developer.userPassword")}
+              type="password"
+            />
+            <select
+              value={newUserRole}
+              onChange={(e) => setNewUserRole(e.target.value as "operator" | "readonly")}
+              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+            >
+              <option value="operator">{t("developer.roleOperator")}</option>
+              <option value="readonly">{t("developer.roleReadonly")}</option>
+            </select>
+            <button
+              onClick={() => {
+                if (!newUserName.trim() || !newUserPassword.trim()) {
+                  showToast("error", t("developer.userNamePasswordRequired"));
+                  return;
+                }
+                adminCreateUserMutation.mutate({
+                  username: newUserName.trim(),
+                  password: newUserPassword,
+                  role: newUserRole,
+                });
+              }}
+              disabled={adminCreateUserMutation.isPending}
+              className="rounded-md bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-60"
+            >
+              {t("developer.userCreate")}
+            </button>
+          </div>
+          <div className="mt-3 overflow-x-auto">
+            <table className="min-w-full text-left text-xs text-slate-300">
+              <thead className="text-slate-500">
+                <tr>
+                  <th className="px-2 py-1">{t("developer.userName")}</th>
+                  <th className="px-2 py-1">{t("developer.userRole")}</th>
+                  <th className="px-2 py-1">{t("developer.userStatus")}</th>
+                  <th className="px-2 py-1">{t("common.createdAt")}</th>
+                  <th className="px-2 py-1">{t("developer.userActions")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(adminUsersQuery.data?.users ?? []).map((user: AdminUserItem) => (
+                  <tr key={user.username} className="border-t border-slate-800">
+                    <td className="px-2 py-1">{user.username}</td>
+                    <td className="px-2 py-1">
+                      <select
+                        value={user.role}
+                        onChange={(e) =>
+                          adminSetUserRoleMutation.mutate({
+                            username: user.username,
+                            role: e.target.value as "admin" | "operator" | "readonly",
+                          })
+                        }
+                        className="rounded border border-slate-700 bg-slate-950 px-2 py-1"
+                      >
+                        <option value="admin">{t("developer.roleAdmin")}</option>
+                        <option value="operator">{t("developer.roleOperator")}</option>
+                        <option value="readonly">{t("developer.roleReadonly")}</option>
+                      </select>
+                    </td>
+                    <td className="px-2 py-1">
+                      {user.disabled ? t("developer.userDisabled") : t("developer.userEnabled")}
+                    </td>
+                    <td className="px-2 py-1">{new Date(user.createdAt).toLocaleString()}</td>
+                    <td className="px-2 py-1">
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() =>
+                            adminSetUserDisabledMutation.mutate({
+                              username: user.username,
+                              disabled: !user.disabled,
+                            })
+                          }
+                          className="rounded border border-slate-700 px-2 py-1"
+                        >
+                          {user.disabled ? t("developer.userEnable") : t("developer.userDisable")}
+                        </button>
+                        <button
+                          onClick={() => {
+                            const nextPassword = window.prompt(t("developer.userResetPrompt"));
+                            if (!nextPassword) return;
+                            adminResetUserPasswordMutation.mutate({
+                              username: user.username,
+                              password: nextPassword,
+                            });
+                          }}
+                          className="rounded border border-slate-700 px-2 py-1"
+                        >
+                          {t("developer.userResetPassword")}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {(adminUsersQuery.data?.users ?? []).length === 0 ? (
+                  <tr>
+                    <td className="px-2 py-2 text-slate-500" colSpan={5}>
+                      {t("developer.noUsers")}
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
           <h3 className="text-sm font-medium text-slate-200">{t("developer.apiKeys")}</h3>
           <div className="mt-3 flex gap-2">
