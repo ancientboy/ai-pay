@@ -4,9 +4,8 @@ import {
   SESSION_COOKIE_NAME,
   sessionCookieOptions,
 } from "@/lib/session";
+import { ensureAdminUser, findUserByUsername, verifyPassword } from "@/lib/auth-users";
 
-const ADMIN_USERNAME = process.env.AI_PAY_ADMIN_USERNAME ?? "admin";
-const ADMIN_PASSWORD = process.env.AI_PAY_ADMIN_PASSWORD ?? "admin123";
 const DEFAULT_ROLE = process.env.AI_PAY_DEFAULT_ROLE ?? "operator";
 
 const loginAttempts = new Map<
@@ -47,7 +46,7 @@ function isEnglish(request: NextRequest) {
 
 function authMessage(
   request: NextRequest,
-  code: "AUTH-001" | "AUTH-002" | "AUTH-003",
+  code: "AUTH-001" | "AUTH-002" | "AUTH-003" | "AUTH-004",
 ) {
   const en = isEnglish(request);
   if (code === "AUTH-001") {
@@ -55,6 +54,9 @@ function authMessage(
   }
   if (code === "AUTH-002") {
     return en ? "Invalid username or password" : "用户名或密码错误";
+  }
+  if (code === "AUTH-004") {
+    return en ? "This user has been disabled" : "该用户已被禁用";
   }
   return en
     ? "Too many login attempts, please retry later"
@@ -83,14 +85,23 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (username !== ADMIN_USERNAME || password !== ADMIN_PASSWORD) {
+  await ensureAdminUser();
+  const user = await findUserByUsername(username);
+  if (!user || !verifyPassword(password, user.passwordHash)) {
     return NextResponse.json(
       { code: "AUTH-002", message: authMessage(request, "AUTH-002") },
       { status: 401 },
     );
   }
+  if (user.disabled) {
+    return NextResponse.json(
+      { code: "AUTH-004", message: authMessage(request, "AUTH-004") },
+      { status: 403 },
+    );
+  }
 
-  const token = await createSessionToken(username, DEFAULT_ROLE);
+  const role = user.role || DEFAULT_ROLE;
+  const token = await createSessionToken(username, role);
   loginAttempts.delete(ip);
   const response = NextResponse.json({ code: "0", message: "ok" });
   response.cookies.set(SESSION_COOKIE_NAME, token, sessionCookieOptions());

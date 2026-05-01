@@ -5,14 +5,21 @@ import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import { LocaleSwitcher } from "@/components/locale-switcher";
 import { useLocale } from "@/components/locale-provider";
+import { type SessionClaims } from "@/lib/session";
 
-export function ConsoleShell({ children }: { children: React.ReactNode }) {
+export function ConsoleShell({
+  children,
+  session,
+}: {
+  children: React.ReactNode;
+  session: SessionClaims;
+}) {
   const { t } = useLocale();
   const router = useRouter();
   const pathname = usePathname();
   const [loggingOut, setLoggingOut] = useState(false);
-  const defaultRole = process.env.NEXT_PUBLIC_AI_PAY_DEFAULT_ROLE ?? "operator";
-  const canManageDeveloper = defaultRole !== "readonly";
+  const role = session.role ?? "operator";
+  const canManageDeveloper = role !== "readonly";
   const navItems = [
     { href: "/dashboard", label: t("nav.dashboard") },
     { href: "/billing", label: t("nav.billing") },
@@ -58,7 +65,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
             </div>
             <div className="flex items-center gap-3">
               <div className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">
-                {t("app.role")}: {defaultRole}
+                {t("app.role")}: {role}
               </div>
               <LocaleSwitcher />
               <div className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">

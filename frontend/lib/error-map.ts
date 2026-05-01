@@ -12,6 +12,10 @@ const ERROR_MAP: Record<string, string> = {
   "AUTH-001": "用户名和密码不能为空",
   "AUTH-002": "用户名或密码错误",
   "AUTH-003": "登录尝试过于频繁，请稍后重试",
+  "AUTH-004": "用户名至少 3 位，仅支持字母/数字/下划线/中划线",
+  "AUTH-005": "密码至少 8 位",
+  "AUTH-006": "用户名已存在",
+  "AUTH-007": "该账号已禁用，请联系管理员",
 };
 
 const ERROR_MAP_EN: Record<string, string> = {
@@ -28,6 +32,10 @@ const ERROR_MAP_EN: Record<string, string> = {
   "AUTH-001": "Username and password are required",
   "AUTH-002": "Invalid username or password",
   "AUTH-003": "Too many login attempts, please retry later",
+  "AUTH-004": "Username must be >=3 chars and use letters/digits/_/- only",
+  "AUTH-005": "Password must be at least 8 characters",
+  "AUTH-006": "Username already exists",
+  "AUTH-007": "Account is disabled, contact administrator",
 };
 
 export class ApiClientError extends Error {
