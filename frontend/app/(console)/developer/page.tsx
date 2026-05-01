@@ -7,6 +7,7 @@ import { useLocale } from "@/components/locale-provider";
 import { useToast } from "@/components/toast-provider";
 import {
   adminCreateUser,
+  listAdminAuditLogs,
   adminListUsers,
   adminResetUserPassword,
   adminSetUserPlan,
@@ -55,7 +56,6 @@ type AdminUserItem = {
   disabled: boolean;
   createdAt: string;
 };
-
 export default function DeveloperPage() {
   const { t, locale } = useLocale();
   const { showToast } = useToast();
@@ -124,6 +124,11 @@ export default function DeveloperPage() {
     queryKey: ["developer", "adminUsers"],
     queryFn: adminListUsers,
   });
+  const adminUserAuditLogsQuery = useQuery({
+    queryKey: ["developer", "adminUserAuditLogs"],
+    queryFn: () => listAdminAuditLogs({ limit: 30, offset: 0 }),
+  });
+  const adminUserAuditLogs = adminUserAuditLogsQuery.data?.logs ?? [];
 
   const createApiKeyMutation = useMutation({
     mutationFn: (name: string) => createDeveloperApiKey(name),
@@ -231,6 +236,7 @@ export default function DeveloperPage() {
       setNewUserPlan("starter");
       showToast("success", t("developer.userCreated"));
       queryClient.invalidateQueries({ queryKey: ["developer", "adminUsers"] });
+      queryClient.invalidateQueries({ queryKey: ["developer", "adminUserAuditLogs"] });
     },
     onError: (err) => showToast("error", toReadableError(err, locale)),
   });
@@ -240,6 +246,7 @@ export default function DeveloperPage() {
     onSuccess: () => {
       showToast("success", t("developer.userStatusUpdated"));
       queryClient.invalidateQueries({ queryKey: ["developer", "adminUsers"] });
+      queryClient.invalidateQueries({ queryKey: ["developer", "adminUserAuditLogs"] });
     },
     onError: (err) => showToast("error", toReadableError(err, locale)),
   });
@@ -249,6 +256,7 @@ export default function DeveloperPage() {
     onSuccess: () => {
       showToast("success", t("developer.userRoleUpdated"));
       queryClient.invalidateQueries({ queryKey: ["developer", "adminUsers"] });
+      queryClient.invalidateQueries({ queryKey: ["developer", "adminUserAuditLogs"] });
     },
     onError: (err) => showToast("error", toReadableError(err, locale)),
   });
@@ -258,6 +266,7 @@ export default function DeveloperPage() {
     onSuccess: () => {
       showToast("success", t("developer.userPlanUpdated"));
       queryClient.invalidateQueries({ queryKey: ["developer", "adminUsers"] });
+      queryClient.invalidateQueries({ queryKey: ["developer", "adminUserAuditLogs"] });
     },
     onError: (err) => showToast("error", toReadableError(err, locale)),
   });
@@ -266,6 +275,7 @@ export default function DeveloperPage() {
       adminResetUserPassword(input.username, input.password),
     onSuccess: () => {
       showToast("success", t("developer.userPasswordReset"));
+      queryClient.invalidateQueries({ queryKey: ["developer", "adminUserAuditLogs"] });
     },
     onError: (err) => showToast("error", toReadableError(err, locale)),
   });
@@ -453,6 +463,22 @@ export default function DeveloperPage() {
                 ) : null}
               </tbody>
             </table>
+          </div>
+          <div className="mt-4">
+            <h4 className="text-xs font-medium text-slate-300">{t("developer.userAuditLogs")}</h4>
+            <ul className="mt-2 space-y-1 text-[11px] text-slate-400">
+              {adminUserAuditLogs.map((log) => (
+                <li key={log.id} className="rounded border border-slate-800 p-2">
+                  <p>
+                    {new Date(log.createdAt).toLocaleString()} · {log.actor} · {log.action} ·{" "}
+                    {log.targetUsername ?? "-"}
+                  </p>
+                </li>
+              ))}
+              {adminUserAuditLogs.length === 0 ? (
+                <li className="text-slate-500">{t("developer.noUserAuditLogs")}</li>
+              ) : null}
+            </ul>
           </div>
         </div>
 

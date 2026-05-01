@@ -9,6 +9,7 @@ import {
   upsertUser,
 } from "@/lib/auth-users";
 import { getPlanCapabilities, isValidPlan, type PlanCode } from "@/lib/plan-capabilities";
+import { appendAdminAuditLog, listAdminAuditLogs } from "@/lib/admin-audit-log";
 
 function isEnglish(request: NextRequest) {
   const language = request.headers.get("accept-language")?.toLowerCase() ?? "";
@@ -41,22 +42,29 @@ function isValidUsername(username: string) {
 async function requireAdmin(request: NextRequest) {
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
   const claims = await parseSessionToken(token);
-  return claims?.role === "admin";
+  return claims?.role === "admin" ? claims.sub : null;
 }
 
 export async function GET(request: NextRequest) {
-  if (!(await requireAdmin(request))) {
+  const adminActor = await requireAdmin(request);
+  if (!adminActor) {
     return NextResponse.json(
       { code: "AUTH-006", message: authMessage(request, "AUTH-006") },
       { status: 403 },
     );
+  }
+  const view = request.nextUrl.searchParams.get("view");
+  if (view === "audit") {
+    const logs = await listAdminAuditLogs();
+    return NextResponse.json({ code: "0", data: { logs } });
   }
   const users = await listUsers();
   return NextResponse.json({ code: "0", data: { users } });
 }
 
 export async function POST(request: NextRequest) {
-  if (!(await requireAdmin(request))) {
+  const adminActor = await requireAdmin(request);
+  if (!adminActor) {
     return NextResponse.json(
       { code: "AUTH-006", message: authMessage(request, "AUTH-006") },
       { status: 403 },
@@ -114,11 +122,23 @@ export async function POST(request: NextRequest) {
         { status: 409 },
       );
     }
+    await appendAdminAuditLog({
+      actor: adminActor,
+      action: "admin.user.create",
+      targetUsername: username,
+      detail: { role, tenantId, plan: plan ?? "starter" },
+    });
     return NextResponse.json({ code: "0", message: "ok" });
   }
 
   if (action === "set_disabled") {
     await setUserDisabled(username, !!body?.disabled);
+    await appendAdminAuditLog({
+      actor: adminActor,
+      action: body?.disabled ? "admin.user.disable" : "admin.user.enable",
+      targetUsername: username,
+      detail: { disabled: !!body?.disabled },
+    });
     return NextResponse.json({ code: "0", message: "ok" });
   }
 
@@ -131,6 +151,12 @@ export async function POST(request: NextRequest) {
       );
     }
     await resetUserPassword(username, newPassword);
+    await appendAdminAuditLog({
+      actor: adminActor,
+      action: "admin.user.reset_password",
+      targetUsername: username,
+      detail: { via: "api.auth.admin.users" },
+    });
     return NextResponse.json({ code: "0", message: "ok" });
   }
 
@@ -143,6 +169,12 @@ export async function POST(request: NextRequest) {
       );
     }
     await updateUserRole(username, role);
+    await appendAdminAuditLog({
+      actor: adminActor,
+      action: "admin.user.set_role",
+      targetUsername: username,
+      detail: { role },
+    });
     return NextResponse.json({ code: "0", message: "ok" });
   }
 
@@ -161,6 +193,12 @@ export async function POST(request: NextRequest) {
         { status: 400 },
       );
     }
+    await appendAdminAuditLog({
+      actor: adminActor,
+      action: "admin.user.set_plan",
+      targetUsername: username,
+      detail: { plan, capabilities: getPlanCapabilities(plan) },
+    });
     return NextResponse.json({ code: "0", message: "ok", data: getPlanCapabilities(plan) });
   }
 

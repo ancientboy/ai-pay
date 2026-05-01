@@ -408,6 +408,15 @@ export type AuditLog = {
   createdAt: string;
 };
 
+export type AdminAuditLog = {
+  id: string;
+  actor: string;
+  action: string;
+  targetUsername?: string;
+  detail?: Record<string, unknown>;
+  createdAt: string;
+};
+
 export type AdminUserItem = {
   username: string;
   role: "admin" | "operator" | "readonly";
@@ -529,6 +538,18 @@ export function listAuditLogs(input?: { action?: string; resource?: string; limi
   }
   const suffix = query.toString();
   return request<AuditLog[]>(`/developer/audit-logs${suffix ? `?${suffix}` : ""}`);
+}
+
+export function listAdminAuditLogs(input?: { limit?: number; offset?: number }) {
+  const query = new URLSearchParams();
+  if (input?.limit && Number.isFinite(input.limit) && input.limit > 0) {
+    query.set("limit", String(input.limit));
+  }
+  if (typeof input?.offset === "number" && Number.isFinite(input.offset) && input.offset >= 0) {
+    query.set("offset", String(input.offset));
+  }
+  const suffix = query.toString();
+  return request<{ logs: AdminAuditLog[] }>(`/auth/admin/users?${suffix}`);
 }
 
 // Backward-compatible aliases for pages using older names.
