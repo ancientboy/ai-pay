@@ -5,24 +5,30 @@ import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import { LocaleSwitcher } from "@/components/locale-switcher";
 import { useLocale } from "@/components/locale-provider";
+import { type SessionClaims } from "@/lib/session";
 
-export function ConsoleShell({ children }: { children: React.ReactNode }) {
+export function ConsoleShell({
+  children,
+  session,
+}: {
+  children: React.ReactNode;
+  session: SessionClaims;
+}) {
   const { t } = useLocale();
   const router = useRouter();
   const pathname = usePathname();
   const [loggingOut, setLoggingOut] = useState(false);
-  const defaultRole = process.env.NEXT_PUBLIC_AI_PAY_DEFAULT_ROLE ?? "operator";
-  const canManageDeveloper = defaultRole !== "readonly";
+  const role = session.role ?? "operator";
   const navItems = [
-    { href: "/dashboard", label: t("nav.dashboard") },
-    { href: "/billing", label: t("nav.billing") },
-    { href: "/agents", label: t("nav.agents") },
-    { href: "/authorize", label: t("nav.authorize") },
-    { href: "/recharge", label: t("nav.recharge") },
-    { href: "/transactions", label: t("nav.transactions") },
-    ...(canManageDeveloper ? [{ href: "/developer", label: t("nav.developer") }] : []),
-    { href: "/settings", label: t("nav.settings") },
-  ];
+    { href: "/dashboard", label: t("nav.dashboard"), roles: ["admin", "operator", "readonly"] },
+    { href: "/billing", label: t("nav.billing"), roles: ["admin", "operator"] },
+    { href: "/agents", label: t("nav.agents"), roles: ["admin"] },
+    { href: "/authorize", label: t("nav.authorize"), roles: ["admin"] },
+    { href: "/recharge", label: t("nav.recharge"), roles: ["admin", "operator"] },
+    { href: "/transactions", label: t("nav.transactions"), roles: ["admin", "operator", "readonly"] },
+    { href: "/developer", label: t("nav.developer"), roles: ["admin"] },
+    { href: "/settings", label: t("nav.settings"), roles: ["admin", "operator", "readonly"] },
+  ].filter((item) => item.roles.includes(role));
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -58,7 +64,7 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
             </div>
             <div className="flex items-center gap-3">
               <div className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">
-                {t("app.role")}: {defaultRole}
+                {t("app.role")}: {role}
               </div>
               <LocaleSwitcher />
               <div className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">

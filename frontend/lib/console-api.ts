@@ -82,6 +82,19 @@ export function saveApiBaseURL(url: string) {
   window.localStorage.setItem(STORAGE_API_BASE_URL_KEY, url.trim());
 }
 
+export type AuthProfile = {
+  username: string;
+  role: "admin" | "operator" | "readonly";
+  tenantId: string;
+  subscriptionPlan: "starter" | "growth" | "enterprise";
+  planCapabilities: string[];
+  syncedFromBilling?: boolean;
+};
+
+export function getAuthProfile() {
+  return request<AuthProfile>("/auth/profile");
+}
+
 export function registerAgent(agentDid: string, didPubKey?: string) {
   return request<{ DID: string }>("/agent/did/register", {
     method: "POST",
@@ -396,6 +409,22 @@ export type AuditLog = {
   createdAt: string;
 };
 
+export type AdminAuditLog = {
+  id: string;
+  actor: string;
+  action: string;
+  targetUsername?: string;
+  detail?: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type AdminUserItem = {
+  username: string;
+  role: "admin" | "operator" | "readonly";
+  disabled: boolean;
+  createdAt: string;
+};
+
 export function listApiKeys() {
   return request<DeveloperAPIKey[]>("/developer/api-keys");
 }
@@ -512,6 +541,18 @@ export function listAuditLogs(input?: { action?: string; resource?: string; limi
   return request<AuditLog[]>(`/developer/audit-logs${suffix ? `?${suffix}` : ""}`);
 }
 
+export function listAdminAuditLogs(input?: { limit?: number; offset?: number }) {
+  const query = new URLSearchParams();
+  if (input?.limit && Number.isFinite(input.limit) && input.limit > 0) {
+    query.set("limit", String(input.limit));
+  }
+  if (typeof input?.offset === "number" && Number.isFinite(input.offset) && input.offset >= 0) {
+    query.set("offset", String(input.offset));
+  }
+  const suffix = query.toString();
+  return request<{ logs: AdminAuditLog[] }>(`/auth/admin/users?${suffix}`);
+}
+
 // Backward-compatible aliases for pages using older names.
 export const listDeveloperApiKeys = listApiKeys;
 export const createDeveloperApiKey = createApiKey;
@@ -521,6 +562,72 @@ export function createDeveloperWebhook(input: { url: string; event: string }) {
 }
 export const listDeveloperWebhookDeliveries = listWebhookDeliveries;
 export const getDeveloperWebhookDeliveryStats = getWebhookDeliveryStats;
+export const adminListUsers = listAdminUsers;
+export const adminCreateUser = createAdminUser;
+export function adminSetUserDisabled(username: string, disabled: boolean) {
+  return setAdminUserDisabled({ username, disabled });
+}
+export function adminSetUserRole(username: string, role: "admin" | "operator" | "readonly") {
+  return setAdminUserRole({ username, role });
+}
+export function adminSetUserPlan(
+  username: string,
+  plan: "starter" | "growth" | "enterprise",
+) {
+  return setAdminUserPlan({ username, plan });
+}
+export function adminResetUserPassword(username: string, password: string) {
+  return resetAdminUserPassword({ username, newPassword: password });
+}
+
+export function listAdminUsers() {
+  return request<{ users: AdminUserItem[] }>("/auth/admin/users");
+}
+
+export function createAdminUser(input: {
+  username: string;
+  password: string;
+  role: "operator" | "readonly";
+}) {
+  return request("/auth/admin/users", {
+    method: "POST",
+    body: JSON.stringify({ action: "create", ...input }),
+  });
+}
+
+export function setAdminUserDisabled(input: { username: string; disabled: boolean }) {
+  return request("/auth/admin/users", {
+    method: "POST",
+    body: JSON.stringify({ action: "set_disabled", ...input }),
+  });
+}
+
+export function resetAdminUserPassword(input: { username: string; newPassword: string }) {
+  return request("/auth/admin/users", {
+    method: "POST",
+    body: JSON.stringify({ action: "reset_password", ...input }),
+  });
+}
+
+export function setAdminUserRole(input: {
+  username: string;
+  role: "operator" | "readonly" | "admin";
+}) {
+  return request("/auth/admin/users", {
+    method: "POST",
+    body: JSON.stringify({ action: "set_role", ...input }),
+  });
+}
+
+export function setAdminUserPlan(input: {
+  username: string;
+  plan: "starter" | "growth" | "enterprise";
+}) {
+  return request("/auth/admin/users", {
+    method: "POST",
+    body: JSON.stringify({ action: "set_plan", ...input }),
+  });
+}
 
 export type BillingProviderCapability = {
   provider: string;
@@ -550,6 +657,7 @@ export type BillingIntentResponse = {
 
 export type BillingSubscriptionView = {
   userId: string;
+  tenantId?: string;
   planCode: string;
   status: string;
   currency: string;
@@ -576,6 +684,39 @@ export type BillingReconciliationItem = {
 export type BillingCapabilitiesEnvelope = BillingCapabilitiesResponse & {
   stripeCheckoutConfigured?: boolean;
   stripeWebhookSecretConfigured?: boolean;
+  bridgeConfigured?: boolean;
+};
+
+export type BridgeVACountry = {
+  alpha3: string;
+  name: string;
+  sourceCurrency: string;
+  rails: string[];
+};
+
+export type BridgeVACountriesResponse = {
+  mode: "live" | "mock";
+  bridgeConfigured: boolean;
+  count: number;
+  recognizedCount: number;
+  countries: BridgeVACountry[];
+};
+
+export type BridgeKYCLinkResult = {
+  id: string;
+  customerId: string;
+  kycLink: string;
+  tosLink: string;
+  kycStatus: string;
+  tosStatus: string;
+};
+
+export type BridgeVirtualAccountResult = {
+  id: string;
+  status: string;
+  customerId: string;
+  createdAt: string;
+  sourceDepositInstructions: Record<string, unknown>;
 };
 
 export type HelpSuggestion = {
@@ -591,6 +732,55 @@ export type HelpAnswer = {
 
 export function getBillingCapabilities() {
   return request<BillingCapabilitiesEnvelope>("/billing/provider/capabilities");
+}
+
+export function getBridgeVACountries() {
+  return request<BridgeVACountriesResponse>("/billing/provider/bridge/va-countries");
+}
+
+export function createBridgeKYCLink(input: {
+  fullName: string;
+  email: string;
+  type: "individual" | "business";
+  redirectUri?: string;
+  endorsements?: string[];
+}) {
+  return request<{ mode: "live" | "mock"; result: BridgeKYCLinkResult }>(
+    "/billing/provider/bridge/kyc-link",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+      idempotencyKey: `bridge-kyc-link-ui-${Date.now()}`,
+    },
+  );
+}
+
+export function createBridgeVirtualAccount(input: {
+  customerId: string;
+  sourceCurrency: string;
+  destinationCurrency: string;
+  paymentRail: string;
+  address: string;
+  developerFeePercent?: string;
+}) {
+  return request<{ mode: "live"; result: BridgeVirtualAccountResult }>(
+    "/billing/provider/bridge/virtual-account",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+      idempotencyKey: `bridge-va-ui-${Date.now()}`,
+    },
+  );
+}
+
+export type TenantSummary = {
+  tenantId: string;
+  planCode: "starter" | "growth" | "enterprise";
+  role: "admin" | "operator" | "readonly";
+};
+
+export function getAuthMe() {
+  return request<TenantSummary>("/auth/me");
 }
 
 export function queryHelp(input: { question: string; pagePath?: string; locale?: string }) {
@@ -619,6 +809,15 @@ export function createBillingIntent(input: {
 
 export function getBillingSubscription() {
   return request<{ subscription: BillingSubscriptionView | null }>("/billing/subscription");
+}
+
+export function getCurrentEntitlements() {
+  return request<{
+    tenantId: string;
+    role: string;
+    plan: "starter" | "growth" | "enterprise";
+    features: Record<string, boolean>;
+  }>("/auth/entitlements");
 }
 
 export function getBillingReconciliation(input?: {

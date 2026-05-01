@@ -149,6 +149,9 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /payment/sign/submit", s.withM8SelfHosted(http.HandlerFunc(s.handlePaymentSignSubmit)))
 	mux.HandleFunc("GET /billing/plans", s.handleBillingPlans)
 	mux.HandleFunc("GET /billing/provider/capabilities", s.handleBillingProviderCapabilities)
+	mux.HandleFunc("GET /billing/provider/bridge/va-countries", s.handleBridgeVACountries)
+	mux.HandleFunc("POST /billing/provider/bridge/kyc-link", s.handleBridgeCreateKYCLink)
+	mux.HandleFunc("POST /billing/provider/bridge/virtual-account", s.handleBridgeCreateVirtualAccount)
 	mux.HandleFunc("GET /billing/subscription", s.handleBillingSubscription)
 	mux.HandleFunc("GET /billing/reconciliation", s.handleBillingReconciliation)
 	mux.HandleFunc("GET /billing/reconciliation/export", s.handleBillingReconciliationExportCSV)
@@ -286,8 +289,131 @@ func (s *Server) handleBillingProviderCapabilities(w http.ResponseWriter, r *htt
 			"capabilities":                  caps,
 			"stripeCheckoutConfigured":      stripeReady,
 			"stripeWebhookSecretConfigured": strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET")) != "",
+			"bridgeConfigured":              billing.BridgeConfigured(),
 		},
 	})
+}
+
+func (s *Server) handleBridgeVACountries(w http.ResponseWriter, r *http.Request) {
+	if !envEnabled("BILLING_PROVIDER_BRIDGE_ENABLED", true) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "bridge provider disabled"})
+		return
+	}
+	recognized, err := billing.GetBridgeCountries()
+	mode := "live"
+	if err != nil {
+		mode = "mock"
+	}
+	vaCountries := billing.BridgeVACountriesFromRecognized(recognized)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"code": "0",
+		"data": map[string]any{
+			"mode":             mode,
+			"bridgeConfigured": billing.BridgeConfigured(),
+			"count":            len(vaCountries),
+			"countries":        vaCountries,
+			"recognizedCount":  len(recognized),
+		},
+	})
+}
+
+type bridgeCreateKYCLinkReq struct {
+	FullName    string   `json:"fullName"`
+	Email       string   `json:"email"`
+	Type        string   `json:"type"`
+	RedirectURI string   `json:"redirectUri"`
+	Endorsement []string `json:"endorsements"`
+}
+
+func (s *Server) handleBridgeCreateKYCLink(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"code": "PAY-010", "message": "method not allowed"})
+		return
+	}
+	var req bridgeCreateKYCLinkReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	fullName := strings.TrimSpace(req.FullName)
+	email := strings.TrimSpace(req.Email)
+	kycType := strings.TrimSpace(strings.ToLower(req.Type))
+	if fullName == "" || email == "" || (kycType != "individual" && kycType != "business") {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "fullName/email/type are required"})
+		return
+	}
+	idem := r.Header.Get("Idempotency-Key")
+	if strings.TrimSpace(idem) == "" {
+		idem = "bridge_kyc_link_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	if billing.BridgeConfigured() {
+		res, err := billing.CreateBridgeKYCLink(fullName, email, kycType, req.RedirectURI, req.Endorsement, idem)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"mode": "live", "result": res}})
+		return
+	}
+	mock := billing.MockBridgeKYCLink(fullName, email, kycType)
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"mode": "mock", "result": mock}})
+}
+
+type bridgeCreateVAReq struct {
+	CustomerID          string `json:"customerId"`
+	SourceCurrency      string `json:"sourceCurrency"`
+	DestinationCurrency string `json:"destinationCurrency"`
+	PaymentRail         string `json:"paymentRail"`
+	Address             string `json:"address"`
+	DeveloperFeePercent string `json:"developerFeePercent"`
+}
+
+func (s *Server) handleBridgeCreateVirtualAccount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"code": "PAY-010", "message": "method not allowed"})
+		return
+	}
+	var req bridgeCreateVAReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "invalid request"})
+		return
+	}
+	customerID := strings.TrimSpace(req.CustomerID)
+	if customerID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "customerId required"})
+		return
+	}
+	sourceCurrency := strings.TrimSpace(strings.ToLower(req.SourceCurrency))
+	if sourceCurrency == "" {
+		sourceCurrency = "usd"
+	}
+	destinationCurrency := strings.TrimSpace(strings.ToLower(req.DestinationCurrency))
+	if destinationCurrency == "" {
+		destinationCurrency = "usdc"
+	}
+	paymentRail := strings.TrimSpace(strings.ToLower(req.PaymentRail))
+	if paymentRail == "" {
+		paymentRail = "base"
+	}
+	address := strings.TrimSpace(req.Address)
+	if address == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "address required"})
+		return
+	}
+	idem := r.Header.Get("Idempotency-Key")
+	if strings.TrimSpace(idem) == "" {
+		idem = "bridge_va_create_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	if !billing.BridgeConfigured() {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": "BRIDGE_API_KEY not configured"})
+		return
+	}
+	res, err := billing.CreateBridgeVirtualAccount(customerID, sourceCurrency, destinationCurrency, paymentRail, address, req.DeveloperFeePercent, idem)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "PAY-010", "message": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"code": "0", "data": map[string]any{"mode": "live", "result": res}})
 }
 
 func (s *Server) handleBillingCheckoutSync(w http.ResponseWriter, r *http.Request) {
