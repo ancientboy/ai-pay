@@ -7,8 +7,11 @@ import { useLocale } from "@/components/locale-provider";
 import { useToast } from "@/components/toast-provider";
 import {
   createBillingIntent,
+  createBridgeKYCLink,
+  createBridgeVirtualAccount,
   exportBillingReconciliationCsv,
   getAuthProfile,
+  getBridgeVACountries,
   getBillingCapabilities,
   getBillingReconciliation,
   getBillingSubscription,
@@ -65,6 +68,11 @@ export default function BillingPage() {
   const [tenantId, setTenantId] = useState("default");
   const [subscriptionPlan, setSubscriptionPlan] = useState<"starter" | "growth" | "enterprise">("starter");
   const [planCapabilities, setPlanCapabilities] = useState<string[]>([]);
+  const [bridgeKycName, setBridgeKycName] = useState("Demo User");
+  const [bridgeKycEmail, setBridgeKycEmail] = useState("demo@example.com");
+  const [bridgeCustomerId, setBridgeCustomerId] = useState("");
+  const [bridgeWalletAddress, setBridgeWalletAddress] = useState("0xdeadbeef");
+  const [bridgeCreateVAResult, setBridgeCreateVAResult] = useState("");
 
   const capabilitiesQuery = useQuery({
     queryKey: ["billing-capabilities"],
@@ -74,6 +82,10 @@ export default function BillingPage() {
   const subscriptionQuery = useQuery({
     queryKey: ["billing-subscription"],
     queryFn: getBillingSubscription,
+  });
+  const bridgeCountriesQuery = useQuery({
+    queryKey: ["bridge-va-countries"],
+    queryFn: getBridgeVACountries,
   });
 
   useEffect(() => {
@@ -173,6 +185,7 @@ export default function BillingPage() {
   const canStablecoin = !!stableCap;
 
   const stripeReady = capabilitiesQuery.data?.stripeCheckoutConfigured === true;
+  const bridgeConfigured = capabilitiesQuery.data?.bridgeConfigured === true;
   const sub = subscriptionQuery.data?.subscription ?? null;
   const reconItems = reconciliationQuery.data?.items ?? [];
   const reconMeta = reconciliationQuery.data?.meta;
@@ -239,6 +252,39 @@ export default function BillingPage() {
       showToast("error", toReadableError(err, locale));
     },
   });
+  const bridgeKYCMutation = useMutation({
+    mutationFn: () =>
+      createBridgeKYCLink({
+        fullName: bridgeKycName.trim(),
+        email: bridgeKycEmail.trim(),
+        type: "individual",
+      }),
+    onSuccess: (res) => {
+      setBridgeCustomerId(res.result.customerId ?? "");
+      setErrorMessage("");
+      showToast("success", `${t("billing.bridgeKycCreated")}: ${res.mode}`);
+    },
+    onError: (err) => {
+      showToast("error", toReadableError(err, locale));
+    },
+  });
+  const bridgeCreateVAMutation = useMutation({
+    mutationFn: () =>
+      createBridgeVirtualAccount({
+        customerId: bridgeCustomerId.trim(),
+        sourceCurrency: "usd",
+        destinationCurrency: "usdc",
+        paymentRail: "base",
+        address: bridgeWalletAddress.trim(),
+      }),
+    onSuccess: (res) => {
+      setBridgeCreateVAResult(JSON.stringify(res.result, null, 2));
+      showToast("success", `${t("billing.bridgeVACreated")}: ${res.mode}`);
+    },
+    onError: (err) => {
+      showToast("error", toReadableError(err, locale));
+    },
+  });
 
   return (
     <section className="space-y-6">
@@ -258,6 +304,81 @@ export default function BillingPage() {
           )}
         </p>
       </div>
+
+      <article className="rounded-xl border border-cyan-800/60 bg-cyan-950/20 p-4">
+        <h3 className="text-sm font-medium text-cyan-200">{t("billing.bridgeTitle")}</h3>
+        <p className="mt-1 text-xs text-slate-400">
+          {t("billing.bridgeHint")}{" "}
+          <span className="text-cyan-200">
+            {bridgeConfigured ? t("billing.modeLive") : t("billing.modeMock")}
+          </span>
+        </p>
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <div className="rounded-lg border border-slate-800 bg-slate-900 p-3">
+            <h4 className="text-xs font-medium text-slate-200">{t("billing.bridgeCountriesTitle")}</h4>
+            <p className="mt-1 text-xs text-slate-500">
+              {t("billing.bridgeCountriesMeta")
+                .replace("{count}", String(bridgeCountriesQuery.data?.count ?? 0))
+                .replace("{mode}", bridgeCountriesQuery.data?.mode ?? "mock")}
+            </p>
+            <div className="mt-2 max-h-32 overflow-auto text-xs text-slate-300">
+              {(bridgeCountriesQuery.data?.countries ?? []).map((item) => (
+                <div key={`${item.alpha3}-${item.sourceCurrency}`} className="border-b border-slate-800 py-1">
+                  {item.name} ({item.alpha3}) · {item.sourceCurrency} · {item.rails.join(", ")}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="rounded-lg border border-slate-800 bg-slate-900 p-3">
+            <h4 className="text-xs font-medium text-slate-200">{t("billing.bridgeKycTitle")}</h4>
+            <input
+              value={bridgeKycName}
+              onChange={(e) => setBridgeKycName(e.target.value)}
+              className="mt-2 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-100"
+              placeholder={t("billing.bridgeKycName")}
+            />
+            <input
+              value={bridgeKycEmail}
+              onChange={(e) => setBridgeKycEmail(e.target.value)}
+              className="mt-2 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-100"
+              placeholder={t("billing.bridgeKycEmail")}
+            />
+            <button
+              type="button"
+              onClick={() => bridgeKYCMutation.mutate()}
+              disabled={bridgeKYCMutation.isPending}
+              className="mt-2 rounded-md border border-cyan-700/60 px-2 py-1 text-xs text-cyan-200 disabled:opacity-50"
+            >
+              {bridgeKYCMutation.isPending ? t("common.loading") : t("billing.bridgeCreateKyc")}
+            </button>
+            <input
+              value={bridgeCustomerId}
+              onChange={(e) => setBridgeCustomerId(e.target.value)}
+              className="mt-3 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-100"
+              placeholder={t("billing.bridgeCustomerId")}
+            />
+            <input
+              value={bridgeWalletAddress}
+              onChange={(e) => setBridgeWalletAddress(e.target.value)}
+              className="mt-2 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-100"
+              placeholder={t("billing.bridgeWalletAddress")}
+            />
+            <button
+              type="button"
+              onClick={() => bridgeCreateVAMutation.mutate()}
+              disabled={bridgeCreateVAMutation.isPending}
+              className="mt-2 rounded-md border border-cyan-700/60 px-2 py-1 text-xs text-cyan-200 disabled:opacity-50"
+            >
+              {bridgeCreateVAMutation.isPending ? t("common.loading") : t("billing.bridgeCreateVA")}
+            </button>
+          </div>
+        </div>
+        {bridgeCreateVAResult ? (
+          <pre className="mt-3 overflow-auto rounded-md border border-slate-800 bg-slate-950 p-2 text-xs text-slate-300">
+            {bridgeCreateVAResult}
+          </pre>
+        ) : null}
+      </article>
 
       <div className="grid gap-4 md:grid-cols-2">
         <article className="rounded-xl border border-slate-800 bg-slate-900 p-4">

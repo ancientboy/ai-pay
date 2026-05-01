@@ -684,6 +684,39 @@ export type BillingReconciliationItem = {
 export type BillingCapabilitiesEnvelope = BillingCapabilitiesResponse & {
   stripeCheckoutConfigured?: boolean;
   stripeWebhookSecretConfigured?: boolean;
+  bridgeConfigured?: boolean;
+};
+
+export type BridgeVACountry = {
+  alpha3: string;
+  name: string;
+  sourceCurrency: string;
+  rails: string[];
+};
+
+export type BridgeVACountriesResponse = {
+  mode: "live" | "mock";
+  bridgeConfigured: boolean;
+  count: number;
+  recognizedCount: number;
+  countries: BridgeVACountry[];
+};
+
+export type BridgeKYCLinkResult = {
+  id: string;
+  customerId: string;
+  kycLink: string;
+  tosLink: string;
+  kycStatus: string;
+  tosStatus: string;
+};
+
+export type BridgeVirtualAccountResult = {
+  id: string;
+  status: string;
+  customerId: string;
+  createdAt: string;
+  sourceDepositInstructions: Record<string, unknown>;
 };
 
 export type HelpSuggestion = {
@@ -699,6 +732,45 @@ export type HelpAnswer = {
 
 export function getBillingCapabilities() {
   return request<BillingCapabilitiesEnvelope>("/billing/provider/capabilities");
+}
+
+export function getBridgeVACountries() {
+  return request<BridgeVACountriesResponse>("/billing/provider/bridge/va-countries");
+}
+
+export function createBridgeKYCLink(input: {
+  fullName: string;
+  email: string;
+  type: "individual" | "business";
+  redirectUri?: string;
+  endorsements?: string[];
+}) {
+  return request<{ mode: "live" | "mock"; result: BridgeKYCLinkResult }>(
+    "/billing/provider/bridge/kyc-link",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+      idempotencyKey: `bridge-kyc-link-ui-${Date.now()}`,
+    },
+  );
+}
+
+export function createBridgeVirtualAccount(input: {
+  customerId: string;
+  sourceCurrency: string;
+  destinationCurrency: string;
+  paymentRail: string;
+  address: string;
+  developerFeePercent?: string;
+}) {
+  return request<{ mode: "live"; result: BridgeVirtualAccountResult }>(
+    "/billing/provider/bridge/virtual-account",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+      idempotencyKey: `bridge-va-ui-${Date.now()}`,
+    },
+  );
 }
 
 export type TenantSummary = {
