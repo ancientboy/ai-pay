@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseSessionToken, SESSION_COOKIE_NAME } from "@/lib/session";
+import { canUseFeature } from "@/lib/rbac";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8080";
@@ -35,11 +36,48 @@ async function proxy(request: NextRequest, path: string[]) {
   if (userId && !headers.has("x-user-id")) {
     headers.set("X-User-Id", userId);
   }
+  const tenantId = claims?.tenantId?.trim();
+  if (tenantId && !headers.has("x-tenant-id")) {
+    headers.set("X-Tenant-Id", tenantId);
+  }
 
   const body =
     request.method === "GET" || request.method === "HEAD"
       ? undefined
       : await request.text();
+
+  // Enforce plan capability for billing checkout create on server-side proxy layer.
+  if (
+    request.method === "POST" &&
+    path.length === 3 &&
+    path[0] === "billing" &&
+    path[1] === "checkout" &&
+    path[2] === "create"
+  ) {
+    let checkoutType = "";
+    try {
+      const parsed = body ? (JSON.parse(body) as { checkoutType?: string }) : null;
+      checkoutType = (parsed?.checkoutType ?? "").trim();
+    } catch {
+      checkoutType = "";
+    }
+    const feature =
+      checkoutType === "payment_link"
+        ? "billing.payment_link.checkout"
+        : "billing.subscription.checkout";
+    if (!canUseFeature(claims?.role, claims?.planCode, feature)) {
+      return NextResponse.json(
+        {
+          code: "AUTH-008",
+          message:
+            feature === "billing.payment_link.checkout"
+              ? "当前套餐暂不支持支付链接充值，请升级套餐"
+              : "当前套餐暂不支持创建订阅结账，请升级套餐",
+        },
+        { status: 403 },
+      );
+    } 
+  }
 
   const response = await fetch(url.toString(), {
     method: request.method,

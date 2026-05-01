@@ -8,6 +8,7 @@ import { useToast } from "@/components/toast-provider";
 import {
   createBillingIntent,
   exportBillingReconciliationCsv,
+  getAuthProfile,
   getBillingCapabilities,
   getBillingReconciliation,
   getBillingSubscription,
@@ -15,6 +16,7 @@ import {
 } from "@/lib/console-api";
 import { toReadableError } from "@/lib/error-map";
 import { getValidationSchemas } from "@/lib/validation";
+import { canUseFeature } from "@/lib/rbac";
 
 const PLANS = [
   { code: "starter", labelKey: "billing.planStarter" },
@@ -59,6 +61,9 @@ export default function BillingPage() {
     checkoutMode?: string;
   } | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
+  const [sessionRole, setSessionRole] = useState<"admin" | "operator" | "readonly">("operator");
+  const [tenantId, setTenantId] = useState("default");
+  const [subscriptionPlan, setSubscriptionPlan] = useState<"starter" | "growth" | "enterprise">("starter");
 
   const capabilitiesQuery = useQuery({
     queryKey: ["billing-capabilities"],
@@ -69,6 +74,19 @@ export default function BillingPage() {
     queryKey: ["billing-subscription"],
     queryFn: getBillingSubscription,
   });
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const profile = await getAuthProfile();
+        setSessionRole(profile.role);
+        setTenantId(profile.tenantId);
+        setSubscriptionPlan(profile.subscriptionPlan);
+      } catch {
+        // keep defaults on profile read failure
+      }
+    })();
+  }, []);
   const reconciliationQuery = useQuery({
     queryKey: [
       "billing-reconciliation",
@@ -119,8 +137,11 @@ export default function BillingPage() {
   }, [searchParams, subscriptionQuery, showToast, t, locale]);
 
   const checkoutMutation = useMutation({
-    mutationFn: () =>
-      createBillingIntent({
+    mutationFn: () => {
+      if (!canUseFeature(sessionRole, subscriptionPlan, "billing.checkout.create")) {
+        throw new Error(t("billing.featureCheckoutBlocked"));
+      }
+      return createBillingIntent({
         currency,
         provider: currency === "USD" ? "stripe" : "bridge",
         paymentRail: currency === "USD" ? "fiat" : "stablecoin",
@@ -129,7 +150,8 @@ export default function BillingPage() {
         amount,
         vaAccountId: checkoutType === "payment_link" ? vaAccountId.trim() || undefined : undefined,
         customerIdHint: customerHint.trim() || undefined,
-      }),
+      });
+    },
     onSuccess: (data) => {
       setCheckout(data);
       setErrorMessage("");
@@ -221,6 +243,12 @@ export default function BillingPage() {
       <div>
         <h2 className="text-xl font-semibold">{t("billing.title")}</h2>
         <p className="mt-1 text-sm text-slate-400">{t("billing.subtitle")}</p>
+        <p className="mt-1 text-xs text-slate-500">
+          {t("billing.tenantPlanHint")
+            .replace("{tenant}", tenantId)
+            .replace("{plan}", subscriptionPlan)
+            .replace("{role}", sessionRole)}
+        </p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">

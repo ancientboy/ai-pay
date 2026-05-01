@@ -47,6 +47,8 @@ export async function POST(request: NextRequest) {
     username,
     password,
     role: "operator",
+    tenantId: `t_${username.toLowerCase()}`,
+    plan: "starter",
   });
   if (!result.ok) {
     return NextResponse.json(

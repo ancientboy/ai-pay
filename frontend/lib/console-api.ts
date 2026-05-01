@@ -82,6 +82,18 @@ export function saveApiBaseURL(url: string) {
   window.localStorage.setItem(STORAGE_API_BASE_URL_KEY, url.trim());
 }
 
+export type AuthProfile = {
+  username: string;
+  role: "admin" | "operator" | "readonly";
+  tenantId: string;
+  subscriptionPlan: "starter" | "growth" | "enterprise";
+  planCapabilities: string[];
+};
+
+export function getAuthProfile() {
+  return request<AuthProfile>("/auth/profile");
+}
+
 export function registerAgent(agentDid: string, didPubKey?: string) {
   return request<{ DID: string }>("/agent/did/register", {
     method: "POST",
@@ -536,6 +548,12 @@ export function adminSetUserDisabled(username: string, disabled: boolean) {
 export function adminSetUserRole(username: string, role: "admin" | "operator" | "readonly") {
   return setAdminUserRole({ username, role });
 }
+export function adminSetUserPlan(
+  username: string,
+  plan: "starter" | "growth" | "enterprise",
+) {
+  return setAdminUserPlan({ username, plan });
+}
 export function adminResetUserPassword(username: string, password: string) {
   return resetAdminUserPassword({ username, newPassword: password });
 }
@@ -579,6 +597,16 @@ export function setAdminUserRole(input: {
   });
 }
 
+export function setAdminUserPlan(input: {
+  username: string;
+  plan: "starter" | "growth" | "enterprise";
+}) {
+  return request("/auth/admin/users", {
+    method: "POST",
+    body: JSON.stringify({ action: "set_plan", ...input }),
+  });
+}
+
 export type BillingProviderCapability = {
   provider: string;
   methods: string[];
@@ -607,6 +635,7 @@ export type BillingIntentResponse = {
 
 export type BillingSubscriptionView = {
   userId: string;
+  tenantId?: string;
   planCode: string;
   status: string;
   currency: string;
@@ -650,6 +679,16 @@ export function getBillingCapabilities() {
   return request<BillingCapabilitiesEnvelope>("/billing/provider/capabilities");
 }
 
+export type TenantSummary = {
+  tenantId: string;
+  planCode: "starter" | "growth" | "enterprise";
+  role: "admin" | "operator" | "readonly";
+};
+
+export function getAuthMe() {
+  return request<TenantSummary>("/auth/me");
+}
+
 export function queryHelp(input: { question: string; pagePath?: string; locale?: string }) {
   return request<HelpAnswer>("/help/query", {
     method: "POST",
@@ -676,6 +715,15 @@ export function createBillingIntent(input: {
 
 export function getBillingSubscription() {
   return request<{ subscription: BillingSubscriptionView | null }>("/billing/subscription");
+}
+
+export function getCurrentEntitlements() {
+  return request<{
+    tenantId: string;
+    role: string;
+    plan: "starter" | "growth" | "enterprise";
+    features: Record<string, boolean>;
+  }>("/auth/entitlements");
 }
 
 export function getBillingReconciliation(input?: {

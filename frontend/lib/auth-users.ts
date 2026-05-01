@@ -8,6 +8,8 @@ export type StoredUser = {
   username: string;
   passwordHash: string;
   role: UserRole;
+  tenantId?: string;
+  planCode?: "starter" | "growth" | "enterprise";
   createdAt: string;
   disabled?: boolean;
 };
@@ -62,6 +64,8 @@ export async function ensureAdminUser() {
     username: uname,
     passwordHash: hashPassword(adminPassword()),
     role: "admin",
+    tenantId: process.env.AI_PAY_DEFAULT_TENANT_ID?.trim() || "tenant_default",
+    planCode: "enterprise",
     createdAt: new Date().toISOString(),
     disabled: false,
   };
@@ -85,7 +89,13 @@ export async function findUserByUsername(username: string) {
   return store.users.find((u) => normalizeUsername(u.username) === normalized);
 }
 
-export async function upsertUser(input: { username: string; password: string; role?: UserRole }) {
+export async function upsertUser(input: {
+  username: string;
+  password: string;
+  role?: UserRole;
+  tenantId?: string;
+  plan?: "starter" | "growth" | "enterprise";
+}) {
   const normalized = normalizeUsername(input.username);
   if (!normalized) {
     return { ok: false as const, reason: "invalid_username" as const };
@@ -98,6 +108,8 @@ export async function upsertUser(input: { username: string; password: string; ro
     username: normalized,
     passwordHash: hashPassword(input.password),
     role: input.role ?? "operator",
+    tenantId: input.tenantId?.trim() || process.env.AI_PAY_DEFAULT_TENANT_ID?.trim() || "tenant_default",
+    planCode: input.plan ?? "starter",
     createdAt: new Date().toISOString(),
     disabled: false,
   });
@@ -118,6 +130,21 @@ export async function updateUserRole(username: string, role: UserRole) {
     return { ok: false as const, reason: "not_found" as const };
   }
   store.users[idx] = { ...store.users[idx], role };
+  await writeUsersStore(store);
+  return { ok: true as const };
+}
+
+export async function updateUserPlan(
+  username: string,
+  planCode: "starter" | "growth" | "enterprise",
+) {
+  const normalized = normalizeUsername(username);
+  const store = await readUsersStore();
+  const idx = store.users.findIndex((u) => normalizeUsername(u.username) === normalized);
+  if (idx < 0) {
+    return { ok: false as const, reason: "not_found" as const };
+  }
+  store.users[idx] = { ...store.users[idx], planCode };
   await writeUsersStore(store);
   return { ok: true as const };
 }

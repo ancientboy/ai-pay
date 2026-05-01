@@ -7,6 +7,8 @@ export const SESSION_TTL_SECONDS = 60 * 60 * 8;
 export type SessionClaims = {
   sub: string;
   role?: string;
+  tenantId?: string;
+  planCode?: "starter" | "growth" | "enterprise";
   iat: number;
   exp: number;
 };
@@ -73,11 +75,20 @@ function safeEqual(a: string, b: string) {
   return diff === 0;
 }
 
-export async function createSessionToken(subject: string, role = "operator") {
+export async function createSessionToken(
+  subject: string,
+  options?: {
+    role?: string;
+    tenantId?: string;
+    planCode?: "starter" | "growth" | "enterprise";
+  },
+) {
   const now = Math.floor(Date.now() / 1000);
   const claims: SessionClaims = {
     sub: subject,
-    role,
+    role: options?.role ?? "operator",
+    tenantId: options?.tenantId,
+    planCode: options?.planCode,
     iat: now,
     exp: now + SESSION_TTL_SECONDS,
   };

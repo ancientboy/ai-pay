@@ -9,6 +9,7 @@ import {
   adminCreateUser,
   adminListUsers,
   adminResetUserPassword,
+  adminSetUserPlan,
   adminSetUserDisabled,
   adminSetUserRole,
   createDeveloperApiKey,
@@ -49,6 +50,8 @@ type DeliveryItem = {
 type AdminUserItem = {
   username: string;
   role: "admin" | "operator" | "readonly";
+  tenantId?: string;
+  planCode?: "starter" | "growth" | "enterprise";
   disabled: boolean;
   createdAt: string;
 };
@@ -75,6 +78,8 @@ export default function DeveloperPage() {
   const [newUserName, setNewUserName] = useState("");
   const [newUserPassword, setNewUserPassword] = useState("");
   const [newUserRole, setNewUserRole] = useState<"operator" | "readonly">("operator");
+  const [newUserTenant, setNewUserTenant] = useState("tenant_default");
+  const [newUserPlan, setNewUserPlan] = useState<"starter" | "growth" | "enterprise">("starter");
   const pageSize = 10;
 
   const apiKeysQuery = useQuery({
@@ -210,12 +215,20 @@ export default function DeveloperPage() {
     onError: (err) => showToast("error", toReadableError(err, locale)),
   });
   const adminCreateUserMutation = useMutation({
-    mutationFn: (input: { username: string; password: string; role: "operator" | "readonly" }) =>
+    mutationFn: (input: {
+      username: string;
+      password: string;
+      role: "operator" | "readonly";
+      tenantId?: string;
+      plan?: "starter" | "growth" | "enterprise";
+    }) =>
       adminCreateUser(input),
     onSuccess: () => {
       setNewUserName("");
       setNewUserPassword("");
       setNewUserRole("operator");
+      setNewUserTenant("tenant_default");
+      setNewUserPlan("starter");
       showToast("success", t("developer.userCreated"));
       queryClient.invalidateQueries({ queryKey: ["developer", "adminUsers"] });
     },
@@ -235,6 +248,15 @@ export default function DeveloperPage() {
       adminSetUserRole(input.username, input.role),
     onSuccess: () => {
       showToast("success", t("developer.userRoleUpdated"));
+      queryClient.invalidateQueries({ queryKey: ["developer", "adminUsers"] });
+    },
+    onError: (err) => showToast("error", toReadableError(err, locale)),
+  });
+  const adminSetUserPlanMutation = useMutation({
+    mutationFn: (input: { username: string; plan: "starter" | "growth" | "enterprise" }) =>
+      adminSetUserPlan(input.username, input.plan),
+    onSuccess: () => {
+      showToast("success", t("developer.userPlanUpdated"));
       queryClient.invalidateQueries({ queryKey: ["developer", "adminUsers"] });
     },
     onError: (err) => showToast("error", toReadableError(err, locale)),
@@ -301,6 +323,23 @@ export default function DeveloperPage() {
               <option value="operator">{t("developer.roleOperator")}</option>
               <option value="readonly">{t("developer.roleReadonly")}</option>
             </select>
+            <input
+              value={newUserTenant}
+              onChange={(e) => setNewUserTenant(e.target.value)}
+              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+              placeholder={t("developer.userTenant")}
+            />
+            <select
+              value={newUserPlan}
+              onChange={(e) =>
+                setNewUserPlan(e.target.value as "starter" | "growth" | "enterprise")
+              }
+              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+            >
+              <option value="starter">starter</option>
+              <option value="growth">growth</option>
+              <option value="enterprise">enterprise</option>
+            </select>
             <button
               onClick={() => {
                 if (!newUserName.trim() || !newUserPassword.trim()) {
@@ -311,6 +350,8 @@ export default function DeveloperPage() {
                   username: newUserName.trim(),
                   password: newUserPassword,
                   role: newUserRole,
+                  tenantId: newUserTenant.trim() || "tenant_default",
+                  plan: newUserPlan,
                 });
               }}
               disabled={adminCreateUserMutation.isPending}
@@ -324,6 +365,8 @@ export default function DeveloperPage() {
               <thead className="text-slate-500">
                 <tr>
                   <th className="px-2 py-1">{t("developer.userName")}</th>
+                  <th className="px-2 py-1">{t("developer.userTenant")}</th>
+                  <th className="px-2 py-1">{t("developer.userPlan")}</th>
                   <th className="px-2 py-1">{t("developer.userRole")}</th>
                   <th className="px-2 py-1">{t("developer.userStatus")}</th>
                   <th className="px-2 py-1">{t("common.createdAt")}</th>
@@ -334,6 +377,23 @@ export default function DeveloperPage() {
                 {(adminUsersQuery.data?.users ?? []).map((user: AdminUserItem) => (
                   <tr key={user.username} className="border-t border-slate-800">
                     <td className="px-2 py-1">{user.username}</td>
+                    <td className="px-2 py-1">{user.tenantId ?? "tenant_default"}</td>
+                    <td className="px-2 py-1">
+                      <select
+                        value={user.planCode ?? "starter"}
+                        onChange={(e) =>
+                          adminSetUserPlanMutation.mutate({
+                            username: user.username,
+                            plan: e.target.value as "starter" | "growth" | "enterprise",
+                          })
+                        }
+                        className="rounded border border-slate-700 bg-slate-950 px-2 py-1"
+                      >
+                        <option value="starter">starter</option>
+                        <option value="growth">growth</option>
+                        <option value="enterprise">enterprise</option>
+                      </select>
+                    </td>
                     <td className="px-2 py-1">
                       <select
                         value={user.role}

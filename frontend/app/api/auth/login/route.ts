@@ -101,7 +101,11 @@ export async function POST(request: NextRequest) {
   }
 
   const role = user.role || DEFAULT_ROLE;
-  const token = await createSessionToken(username, role);
+  const token = await createSessionToken(username, {
+    role,
+    tenantId: user.tenantId,
+    planCode: user.planCode,
+  });
   loginAttempts.delete(ip);
   const response = NextResponse.json({ code: "0", message: "ok" });
   response.cookies.set(SESSION_COOKIE_NAME, token, sessionCookieOptions());
