@@ -396,6 +396,13 @@ export type AuditLog = {
   createdAt: string;
 };
 
+export type AdminUserItem = {
+  username: string;
+  role: "admin" | "operator" | "readonly";
+  disabled: boolean;
+  createdAt: string;
+};
+
 export function listApiKeys() {
   return request<DeveloperAPIKey[]>("/developer/api-keys");
 }
@@ -521,3 +528,222 @@ export function createDeveloperWebhook(input: { url: string; event: string }) {
 }
 export const listDeveloperWebhookDeliveries = listWebhookDeliveries;
 export const getDeveloperWebhookDeliveryStats = getWebhookDeliveryStats;
+export const adminListUsers = listAdminUsers;
+export const adminCreateUser = createAdminUser;
+export function adminSetUserDisabled(username: string, disabled: boolean) {
+  return setAdminUserDisabled({ username, disabled });
+}
+export function adminSetUserRole(username: string, role: "admin" | "operator" | "readonly") {
+  return setAdminUserRole({ username, role });
+}
+export function adminResetUserPassword(username: string, password: string) {
+  return resetAdminUserPassword({ username, newPassword: password });
+}
+
+export function listAdminUsers() {
+  return request<{ users: AdminUserItem[] }>("/auth/admin/users");
+}
+
+export function createAdminUser(input: {
+  username: string;
+  password: string;
+  role: "operator" | "readonly";
+}) {
+  return request("/auth/admin/users", {
+    method: "POST",
+    body: JSON.stringify({ action: "create", ...input }),
+  });
+}
+
+export function setAdminUserDisabled(input: { username: string; disabled: boolean }) {
+  return request("/auth/admin/users", {
+    method: "POST",
+    body: JSON.stringify({ action: "set_disabled", ...input }),
+  });
+}
+
+export function resetAdminUserPassword(input: { username: string; newPassword: string }) {
+  return request("/auth/admin/users", {
+    method: "POST",
+    body: JSON.stringify({ action: "reset_password", ...input }),
+  });
+}
+
+export function setAdminUserRole(input: {
+  username: string;
+  role: "operator" | "readonly" | "admin";
+}) {
+  return request("/auth/admin/users", {
+    method: "POST",
+    body: JSON.stringify({ action: "set_role", ...input }),
+  });
+}
+
+export type BillingProviderCapability = {
+  provider: string;
+  methods: string[];
+  currencies: string[];
+  supportsSubscription: boolean;
+  defaultMethod: string;
+};
+
+export type BillingCapabilitiesResponse = {
+  capabilities: BillingProviderCapability[];
+};
+
+export type BillingIntentResponse = {
+  checkoutId: string;
+  provider: string;
+  paymentRail: string;
+  currency: string;
+  status: string;
+  checkoutURL: string;
+  customerHint?: string;
+  requestedPlan?: string;
+  checkoutMode?: string;
+  providerSession?: string;
+  checkoutType?: string;
+};
+
+export type BillingSubscriptionView = {
+  userId: string;
+  planCode: string;
+  status: string;
+  currency: string;
+  provider: string;
+  providerCustomerId?: string;
+  providerSubscriptionId?: string;
+  currentPeriodEnd?: string;
+  cancelAtPeriodEnd: boolean;
+};
+
+export type BillingReconciliationItem = {
+  checkoutId: string;
+  providerSessionId: string;
+  status: string;
+  checkoutType: string;
+  currency: string;
+  amountMinor?: number;
+  vaAccountId?: string;
+  userId: string;
+  createdAt?: string;
+  anomaly?: boolean;
+};
+
+export type BillingCapabilitiesEnvelope = BillingCapabilitiesResponse & {
+  stripeCheckoutConfigured?: boolean;
+  stripeWebhookSecretConfigured?: boolean;
+};
+
+export type HelpSuggestion = {
+  label: string;
+  href?: string;
+  action?: "export_reconciliation_csv" | "none";
+};
+
+export type HelpAnswer = {
+  answer: string;
+  suggestions: HelpSuggestion[];
+};
+
+export function getBillingCapabilities() {
+  return request<BillingCapabilitiesEnvelope>("/billing/provider/capabilities");
+}
+
+export function queryHelp(input: { question: string; pagePath?: string; locale?: string }) {
+  return request<HelpAnswer>("/help/query", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function createBillingIntent(input: {
+  provider: string;
+  paymentRail: string;
+  currency: string;
+  planCode: string;
+  amount?: string;
+  customerIdHint?: string;
+  vaAccountId?: string;
+  checkoutType?: "subscription" | "payment_link";
+}) {
+  return request<BillingIntentResponse>("/billing/checkout/create", {
+    method: "POST",
+    body: JSON.stringify(input),
+    idempotencyKey: `billing-checkout-ui-${Date.now()}`,
+  });
+}
+
+export function getBillingSubscription() {
+  return request<{ subscription: BillingSubscriptionView | null }>("/billing/subscription");
+}
+
+export function getBillingReconciliation(input?: {
+  limit?: number;
+  offset?: number;
+  checkoutType?: string;
+  status?: string;
+  vaAccountId?: string;
+  anomalyOnly?: boolean;
+}) {
+  const q = new URLSearchParams();
+  if (input?.limit && input.limit > 0) {
+    q.set("limit", String(input.limit));
+  }
+  if (typeof input?.offset === "number" && input.offset >= 0) {
+    q.set("offset", String(input.offset));
+  }
+  if (input?.checkoutType?.trim()) {
+    q.set("checkoutType", input.checkoutType.trim());
+  }
+  if (input?.status?.trim()) {
+    q.set("status", input.status.trim());
+  }
+  if (input?.vaAccountId?.trim()) {
+    q.set("vaAccountId", input.vaAccountId.trim());
+  }
+  if (input?.anomalyOnly) {
+    q.set("anomalyOnly", "true");
+  }
+  const suffix = q.toString();
+  return request<{
+    items: BillingReconciliationItem[];
+    meta?: { count: number; limit: number; offset?: number; total?: number };
+  }>(
+    `/billing/reconciliation${suffix ? `?${suffix}` : ""}`,
+  );
+}
+
+export function exportBillingReconciliationCsv(input?: {
+  limit?: number;
+  offset?: number;
+  checkoutType?: string;
+  status?: string;
+  vaAccountId?: string;
+  anomalyOnly?: boolean;
+}) {
+  const q = new URLSearchParams();
+  if (input?.limit && input.limit > 0) q.set("limit", String(input.limit));
+  if (typeof input?.offset === "number" && input.offset >= 0) q.set("offset", String(input.offset));
+  if (input?.checkoutType?.trim()) q.set("checkoutType", input.checkoutType.trim());
+  if (input?.status?.trim()) q.set("status", input.status.trim());
+  if (input?.vaAccountId?.trim()) q.set("vaAccountId", input.vaAccountId.trim());
+  if (input?.anomalyOnly) q.set("anomalyOnly", "true");
+  const suffix = q.toString();
+  return fetch(`/api/backend/billing/reconciliation/export${suffix ? `?${suffix}` : ""}`, {
+    method: "GET",
+    cache: "no-store",
+  }).then(async (resp) => {
+    if (!resp.ok) {
+      throw new ApiClientError("PAY-010", "export failed");
+    }
+    return resp.text();
+  });
+}
+
+export function syncBillingCheckout(sessionId: string) {
+  const q = new URLSearchParams({ session_id: sessionId });
+  return request<{ subscription: BillingSubscriptionView | null }>(
+    `/billing/checkout/sync?${q.toString()}`,
+  );
+}

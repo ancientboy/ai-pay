@@ -82,7 +82,7 @@ VALUES (?, ?, ?, ?, 0, 'ACTIVE', UTC_TIMESTAMP())`, va, cardNo, agentDID, wallet
 
 func (s *PersistentService) Recharge(va string, amount string, idemKey string) error {
 	amountV, err := parseAmount(amount)
-	if err != nil || amountV <= 0 {
+	if err != nil || amountV == 0 {
 		return &APIError{Code: "PAY-010", Message: "invalid amount"}
 	}
 	if idemKey == "" {
@@ -112,6 +112,15 @@ func (s *PersistentService) Recharge(va string, amount string, idemKey string) e
 	var resolvedVA string
 	if err := tx.QueryRow(`SELECT va_account_id FROM asset_va_account WHERE va_account_id = ? OR va_card_no = ? LIMIT 1`, va, va).Scan(&resolvedVA); err != nil {
 		return &APIError{Code: "PAY-010", Message: "account not found"}
+	}
+	if amountV < 0 {
+		var current float64
+		if err := tx.QueryRow(`SELECT balance FROM asset_va_account WHERE va_account_id = ? LIMIT 1`, resolvedVA).Scan(&current); err != nil {
+			return &APIError{Code: "PAY-010", Message: "account not found"}
+		}
+		if current < -amountV {
+			return &APIError{Code: "PAY-003", Message: "agent va insufficient balance"}
+		}
 	}
 	_, err = tx.Exec(`INSERT INTO fund_recharge_order (recharge_id, va_account_id, amount, status, created_at) VALUES (?, ?, ?, 'SETTLED', UTC_TIMESTAMP())`,
 		rechargeID, resolvedVA, amountV)
@@ -2139,4 +2148,70 @@ SELECT agent_did, merchant_id, amount, status, expires_at, session_id FROM payme
 		_, _ = s.store.DB.Exec(`UPDATE payment_sign_request SET status='COMPLETED' WHERE sign_id=?`, signID)
 	}
 	return resp, apiErr
+}
+
+func (s *PersistentService) GetBillingCapabilities() []BillingCapability {
+	return []BillingCapability{
+		{
+			Provider:      "stripe",
+			Channels:      []string{"fiat"},
+			FiatEnabled:   true,
+			StableEnabled: false,
+			Description:   "Recommended for card/bank subscription checkout and invoicing.",
+		},
+		{
+			Provider:      "bridge",
+			Channels:      []string{"stablecoin"},
+			FiatEnabled:   false,
+			StableEnabled: true,
+			Description:   "Recommended for stablecoin funding rails (USDC/USDT).",
+		},
+	}
+}
+
+func (s *PersistentService) CreateBillingQuote(provider string, channel string, currency string, amount string, planID string) (BillingQuote, error) {
+	amountV, err := parseAmount(amount)
+	if err != nil || amountV <= 0 {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "invalid amount"}
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	currency = strings.ToUpper(strings.TrimSpace(currency))
+	if provider == "" || channel == "" || currency == "" {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "invalid request"}
+	}
+	if provider == "stripe" && channel != "fiat" {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "stripe currently routes fiat channel only"}
+	}
+	if provider == "bridge" && channel != "stablecoin" {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "bridge currently routes stablecoin channel only"}
+	}
+	if provider != "stripe" && provider != "bridge" {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "unsupported provider"}
+	}
+	if channel == "fiat" && currency != "USD" && currency != "EUR" {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "fiat channel supports USD/EUR in this stage"}
+	}
+	if channel == "stablecoin" && currency != "USDC" && currency != "USDT" {
+		return BillingQuote{}, &APIError{Code: "PAY-010", Message: "stablecoin channel supports USDC/USDT in this stage"}
+	}
+	now := time.Now().UTC()
+	checkoutType := "redirect"
+	checkoutURL := fmt.Sprintf(
+		"https://checkout.mock.local/%s/%s?planId=%s&currency=%s&amount=%s",
+		provider,
+		channel,
+		strings.TrimSpace(planID),
+		currency,
+		strconv.FormatFloat(amountV, 'f', -1, 64),
+	)
+	return BillingQuote{
+		Provider:     provider,
+		Channel:      channel,
+		Currency:     currency,
+		Amount:       strconv.FormatFloat(amountV, 'f', -1, 64),
+		CheckoutType: checkoutType,
+		CheckoutURL:  checkoutURL,
+		ExpiresAt:    now.Add(15 * time.Minute).Format(time.RFC3339),
+	}, nil
 }

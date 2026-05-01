@@ -36,6 +36,7 @@ migrate:
 	mysql -uroot -proot ai_pay < migrations/009_add_va_topup_and_transfer.sql
 	mysql -uroot -proot ai_pay < migrations/010_add_audit_log.sql
 	mysql -uroot -proot ai_pay < migrations/011_add_risk_and_channel_route.sql
+	mysql -uroot -proot ai_pay < migrations/015_billing_subscription.sql
 
 health:
 	curl -s http://127.0.0.1:8080/health
