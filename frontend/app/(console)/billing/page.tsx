@@ -64,6 +64,7 @@ export default function BillingPage() {
   const [sessionRole, setSessionRole] = useState<"admin" | "operator" | "readonly">("operator");
   const [tenantId, setTenantId] = useState("default");
   const [subscriptionPlan, setSubscriptionPlan] = useState<"starter" | "growth" | "enterprise">("starter");
+  const [planCapabilities, setPlanCapabilities] = useState<string[]>([]);
 
   const capabilitiesQuery = useQuery({
     queryKey: ["billing-capabilities"],
@@ -82,6 +83,7 @@ export default function BillingPage() {
         setSessionRole(profile.role);
         setTenantId(profile.tenantId);
         setSubscriptionPlan(profile.subscriptionPlan);
+        setPlanCapabilities(profile.planCapabilities ?? []);
       } catch {
         // keep defaults on profile read failure
       }
@@ -248,6 +250,12 @@ export default function BillingPage() {
             .replace("{tenant}", tenantId)
             .replace("{plan}", subscriptionPlan)
             .replace("{role}", sessionRole)}
+        </p>
+        <p className="mt-1 text-xs text-slate-500">
+          {t("billing.planCapabilitiesHint").replace(
+            "{caps}",
+            planCapabilities.length > 0 ? planCapabilities.join(", ") : "none",
+          )}
         </p>
       </div>
 

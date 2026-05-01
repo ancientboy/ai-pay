@@ -18,6 +18,13 @@ type Feature =
   | "billing.reconciliation.export"
   | "billing.checkout.create";
 
+function normalizePlan(plan?: string): "starter" | "growth" | "enterprise" {
+  if (plan === "growth" || plan === "enterprise") {
+    return plan;
+  }
+  return "starter";
+}
+
 function normalizeRole(role?: string): Role {
   if (role === "admin" || role === "readonly") {
     return role;
@@ -57,7 +64,7 @@ export function canUseFeature(
   if (normalized === "admin") {
     return true;
   }
-  const normalizedPlan = plan === "growth" || plan === "enterprise" ? plan : "starter";
+  const normalizedPlan = normalizePlan(plan);
   if (feature === "billing.checkout.create") {
     return normalized !== "readonly" && normalizedPlan !== "starter";
   }
@@ -71,4 +78,44 @@ export function canUseFeature(
     return normalized !== "readonly" && normalizedPlan !== "starter";
   }
   return false;
+}
+
+export function canMutateBackendPath(
+  role: string | undefined,
+  plan: string | undefined,
+  method: string,
+  path: string[],
+) {
+  const normalizedRole = normalizeRole(role);
+  if (method === "GET" || method === "HEAD") {
+    return true;
+  }
+  if (normalizedRole === "admin") {
+    return true;
+  }
+
+  const route = `/${path.join("/")}`;
+  const normalizedPlan = normalizePlan(plan);
+
+  if (normalizedRole === "readonly") {
+    return false;
+  }
+
+  // operator
+  if (route.startsWith("/developer/")) {
+    return false;
+  }
+  if (route === "/payment/unfreeze" || route === "/payment/refund") {
+    return false;
+  }
+  if (route === "/fund/transfer" || route === "/fund/withdraw") {
+    return false;
+  }
+  if (route === "/payment/x402/transfer") {
+    return false;
+  }
+  if (route === "/billing/checkout/create" && normalizedPlan === "starter") {
+    return false;
+  }
+  return true;
 }

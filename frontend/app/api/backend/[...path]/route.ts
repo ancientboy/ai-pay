@@ -46,6 +46,25 @@ async function proxy(request: NextRequest, path: string[]) {
       ? undefined
       : await request.text();
 
+  // Action-level RBAC guard on write APIs.
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    const apiPath = `/${path.join("/")}`;
+    const role = claims?.role;
+    const forbiddenByRole =
+      role === "readonly" &&
+      (apiPath.startsWith("/authorize/") ||
+        apiPath.startsWith("/developer/") ||
+        apiPath === "/fund/recharge" ||
+        apiPath === "/account/va/transfer" ||
+        apiPath.startsWith("/payment/"));
+    if (forbiddenByRole) {
+      return NextResponse.json(
+        { code: "AUTH-009", message: "当前角色仅可读，无法执行写操作" },
+        { status: 403 },
+      );
+    }
+  }
+
   // Enforce plan capability for billing checkout create on server-side proxy layer.
   if (
     request.method === "POST" &&

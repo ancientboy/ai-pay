@@ -20,6 +20,7 @@ const ERROR_MAP: Record<string, string> = {
   "AUTH-009": "请求的用户不存在",
   "AUTH-010": "管理员账号不能禁用",
   "AUTH-011": "管理员账号角色不可变更",
+  "AUTH-012": "当前角色不允许执行此写操作",
 };
 
 const ERROR_MAP_EN: Record<string, string> = {
@@ -44,6 +45,7 @@ const ERROR_MAP_EN: Record<string, string> = {
   "AUTH-009": "User not found",
   "AUTH-010": "Administrator account cannot be disabled",
   "AUTH-011": "Administrator role cannot be changed",
+  "AUTH-012": "Current role is not allowed to perform this write action",
 };
 
 export class ApiClientError extends Error {

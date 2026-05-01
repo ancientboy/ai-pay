@@ -88,6 +88,7 @@ export type AuthProfile = {
   tenantId: string;
   subscriptionPlan: "starter" | "growth" | "enterprise";
   planCapabilities: string[];
+  syncedFromBilling?: boolean;
 };
 
 export function getAuthProfile() {
