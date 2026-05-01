@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { parseSessionToken } from "@/lib/session";
+import { canAccessPath } from "@/lib/rbac";
 
 const protectedPaths = [
   "/dashboard",
@@ -24,7 +25,7 @@ export function proxy(request: NextRequest) {
     const claims = await parseSessionToken(session);
     if (claims) {
       const role = claims.role ?? "operator";
-      if (pathname.startsWith("/developer") && role !== "admin") {
+      if (!canAccessPath(role, pathname)) {
         return NextResponse.redirect(new URL("/dashboard", request.url));
       }
       return NextResponse.next();

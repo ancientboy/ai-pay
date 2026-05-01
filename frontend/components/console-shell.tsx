@@ -19,17 +19,16 @@ export function ConsoleShell({
   const pathname = usePathname();
   const [loggingOut, setLoggingOut] = useState(false);
   const role = session.role ?? "operator";
-  const canManageDeveloper = role !== "readonly";
   const navItems = [
-    { href: "/dashboard", label: t("nav.dashboard") },
-    { href: "/billing", label: t("nav.billing") },
-    { href: "/agents", label: t("nav.agents") },
-    { href: "/authorize", label: t("nav.authorize") },
-    { href: "/recharge", label: t("nav.recharge") },
-    { href: "/transactions", label: t("nav.transactions") },
-    ...(canManageDeveloper ? [{ href: "/developer", label: t("nav.developer") }] : []),
-    { href: "/settings", label: t("nav.settings") },
-  ];
+    { href: "/dashboard", label: t("nav.dashboard"), roles: ["admin", "operator", "readonly"] },
+    { href: "/billing", label: t("nav.billing"), roles: ["admin", "operator"] },
+    { href: "/agents", label: t("nav.agents"), roles: ["admin"] },
+    { href: "/authorize", label: t("nav.authorize"), roles: ["admin"] },
+    { href: "/recharge", label: t("nav.recharge"), roles: ["admin", "operator"] },
+    { href: "/transactions", label: t("nav.transactions"), roles: ["admin", "operator", "readonly"] },
+    { href: "/developer", label: t("nav.developer"), roles: ["admin"] },
+    { href: "/settings", label: t("nav.settings"), roles: ["admin", "operator", "readonly"] },
+  ].filter((item) => item.roles.includes(role));
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
