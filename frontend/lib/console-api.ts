@@ -396,6 +396,13 @@ export type AuditLog = {
   createdAt: string;
 };
 
+export type AdminUserItem = {
+  username: string;
+  role: "admin" | "operator" | "readonly";
+  disabled: boolean;
+  createdAt: string;
+};
+
 export function listApiKeys() {
   return request<DeveloperAPIKey[]>("/developer/api-keys");
 }
@@ -521,6 +528,56 @@ export function createDeveloperWebhook(input: { url: string; event: string }) {
 }
 export const listDeveloperWebhookDeliveries = listWebhookDeliveries;
 export const getDeveloperWebhookDeliveryStats = getWebhookDeliveryStats;
+export const adminListUsers = listAdminUsers;
+export const adminCreateUser = createAdminUser;
+export function adminSetUserDisabled(username: string, disabled: boolean) {
+  return setAdminUserDisabled({ username, disabled });
+}
+export function adminSetUserRole(username: string, role: "admin" | "operator" | "readonly") {
+  return setAdminUserRole({ username, role });
+}
+export function adminResetUserPassword(username: string, password: string) {
+  return resetAdminUserPassword({ username, newPassword: password });
+}
+
+export function listAdminUsers() {
+  return request<{ users: AdminUserItem[] }>("/auth/admin/users");
+}
+
+export function createAdminUser(input: {
+  username: string;
+  password: string;
+  role: "operator" | "readonly";
+}) {
+  return request("/auth/admin/users", {
+    method: "POST",
+    body: JSON.stringify({ action: "create", ...input }),
+  });
+}
+
+export function setAdminUserDisabled(input: { username: string; disabled: boolean }) {
+  return request("/auth/admin/users", {
+    method: "POST",
+    body: JSON.stringify({ action: "set_disabled", ...input }),
+  });
+}
+
+export function resetAdminUserPassword(input: { username: string; newPassword: string }) {
+  return request("/auth/admin/users", {
+    method: "POST",
+    body: JSON.stringify({ action: "reset_password", ...input }),
+  });
+}
+
+export function setAdminUserRole(input: {
+  username: string;
+  role: "operator" | "readonly" | "admin";
+}) {
+  return request("/auth/admin/users", {
+    method: "POST",
+    body: JSON.stringify({ action: "set_role", ...input }),
+  });
+}
 
 export type BillingProviderCapability = {
   provider: string;

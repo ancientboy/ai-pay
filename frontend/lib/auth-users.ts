@@ -104,3 +104,51 @@ export async function upsertUser(input: { username: string; password: string; ro
   await writeUsersStore(store);
   return { ok: true as const };
 }
+
+export async function listUsers() {
+  const store = await readUsersStore();
+  return [...store.users].sort((a, b) => a.username.localeCompare(b.username));
+}
+
+export async function updateUserRole(username: string, role: UserRole) {
+  const normalized = normalizeUsername(username);
+  const store = await readUsersStore();
+  const idx = store.users.findIndex((u) => normalizeUsername(u.username) === normalized);
+  if (idx < 0) {
+    return { ok: false as const, reason: "not_found" as const };
+  }
+  store.users[idx] = { ...store.users[idx], role };
+  await writeUsersStore(store);
+  return { ok: true as const };
+}
+
+export async function setUserDisabled(username: string, disabled: boolean) {
+  const normalized = normalizeUsername(username);
+  const store = await readUsersStore();
+  const idx = store.users.findIndex((u) => normalizeUsername(u.username) === normalized);
+  if (idx < 0) {
+    return { ok: false as const, reason: "not_found" as const };
+  }
+  if (normalizeUsername(store.users[idx].username) === adminUsername()) {
+    return { ok: false as const, reason: "protected_admin" as const };
+  }
+  store.users[idx] = { ...store.users[idx], disabled };
+  await writeUsersStore(store);
+  return { ok: true as const };
+}
+
+export async function resetUserPassword(username: string, password: string) {
+  const normalized = normalizeUsername(username);
+  const store = await readUsersStore();
+  const idx = store.users.findIndex((u) => normalizeUsername(u.username) === normalized);
+  if (idx < 0) {
+    return { ok: false as const, reason: "not_found" as const };
+  }
+  store.users[idx] = {
+    ...store.users[idx],
+    passwordHash: hashPassword(password),
+    disabled: false,
+  };
+  await writeUsersStore(store);
+  return { ok: true as const };
+}

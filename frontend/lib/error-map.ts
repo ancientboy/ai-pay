@@ -16,6 +16,10 @@ const ERROR_MAP: Record<string, string> = {
   "AUTH-005": "密码至少 8 位",
   "AUTH-006": "用户名已存在",
   "AUTH-007": "该账号已禁用，请联系管理员",
+  "AUTH-008": "仅管理员可执行此操作",
+  "AUTH-009": "请求的用户不存在",
+  "AUTH-010": "管理员账号不能禁用",
+  "AUTH-011": "管理员账号角色不可变更",
 };
 
 const ERROR_MAP_EN: Record<string, string> = {
@@ -36,6 +40,10 @@ const ERROR_MAP_EN: Record<string, string> = {
   "AUTH-005": "Password must be at least 8 characters",
   "AUTH-006": "Username already exists",
   "AUTH-007": "Account is disabled, contact administrator",
+  "AUTH-008": "Administrator privileges required",
+  "AUTH-009": "User not found",
+  "AUTH-010": "Administrator account cannot be disabled",
+  "AUTH-011": "Administrator role cannot be changed",
 };
 
 export class ApiClientError extends Error {
