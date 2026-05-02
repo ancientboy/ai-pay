@@ -1,6 +1,11 @@
 "use client";
 
 import Link from "next/link";
+import {
+  LandingAgentPaySwimlane,
+  LandingMoneyLines,
+  LandingPlatformCheckoutNote,
+} from "@/components/landing-payment-flows";
 import { useLocale } from "@/components/locale-provider";
 import { PublicHeader } from "@/components/public-header";
 
@@ -112,6 +117,24 @@ export function LandingHome() {
             <h3 className="mt-4 text-lg font-medium text-white">{t("landing.featureRiskTitle")}</h3>
             <p className="mt-2 text-sm leading-relaxed text-slate-400">{t("landing.featureRiskDesc")}</p>
           </article>
+        </div>
+      </section>
+
+      <section className="border-y border-slate-800/60 bg-slate-900/30 py-16 md:py-20">
+        <div className="mx-auto max-w-6xl px-6">
+          <h2 className="text-2xl font-semibold text-white">{t("landing.sectionProductModel")}</h2>
+          <p className="mt-3 max-w-3xl text-sm leading-relaxed text-slate-400">
+            {t("landing.sectionProductModelLead")}
+          </p>
+          <div className="mt-8">
+            <LandingPlatformCheckoutNote />
+          </div>
+          <h3 className="mt-12 text-lg font-medium text-slate-100">{t("landing.sectionMoneyLines")}</h3>
+          <p className="mt-2 max-w-3xl text-sm text-slate-500">{t("landing.sectionMoneyLinesLead")}</p>
+          <LandingMoneyLines />
+          <h3 className="mt-14 text-lg font-medium text-slate-100">{t("landing.sectionAgentFlow")}</h3>
+          <p className="mt-2 max-w-3xl text-sm text-slate-500">{t("landing.sectionAgentFlowLead")}</p>
+          <LandingAgentPaySwimlane />
         </div>
       </section>
 
