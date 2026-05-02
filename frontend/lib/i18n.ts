@@ -35,6 +35,7 @@ const messages: Record<Locale, DictObject> = {
     nav: {
       home: "首页",
       dashboard: "仪表盘",
+      integration: "API 集成",
       agents: "Agent 管理",
       authorize: "授权规则",
       recharge: "充值",
@@ -103,6 +104,50 @@ const messages: Record<Locale, DictObject> = {
       toLogin: "已有账号？去登录",
       hasAccount: "已有账号？",
       goLogin: "去登录",
+    },
+    onboarding: {
+      badge: "新手引导",
+      step1Title: "第一步：创建 Agent",
+      step1Body:
+        "在 Agent 管理页注册 DID 并生成密钥；同一 DID 将用于后续签名支付请求。",
+      step2Title: "第二步：授权与白名单",
+      step2Body:
+        "在授权规则页为 Agent 配置单笔/日限额，并把允许的 merchantId 列入白名单。",
+      step3Title: "第三步：外部接入",
+      step3Body:
+        "查看「API 集成」页的 OpenAPI、文档链接与 Node 示例脚本；服务端调用请直连后端端口。",
+      step4Title: "第四步：环境与代理",
+      step4Body:
+        "在设置中核对后端 Base URL；浏览器内调用可走控制台代理并自动附带租户上下文。",
+      goAgents: "前往 Agent 管理",
+      goAuthorize: "前往授权规则",
+      goIntegration: "前往 API 集成",
+      goSettings: "前往设置",
+      skipForever: "不再显示",
+      back: "上一步",
+      next: "下一步",
+      done: "完成",
+    },
+    integration: {
+      title: "API 集成",
+      subtitle: "契约说明、文档路径与外部调用注意事项（面向开发者）。",
+      contractTitle: "OpenAPI 契约",
+      contractDesc:
+        "仓库根目录 openapi.yaml 描述 REST 路径与请求体；里程碑相关路由可能依赖后端特性开关。",
+      docTitle: "集成说明文档",
+      docDesc:
+        "docs/API_INTEGRATION.md 汇总 Base URL、会话头、签名算法与最小闭环调用顺序。",
+      exampleTitle: "Node 示例",
+      exampleDesc:
+        "examples/node-agent-pay 提供一条与集成测试相同的脚本链路（注册→开户→充值→授权→支付）。",
+      exampleCommands:
+        "export AI_PAY_BASE_URL=http://127.0.0.1:8080\ncd examples/node-agent-pay\nnode agent-pay-example.mjs",
+      consoleProxyTitle: "控制台代理",
+      consoleProxyDesc:
+        "前端请求默认走 /api/backend/*，由会话注入 X-User-Id / X-Tenant-Id；外部服务请直连后端并自行传递租户相关头或走网关。",
+      linkAgents: "Agent 管理",
+      linkDeveloper: "开发者中心",
+      linkSettings: "设置",
     },
     dashboard: {
       title: "仪表盘",
@@ -548,6 +593,7 @@ const messages: Record<Locale, DictObject> = {
     nav: {
       home: "Home",
       dashboard: "Dashboard",
+      integration: "API integration",
       agents: "Agents",
       authorize: "Authorize Rules",
       recharge: "Recharge",
@@ -616,6 +662,50 @@ const messages: Record<Locale, DictObject> = {
       toLogin: "Already have an account? Login",
       hasAccount: "Already have an account?",
       goLogin: "Sign in",
+    },
+    onboarding: {
+      badge: "Getting started",
+      step1Title: "Step 1: Create an agent",
+      step1Body:
+        "Register a DID and key material on the Agents page; the same DID signs payment requests.",
+      step2Title: "Step 2: Authorization & whitelist",
+      step2Body:
+        "Set single/day limits and merchantId whitelist on the Authorize page.",
+      step3Title: "Step 3: Integrate externally",
+      step3Body:
+        "Open the API Integration page for OpenAPI, doc paths, and the Node sample; server-side callers hit the backend port directly.",
+      step4Title: "Step 4: Environment & proxy",
+      step4Body:
+        "Confirm the backend base URL in Settings; browser traffic uses the console proxy with tenant context injected.",
+      goAgents: "Open Agents",
+      goAuthorize: "Open Authorize",
+      goIntegration: "Open API integration",
+      goSettings: "Open Settings",
+      skipForever: "Don't show again",
+      back: "Back",
+      next: "Next",
+      done: "Done",
+    },
+    integration: {
+      title: "API integration",
+      subtitle: "Contract, documentation paths, and notes for external callers.",
+      contractTitle: "OpenAPI contract",
+      contractDesc:
+        "The repository root openapi.yaml describes REST paths and bodies; some routes require backend feature flags.",
+      docTitle: "Integration guide",
+      docDesc:
+        "docs/API_INTEGRATION.md covers base URLs, headers, signing, and the minimal happy-path sequence.",
+      exampleTitle: "Node example",
+      exampleDesc:
+        "examples/node-agent-pay runs the same flow as backend integration tests (register → account → recharge → authorize → pay).",
+      exampleCommands:
+        "export AI_PAY_BASE_URL=http://127.0.0.1:8080\ncd examples/node-agent-pay\nnode agent-pay-example.mjs",
+      consoleProxyTitle: "Console proxy",
+      consoleProxyDesc:
+        "The UI calls /api/backend/* with session-derived X-User-Id / X-Tenant-Id; external services should call the backend directly or via your API gateway.",
+      linkAgents: "Agents",
+      linkDeveloper: "Developer",
+      linkSettings: "Settings",
     },
     dashboard: {
       title: "Dashboard",

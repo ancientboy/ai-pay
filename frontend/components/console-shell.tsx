@@ -22,6 +22,7 @@ export function ConsoleShell({
   const navItems = [
     { href: "/", label: t("nav.home"), roles: ["admin", "operator", "readonly"] },
     { href: "/dashboard", label: t("nav.dashboard"), roles: ["admin", "operator", "readonly"] },
+    { href: "/integration", label: t("nav.integration"), roles: ["admin", "operator", "readonly"] },
     { href: "/billing", label: t("nav.billing"), roles: ["admin", "operator", "readonly"] },
     { href: "/agents", label: t("nav.agents"), roles: ["admin", "operator"] },
     { href: "/authorize", label: t("nav.authorize"), roles: ["admin", "operator"] },

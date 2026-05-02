@@ -2,6 +2,7 @@ import type { SessionClaims } from "@/lib/session";
 
 const ALL_CONSOLE_ROUTES = [
   "/dashboard",
+  "/integration",
   "/billing",
   "/agents",
   "/authorize",

@@ -1,0 +1,12 @@
+{
+  "name": "ai-pay-node-agent-example",
+  "private": true,
+  "type": "module",
+  "description": "Minimal Node example: register agent, authorize, and call POST /payment/x402/pay",
+  "scripts": {
+    "start": "node agent-pay-example.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

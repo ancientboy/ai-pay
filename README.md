@@ -8,6 +8,8 @@ AI Pay 的 MVP 仓库，包含 Go 后端与 Next.js 前端控制台。
 - `frontend/`: 控制台（Next.js + TypeScript）
 - `scripts/`: 一键启动/状态/停止脚本
 - `GUSD-开放AI支付系统-全整合版.md`: 产品与商业化总文档
+- `docs/API_INTEGRATION.md`: 外部 Agent / 服务端接入说明（Base URL、签名、示例）
+- `examples/node-agent-pay/`: Node 脚本示例（注册 Agent → 支付最小闭环）
 - `RELEASE_FINAL_CHECKLIST.md`: 上线前最终检查单（执行记录）
 
 ## 快速启动（推荐）
