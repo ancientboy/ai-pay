@@ -172,6 +172,16 @@ async function proxy(request: NextRequest, path: string[]) {
     if (denied) {
       return denied;
     }
+    if (!canUseFeature(claims?.role, claims?.planCode, "billing.bridge.admin")) {
+      return NextResponse.json(
+        {
+          code: "AUTH-014",
+          message:
+            "Bridge KYC/VA 开户需付费档位（Starter 及以上）；付费仅代表具备发起资格，仍需完成 Bridge 侧 KYC。",
+        },
+        { status: 403 },
+      );
+    }
   }
 
   const response = await fetch(url.toString(), {

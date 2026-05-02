@@ -1,13 +1,25 @@
 export type PlanCode = "free" | "starter" | "growth" | "enterprise";
 
-export type CapabilityKey = "billing.subscription_checkout" | "billing.payment_link_topup";
+export type CapabilityKey =
+  | "billing.subscription_checkout"
+  | "billing.payment_link_topup"
+  /** 付费档 unlock 控制台发起 Bridge KYC / VA；合规上仍需用户完成 Bridge KYC */
+  | "billing.bridge_onboarding";
 
 const PLAN_CAPABILITIES: Record<PlanCode, CapabilityKey[]> = {
-  /** 无需付费：可走 VA 充值 + Agent 支付 API；不能在平台创建 Stripe 订阅/支付链接结账 */
+  /** 无需付费：可走 VA 充值 + Agent 支付 API；不能在平台创建 Stripe 订阅/支付链接结账；不含 Bridge 开户资格 */
   free: [],
-  starter: ["billing.subscription_checkout"],
-  growth: ["billing.subscription_checkout", "billing.payment_link_topup"],
-  enterprise: ["billing.subscription_checkout", "billing.payment_link_topup"],
+  starter: ["billing.subscription_checkout", "billing.bridge_onboarding"],
+  growth: [
+    "billing.subscription_checkout",
+    "billing.payment_link_topup",
+    "billing.bridge_onboarding",
+  ],
+  enterprise: [
+    "billing.subscription_checkout",
+    "billing.payment_link_topup",
+    "billing.bridge_onboarding",
+  ],
 };
 
 export function isValidPlan(plan?: string | null): plan is PlanCode {

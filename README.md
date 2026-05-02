@@ -10,7 +10,7 @@ AI Pay 的 MVP 仓库，包含 Go 后端与 Next.js 前端控制台。
 - `GUSD-开放AI支付系统-全整合版.md`: 产品与商业化总文档
 - `docs/API_INTEGRATION.md`: 外部 Agent / 服务端接入说明（Base URL、签名、示例）
 - 前端公开接入页（无需登录）：部署后访问 `/docs/integration`（与控制台「API 集成」内容一致）
-- 套餐与能力键：`frontend/lib/plan-capabilities.ts`（含 `free`：可 VA 充值 + Agent 支付，不含平台内 Stripe 结账；`free` 限 1 个 Agent 由代理层提示）
+- 套餐与能力键：`frontend/lib/plan-capabilities.ts`（`free`：VA 充值 + Agent 支付，限 1 Agent；Starter+ 含 Bridge 开户资格 `billing.bridge_onboarding`，仍须 Bridge KYC 与 `BRIDGE_API_KEY`；付费档 Agent 数量不限制）
 - `examples/node-agent-pay/`: Node 脚本示例（注册 Agent → 支付最小闭环）
 - `RELEASE_FINAL_CHECKLIST.md`: 上线前最终检查单（执行记录）
 

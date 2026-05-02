@@ -83,10 +83,10 @@ const messages: Record<Locale, DictObject> = {
       compareAdminOnly: "管理员",
       compareRowAgentPay: "Agent 签名支付 API（x402）",
       compareRowVaTopup: "VA 充值入账（联调/接口）",
-      compareRowAgentLimit: "控制台创建 Agent 数量",
+      compareRowAgentLimit: "控制台可创建 Agent 数（付费档不限）",
       compareRowStripeSub: "管理员发起「付平台月费」的 Stripe Checkout（非租户自建收银台）",
       compareRowPaymentLink: "管理员发起支付链接，把客户付款记入指定 VA（运营资金）",
-      compareRowBridgeAdmin: "管理员：Bridge KYC / 法币 VA 开户（需 BRIDGE_API_KEY）",
+      compareRowBridgeAdmin: "Bridge 法币 VA（Starter+ 具备发起资格；仍须 Bridge KYC；管理员操作）",
       sectionProductModel: "钱怎么走：三种路径",
       sectionProductModelLead:
         "普通运营同学不负责「给我们开发票式的平台结账」：一般由管理员在「订阅收款」页点按钮生成 Stripe 会话；你们买的是更高档位的能力与配额，不是在自己网站挂一套 Stripe 收银台。",
@@ -105,7 +105,7 @@ const messages: Record<Locale, DictObject> = {
       moneyLineTitleAgent: "Agent 签名支付",
       moneyLineDescAgent: "有余额 + 授权通过 → 调 API 向商户付款；与是否付我们月费独立（但免费档限 1 个 Agent）。",
       moneyLineFootnote:
-        "Bridge 法币 VA：属于通道/合规能力，由管理员在账单页操作；是否开通取决于环境变量与套餐背后的运营策略，不等同于「付月费就自动开 VA」。",
+        "Bridge 法币 VA：付费档位才具备在控制台发起开户的资格（类似席位费）；仍需用户在 Bridge 完成 KYC；后端需 BRIDGE_API_KEY。Agent 数量：仅 Free 限制 1 个，付费档不限。",
       sectionAgentFlow: "Agent 能付钱的路径（泳道）",
       sectionAgentFlowLead: "从注册 DID 到扣款成功，建议按编号顺序完成。",
       flowStepRegister: "注册 Agent / DID",
@@ -575,6 +575,10 @@ const messages: Record<Locale, DictObject> = {
       adminOnlyCheckout: "仅管理员可创建订阅或支付链接结账",
       bridgeHint:
         "以下为 Bridge KYC 与虚拟账户能力查询/开户（需在后端配置 BRIDGE_API_KEY）。",
+      bridgePaidTierOnly:
+        "Bridge 法币 VA：需付费档位（Starter 及以上）才具备在此控制台发起开户的资格；付费类似开通权限/席位费，仍需用户在 Bridge 流程中完成 KYC。请升级套餐或由管理员调整 plan。",
+      bridgeKycRequiredNote:
+        "具备资格后，仍需完成 Bridge 侧身份核验；API Key 仅启用通道对接，不替代合规审核。",
       bridgeCountriesTitle: "VA 支持国家/地区（摘要）",
       bridgeCountriesMeta: "共 {count} 条 · 模式：{mode}",
       bridgeKycTitle: "KYC 与开户信息",
@@ -805,10 +809,10 @@ const messages: Record<Locale, DictObject> = {
       compareAdminOnly: "Admin",
       compareRowAgentPay: "Agent signed pay API (x402)",
       compareRowVaTopup: "VA top-up (API / console)",
-      compareRowAgentLimit: "Agents creatable in console",
+      compareRowAgentLimit: "Agents creatable in console (unlimited on paid)",
       compareRowStripeSub: "Admin starts Stripe Checkout for the platform fee (not your own hosted cart)",
       compareRowPaymentLink: "Admin starts payment link to credit a VA (operating funds)",
-      compareRowBridgeAdmin: "Admin: Bridge KYC / fiat VA onboarding (needs BRIDGE_API_KEY)",
+      compareRowBridgeAdmin: "Bridge fiat VA (Starter+ unlocks console onboarding; Bridge KYC still required; admin)",
       sectionProductModel: "How money moves: three paths",
       sectionProductModelLead:
         "Most operators don’t “build” checkout: an admin clicks Billing to open a Stripe session for our platform fee. Higher tiers unlock capabilities and quotas—you’re not embedding Stripe Checkout on your own site as the product model here.",
@@ -828,7 +832,7 @@ const messages: Record<Locale, DictObject> = {
       moneyLineTitleAgent: "Agent signed payment",
       moneyLineDescAgent: "Balance + rules OK → pay merchants via API; independent of paying us, except Free limits one agent.",
       moneyLineFootnote:
-        "Bridge fiat VA is a rail/compliance surface controlled by admins in Billing; availability depends on env keys and policy—not “subscription fee automatically opens VA”.",
+        "Bridge fiat VA: paid tiers unlock the right to start onboarding from this console (like a seat fee); Bridge KYC is still required; BRIDGE_API_KEY needed server-side. Agents: only Free caps at one agent; paid tiers unlimited.",
       sectionAgentFlow: "Agent pay swimlane",
       sectionAgentFlowLead: "Complete steps in order from DID to settled payment.",
       flowStepRegister: "Register Agent / DID",
@@ -1303,6 +1307,10 @@ const messages: Record<Locale, DictObject> = {
       adminOnlyCheckout: "Only administrators can create subscription or payment-link checkout",
       bridgeHint:
         "Bridge KYC and virtual account helpers (requires BRIDGE_API_KEY on the backend).",
+      bridgePaidTierOnly:
+        "Bridge fiat VA onboarding requires a paid plan (Starter+) to start flows from this console—the subscription unlocks eligibility (like a seat fee); end users must still pass Bridge KYC. Upgrade or ask an admin to change the plan.",
+      bridgeKycRequiredNote:
+        "After eligibility, Bridge’s own KYC must still be completed. The API key enables integration, not compliance approval.",
       bridgeCountriesTitle: "VA coverage (summary)",
       bridgeCountriesMeta: "{count} rows · mode: {mode}",
       bridgeKycTitle: "KYC & onboarding",

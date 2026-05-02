@@ -212,6 +212,8 @@ export default function BillingPage() {
   const canPrev = (reconMeta?.offset ?? 0) > 0;
   const canNext = (reconMeta?.offset ?? 0) + (reconMeta?.count ?? 0) < (reconMeta?.total ?? 0);
   const checkoutBlockedForFreePlan = isAdmin && subscriptionPlan === "free";
+  /** Bridge KYC/VA：Starter+ 才具备控制台发起资格（仍需 Bridge 侧 KYC）。 */
+  const bridgeEligible = subscriptionPlan !== "free";
   const copyContextMutation = useMutation({
     mutationFn: async () => {
       const contextPayload = {
@@ -340,7 +342,9 @@ export default function BillingPage() {
       </div>
 
       {isAdmin ? (
-      <article className="rounded-xl border border-cyan-800/60 bg-cyan-950/20 p-4">
+      <article
+        className={`rounded-xl border border-cyan-800/60 bg-cyan-950/20 p-4 ${!bridgeEligible ? "opacity-70" : ""}`}
+      >
         <h3 className="text-sm font-medium text-cyan-200">{t("billing.bridgeTitle")}</h3>
         <p className="mt-1 text-xs text-slate-400">
           {t("billing.bridgeHint")}{" "}
@@ -348,6 +352,13 @@ export default function BillingPage() {
             {bridgeConfigured ? t("billing.modeLive") : t("billing.modeMock")}
           </span>
         </p>
+        {!bridgeEligible ? (
+          <p className="mt-3 rounded-lg border border-amber-800/50 bg-amber-950/30 px-3 py-2 text-xs text-amber-100/90">
+            {t("billing.bridgePaidTierOnly")}
+          </p>
+        ) : (
+          <p className="mt-2 text-xs text-slate-500">{t("billing.bridgeKycRequiredNote")}</p>
+        )}
         <div className="mt-3 grid gap-3 md:grid-cols-2">
           <div className="rounded-lg border border-slate-800 bg-slate-900 p-3">
             <h4 className="text-xs font-medium text-slate-200">{t("billing.bridgeCountriesTitle")}</h4>
@@ -381,7 +392,7 @@ export default function BillingPage() {
             <button
               type="button"
               onClick={() => bridgeKYCMutation.mutate()}
-              disabled={bridgeKYCMutation.isPending}
+              disabled={bridgeKYCMutation.isPending || !bridgeEligible}
               className="mt-2 rounded-md border border-cyan-700/60 px-2 py-1 text-xs text-cyan-200 disabled:opacity-50"
             >
               {bridgeKYCMutation.isPending ? t("common.loading") : t("billing.bridgeCreateKyc")}
@@ -401,7 +412,7 @@ export default function BillingPage() {
             <button
               type="button"
               onClick={() => bridgeCreateVAMutation.mutate()}
-              disabled={bridgeCreateVAMutation.isPending}
+              disabled={bridgeCreateVAMutation.isPending || !bridgeEligible}
               className="mt-2 rounded-md border border-cyan-700/60 px-2 py-1 text-xs text-cyan-200 disabled:opacity-50"
             >
               {bridgeCreateVAMutation.isPending ? t("common.loading") : t("billing.bridgeCreateVA")}

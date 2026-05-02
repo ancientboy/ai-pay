@@ -99,11 +99,10 @@ export function canUseFeature(
       hasPlanCapability(planNorm, "billing.payment_link_topup")
     );
   }
-  if (
-    feature === "billing.bridge.admin" ||
-    feature === "billing.admin_full" ||
-    feature === "billing.reconciliation.export"
-  ) {
+  if (feature === "billing.bridge.admin") {
+    return hasPlanCapability(planNorm, "billing.bridge_onboarding");
+  }
+  if (feature === "billing.admin_full" || feature === "billing.reconciliation.export") {
     return true;
   }
   return false;
