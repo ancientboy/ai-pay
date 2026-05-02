@@ -45,7 +45,7 @@ export function OnboardingTour() {
       {
         title: t("onboarding.step3Title"),
         body: t("onboarding.step3Body"),
-        primaryHref: "/integration",
+        primaryHref: "/docs/integration",
         primaryLabel: t("onboarding.goIntegration"),
       },
       {
