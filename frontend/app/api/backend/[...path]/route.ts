@@ -2,6 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { parseSessionToken, SESSION_COOKIE_NAME } from "@/lib/session";
 import { canUseFeature } from "@/lib/rbac";
 
+function requireAdmin(claims: Awaited<ReturnType<typeof parseSessionToken>>) {
+  if (claims?.role !== "admin") {
+    return NextResponse.json(
+      { code: "AUTH-008", message: "仅管理员可执行此操作" },
+      { status: 403 },
+    );
+  }
+  return null;
+}
+
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8080";
 
@@ -65,7 +75,7 @@ async function proxy(request: NextRequest, path: string[]) {
     }
   }
 
-  // Enforce plan capability for billing checkout create on server-side proxy layer.
+  // Org-wide billing checkout: administrators only (tenant operators use payment features elsewhere).
   if (
     request.method === "POST" &&
     path.length === 3 &&
@@ -73,6 +83,10 @@ async function proxy(request: NextRequest, path: string[]) {
     path[1] === "checkout" &&
     path[2] === "create"
   ) {
+    const denied = requireAdmin(claims);
+    if (denied) {
+      return denied;
+    }
     let checkoutType = "";
     try {
       const parsed = body ? (JSON.parse(body) as { checkoutType?: string }) : null;
@@ -95,7 +109,19 @@ async function proxy(request: NextRequest, path: string[]) {
         },
         { status: 403 },
       );
-    } 
+    }
+  }
+
+  if (
+    path.length >= 3 &&
+    path[0] === "billing" &&
+    path[1] === "provider" &&
+    path[2] === "bridge"
+  ) {
+    const denied = requireAdmin(claims);
+    if (denied) {
+      return denied;
+    }
   }
 
   const response = await fetch(url.toString(), {

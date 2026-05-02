@@ -16,7 +16,9 @@ type Feature =
   | "billing.subscription.checkout"
   | "billing.payment_link.checkout"
   | "billing.reconciliation.export"
-  | "billing.checkout.create";
+  | "billing.checkout.create"
+  | "billing.bridge.admin"
+  | "billing.admin_full";
 
 function normalizePlan(plan?: string): "starter" | "growth" | "enterprise" {
   if (plan === "growth" || plan === "enterprise") {
@@ -64,18 +66,18 @@ export function canUseFeature(
   if (normalized === "admin") {
     return true;
   }
-  const normalizedPlan = normalizePlan(plan);
-  if (feature === "billing.checkout.create") {
-    return normalized !== "readonly" && normalizedPlan !== "starter";
+  // Tenant-facing operators never manage org-wide billing checkout / Bridge admin flows.
+  if (
+    feature === "billing.subscription.checkout" ||
+    feature === "billing.payment_link.checkout" ||
+    feature === "billing.checkout.create" ||
+    feature === "billing.bridge.admin" ||
+    feature === "billing.admin_full"
+  ) {
+    return false;
   }
   if (feature === "billing.reconciliation.export") {
     return normalized !== "readonly";
-  }
-  if (feature === "billing.subscription.checkout") {
-    return normalized !== "readonly" && normalizedPlan !== "starter";
-  }
-  if (feature === "billing.payment_link.checkout") {
-    return normalized !== "readonly" && normalizedPlan !== "starter";
   }
   return false;
 }
@@ -103,6 +105,9 @@ export function canMutateBackendPath(
 
   // operator
   if (route.startsWith("/developer/")) {
+    return false;
+  }
+  if (route.startsWith("/billing/provider/bridge/")) {
     return false;
   }
   if (route === "/payment/unfreeze" || route === "/payment/refund") {

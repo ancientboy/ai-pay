@@ -84,9 +84,12 @@ export default function BillingPage() {
     queryKey: ["billing-subscription"],
     queryFn: getBillingSubscription,
   });
+  const isAdmin = sessionRole === "admin";
+
   const bridgeCountriesQuery = useQuery({
     queryKey: ["bridge-va-countries"],
     queryFn: getBridgeVACountries,
+    enabled: isAdmin,
   });
 
   useEffect(() => {
@@ -164,6 +167,9 @@ export default function BillingPage() {
 
   const checkoutMutation = useMutation({
     mutationFn: () => {
+      if (!isAdmin) {
+        throw new Error(t("billing.adminOnlyCheckout"));
+      }
       if (!canUseFeature(sessionRole, subscriptionPlan, "billing.checkout.create")) {
         throw new Error(t("billing.featureCheckoutBlocked"));
       }
@@ -301,22 +307,31 @@ export default function BillingPage() {
   return (
     <section className="space-y-6">
       <div>
-        <h2 className="text-xl font-semibold">{t("billing.title")}</h2>
-        <p className="mt-1 text-sm text-slate-400">{t("billing.subtitle")}</p>
+        <h2 className="text-xl font-semibold">
+          {isAdmin ? t("billing.title") : t("billing.titleTenant")}
+        </h2>
+        <p className="mt-1 text-sm text-slate-400">
+          {isAdmin ? t("billing.subtitle") : t("billing.subtitleTenant")}
+        </p>
         <p className="mt-1 text-xs text-slate-500">
           {t("billing.tenantPlanHint")
             .replace("{tenant}", tenantId)
             .replace("{plan}", subscriptionPlan)
             .replace("{role}", sessionRole)}
         </p>
-        <p className="mt-1 text-xs text-slate-500">
-          {t("billing.planCapabilitiesHint").replace(
-            "{caps}",
-            planCapabilities.length > 0 ? planCapabilities.join(", ") : "none",
-          )}
-        </p>
+        {isAdmin ? (
+          <p className="mt-1 text-xs text-slate-500">
+            {t("billing.planCapabilitiesHint").replace(
+              "{caps}",
+              planCapabilities.length > 0 ? planCapabilities.join(", ") : "none",
+            )}
+          </p>
+        ) : (
+          <p className="mt-1 text-xs text-amber-200/90">{t("billing.tenantAdminHint")}</p>
+        )}
       </div>
 
+      {isAdmin ? (
       <article className="rounded-xl border border-cyan-800/60 bg-cyan-950/20 p-4">
         <h3 className="text-sm font-medium text-cyan-200">{t("billing.bridgeTitle")}</h3>
         <p className="mt-1 text-xs text-slate-400">
@@ -391,8 +406,10 @@ export default function BillingPage() {
           </pre>
         ) : null}
       </article>
+      ) : null}
 
       <div className="grid gap-4 md:grid-cols-2">
+        {isAdmin ? (
         <article className="rounded-xl border border-slate-800 bg-slate-900 p-4">
           <h3 className="text-sm font-medium text-slate-200">{t("billing.capabilityTitle")}</h3>
           <ul className="mt-3 space-y-2 text-sm text-slate-300">
@@ -415,7 +432,9 @@ export default function BillingPage() {
             </li>
           </ul>
         </article>
+        ) : null}
 
+        {isAdmin ? (
         <article className="rounded-xl border border-slate-800 bg-slate-900 p-4">
           <h3 className="text-sm font-medium text-slate-200">{t("billing.checkoutTitle")}</h3>
           <div className="mt-3 space-y-2">
@@ -505,6 +524,7 @@ export default function BillingPage() {
             </button>
           </div>
         </article>
+        ) : null}
       </div>
 
       {sub ? (
@@ -587,8 +607,9 @@ export default function BillingPage() {
           <button
             type="button"
             onClick={() => exportMutation.mutate()}
-            className="rounded-md border border-blue-700/60 px-2 py-2 text-xs text-blue-200 hover:bg-blue-950/40"
-            disabled={exportMutation.isPending}
+            className="rounded-md border border-blue-700/60 px-2 py-2 text-xs text-blue-200 hover:bg-blue-950/40 disabled:opacity-50"
+            disabled={exportMutation.isPending || !isAdmin}
+            title={!isAdmin ? t("billing.exportAdminOnlyHint") : undefined}
           >
             {exportMutation.isPending ? t("common.loading") : t("billing.reconExportCsv")}
           </button>
