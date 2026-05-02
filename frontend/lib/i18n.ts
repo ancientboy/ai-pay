@@ -130,24 +130,50 @@ const messages: Record<Locale, DictObject> = {
     },
     integration: {
       title: "API 集成",
-      subtitle: "契约说明、文档路径与外部调用注意事项（面向开发者）。",
+      subtitle:
+        "本页为「小白也能懂」的完整说明：从开通账户、充值到 Agent 调 API 扣款；下方同时提供技术契约与仓库内文档路径。",
+      flowTitle: "一、先理解：钱与支付能力",
+      flowIntro:
+        "请把每个 Agent 想成带「VA 钱包」的独立身份。能成功支付 = 账户里有钱 + 已设授权 + 对方商户在白名单 + 用私钥签名。给组织买订阅/套餐是付给平台的产品费；给 VA 充值才是给 Agent 可花余额。",
+      step1Title: "1. 在控制台注册 Agent 并开户",
+      step1Body:
+        "打开「Agent 管理」：填写 did:gusd:agent:…，创建后会为该 DID 生成密钥对，并建立 VA 账户。API 侧则是 POST /agent/did/register 与 POST /account/create。",
+      step2Title: "2. 给 VA 充值（联调用模拟入金）",
+      step2Body:
+        "在「充值」页对刚得到的 VA 账户 ID 发起充值；或调用 POST /fund/recharge。没有足够可用余额时，支付会报余额不足（PAY-003），与是否已买订阅无关。",
+      step3Title: "3. 配授权：限额 + 商户白名单",
+      step3Body:
+        "在「授权规则」为同一 Agent 设置单笔/日限额，并填写允许扣款的 merchantId 列表。未配置、已冻结、或商户不在白名单里，支付会被拒绝。",
+      step4Title: "4. 让程序用私钥调支付 API",
+      step4Body:
+        "外部 Agent、脚本、OpenClaw 等都直连后端 HTTP：POST /payment/x402/pay，携带 Idempotency-Key、X-Sign-Timestamp，并用注册时的私钥对约定字符串做 Ed25519 签名。控制台里的请求则走 /api/backend/* 并由会话带上租户头。",
+      step5Title: "5. 查结果",
+      step5Body:
+        "记下返回的 transactionId，在「交易」页或通过 GET /payment/status/query 查看状态（部分通道会先 SETTLING 再 SETTLED）。",
+      signatureHintTitle: "签名串格式（与后端一致）",
+      signatureHintBody:
+        "UTF-8 原文：payerDid|merchantId|amount|幂等键|时间戳；时间戳为请求头 X-Sign-Timestamp 的同一字符串（RFC3339）。",
       contractTitle: "OpenAPI 契约",
       contractDesc:
         "仓库根目录 openapi.yaml 描述 REST 路径与请求体；里程碑相关路由可能依赖后端特性开关。",
-      docTitle: "集成说明文档",
+      docTitle: "仓库内详细文档（可复制路径给同事）",
       docDesc:
-        "docs/API_INTEGRATION.md 汇总 Base URL、会话头、签名算法与最小闭环调用顺序。",
-      exampleTitle: "Node 示例",
+        "docs/API_INTEGRATION.md：Base URL、会话头、签名、最小闭环；其中「给小白」一节专门解释余额与订阅的区别。",
+      exampleTitle: "Node 示例（开发者克隆仓库后本地运行）",
       exampleDesc:
-        "examples/node-agent-pay 提供一条与集成测试相同的脚本链路（注册→开户→充值→授权→支付）。",
+        "examples/node-agent-pay：一条命令跑通 注册→开户→充值→授权→支付，需本机已启动可访问的后端。",
       exampleCommands:
         "export AI_PAY_BASE_URL=http://127.0.0.1:8080\ncd examples/node-agent-pay\nnode agent-pay-example.mjs",
-      consoleProxyTitle: "控制台代理",
+      consoleProxyTitle: "控制台代理（浏览器里）",
       consoleProxyDesc:
-        "前端请求默认走 /api/backend/*，由会话注入 X-User-Id / X-Tenant-Id；外部服务请直连后端并自行传递租户相关头或走网关。",
+        "前端请求默认走 /api/backend/*，由会话注入 X-User-Id / X-Tenant-Id；外部自动化请直连后端端口或经你们的 API 网关，并自行传递租户相关头。",
       linkAgents: "Agent 管理",
       linkDeveloper: "开发者中心",
       linkSettings: "设置",
+      linkRecharge: "充值",
+      linkAuthorize: "授权规则",
+      linkTransactions: "交易",
+      techSectionLabel: "开发者参考（仓库路径）",
     },
     dashboard: {
       title: "仪表盘",
@@ -688,24 +714,50 @@ const messages: Record<Locale, DictObject> = {
     },
     integration: {
       title: "API integration",
-      subtitle: "Contract, documentation paths, and notes for external callers.",
+      subtitle:
+        "Beginner-friendly flow on this page: account → top-up → authorize → pay via API; technical contracts and repo paths are below.",
+      flowTitle: "1) Money and “payment capability”",
+      flowIntro:
+        "Treat each Agent as having a VA wallet. A payment succeeds only when there is balance, an ACTIVE authorization rule, the merchantId is whitelisted, limits allow the amount, and you sign with the Agent private key. Org subscription payments are product fees to the platform; VA top-up credits spendable balance for the Agent.",
+      step1Title: "1. Register the Agent and create the account",
+      step1Body:
+        "Use Agents in the console (did:gusd:agent:…) to generate keys and create the VA. Via API: POST /agent/did/register then POST /account/create.",
+      step2Title: "2. Top up the VA (simulated funding in dev)",
+      step2Body:
+        "Use Recharge in the console or POST /fund/recharge. Without enough available balance, pay fails with insufficient balance (PAY-003)—independent of subscription purchase.",
+      step3Title: "3. Authorization: limits + merchant whitelist",
+      step3Body:
+        "On Authorize, set single/day limits and whitelist merchantIds. Missing/frozen rules or non-whitelisted merchants will reject payment.",
+      step4Title: "4. Call pay API with the private key",
+      step4Body:
+        "Automations hit the backend directly: POST /payment/x402/pay with Idempotency-Key, X-Sign-Timestamp, and an Ed25519 signature from the registered key. Browser traffic uses /api/backend/* with tenant headers from the session.",
+      step5Title: "5. Track results",
+      step5Body:
+        "Keep the transactionId; review Transactions or GET /payment/status/query (some paths may show SETTLING before SETTLED).",
+      signatureHintTitle: "Signature payload format",
+      signatureHintBody:
+        "UTF-8 string: payerDid|merchantId|amount|idempotencyKey|timestamp — timestamp must match X-Sign-Timestamp (RFC3339).",
       contractTitle: "OpenAPI contract",
       contractDesc:
         "The repository root openapi.yaml describes REST paths and bodies; some routes require backend feature flags.",
-      docTitle: "Integration guide",
+      docTitle: "Repo guide (share path with teammates)",
       docDesc:
-        "docs/API_INTEGRATION.md covers base URLs, headers, signing, and the minimal happy-path sequence.",
-      exampleTitle: "Node example",
+        "docs/API_INTEGRATION.md covers base URLs, headers, signing, and the minimal sequence—including a beginner section on balance vs subscription.",
+      exampleTitle: "Node sample (run locally after cloning)",
       exampleDesc:
-        "examples/node-agent-pay runs the same flow as backend integration tests (register → account → recharge → authorize → pay).",
+        "examples/node-agent-pay runs register → account → recharge → authorize → pay against a reachable backend.",
       exampleCommands:
         "export AI_PAY_BASE_URL=http://127.0.0.1:8080\ncd examples/node-agent-pay\nnode agent-pay-example.mjs",
-      consoleProxyTitle: "Console proxy",
+      consoleProxyTitle: "Console proxy (browser)",
       consoleProxyDesc:
         "The UI calls /api/backend/* with session-derived X-User-Id / X-Tenant-Id; external services should call the backend directly or via your API gateway.",
       linkAgents: "Agents",
       linkDeveloper: "Developer",
       linkSettings: "Settings",
+      linkRecharge: "Recharge",
+      linkAuthorize: "Authorize",
+      linkTransactions: "Transactions",
+      techSectionLabel: "Developer reference (repo paths)",
     },
     dashboard: {
       title: "Dashboard",
