@@ -33,6 +33,7 @@ const messages: Record<Locale, DictObject> = {
       ok: "正常",
     },
     nav: {
+      home: "首页",
       dashboard: "仪表盘",
       agents: "Agent 管理",
       authorize: "授权规则",
@@ -510,6 +511,7 @@ const messages: Record<Locale, DictObject> = {
       ok: "OK",
     },
     nav: {
+      home: "Home",
       dashboard: "Dashboard",
       agents: "Agents",
       authorize: "Authorize Rules",

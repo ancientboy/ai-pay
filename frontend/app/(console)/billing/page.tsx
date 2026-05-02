@@ -34,7 +34,8 @@ export default function BillingPage() {
 
   const [amount, setAmount] = useState("49.9");
   const [currency, setCurrency] = useState("USD");
-  const [planCode, setPlanCode] = useState<string>("starter");
+  /** Shown in plan selector; null means fall back to URL `plan=` then default starter. */
+  const [manualPlanCode, setManualPlanCode] = useState<"starter" | "growth" | null>(null);
   const [checkoutType, setCheckoutType] = useState<"subscription" | "payment_link">("subscription");
   const [vaAccountId, setVaAccountId] = useState("");
   const [customerHint, setCustomerHint] = useState("");
@@ -101,6 +102,17 @@ export default function BillingPage() {
       }
     })();
   }, []);
+
+  const planFromUrl = useMemo(() => {
+    const p = searchParams.get("plan")?.trim().toLowerCase();
+    if (p === "starter" || p === "growth") {
+      return p;
+    }
+    return null;
+  }, [searchParams]);
+
+  const effectivePlanCode = manualPlanCode ?? planFromUrl ?? "starter";
+
   const reconciliationQuery = useQuery({
     queryKey: [
       "billing-reconciliation",
@@ -160,7 +172,7 @@ export default function BillingPage() {
         provider: currency === "USD" ? "stripe" : "bridge",
         paymentRail: currency === "USD" ? "fiat" : "stablecoin",
         checkoutType,
-        planCode,
+        planCode: effectivePlanCode,
         amount,
         vaAccountId: checkoutType === "payment_link" ? vaAccountId.trim() || undefined : undefined,
         customerIdHint: customerHint.trim() || undefined,
@@ -421,8 +433,10 @@ export default function BillingPage() {
             <label className="block text-sm text-slate-300">
               {t("billing.planLabel")}
               <select
-                value={planCode}
-                onChange={(e) => setPlanCode(e.target.value)}
+                value={effectivePlanCode}
+                onChange={(e) =>
+                  setManualPlanCode(e.target.value as "starter" | "growth")
+                }
                 className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
               >
                 {PLANS.map((p) => (

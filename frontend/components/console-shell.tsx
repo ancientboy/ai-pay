@@ -20,6 +20,7 @@ export function ConsoleShell({
   const [loggingOut, setLoggingOut] = useState(false);
   const role = session.role ?? "operator";
   const navItems = [
+    { href: "/", label: t("nav.home"), roles: ["admin", "operator", "readonly"] },
     { href: "/dashboard", label: t("nav.dashboard"), roles: ["admin", "operator", "readonly"] },
     { href: "/billing", label: t("nav.billing"), roles: ["admin", "operator"] },
     { href: "/agents", label: t("nav.agents"), roles: ["admin"] },
@@ -39,19 +40,25 @@ export function ConsoleShell({
           </h1>
           <p className="mt-1 text-xs text-slate-400">{t("app.subtitle")}</p>
           <nav className="mt-8 flex flex-col gap-2">
-            {navItems.map((item) => (
+            {navItems.map((item) => {
+              const active =
+                item.href === "/"
+                  ? pathname === "/" || pathname === ""
+                  : pathname.startsWith(item.href);
+              return (
               <Link
                 key={item.href}
                 href={item.href}
                 className={`rounded-md px-3 py-2 text-sm transition ${
-                  pathname.startsWith(item.href)
+                  active
                     ? "bg-slate-800 text-white"
                     : "text-slate-300 hover:bg-slate-800 hover:text-white"
                 }`}
               >
                 {item.label}
               </Link>
-            ))}
+            );
+            })}
           </nav>
         </aside>
         <div className="flex flex-1 flex-col">
@@ -63,6 +70,12 @@ export function ConsoleShell({
               <p className="text-sm text-slate-300">{t("app.controlCenter")}</p>
             </div>
             <div className="flex items-center gap-3">
+              <Link
+                href="/"
+                className="rounded border border-slate-600 px-3 py-1 text-xs text-slate-300 hover:bg-slate-800"
+              >
+                {t("nav.home")}
+              </Link>
               <div className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">
                 {t("app.role")}: {role}
               </div>
