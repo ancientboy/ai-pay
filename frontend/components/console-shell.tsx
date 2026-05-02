@@ -36,9 +36,10 @@ export function ConsoleShell({
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <div className="mx-auto flex min-h-screen max-w-7xl">
         <aside className="w-64 border-r border-slate-800 bg-slate-900/70 p-6">
-          <h1 className="text-lg font-semibold tracking-wide text-blue-300">
-            {t("app.title")}
-          </h1>
+          <div>
+            <p className="text-lg font-semibold tracking-wide text-blue-300">{t("app.title")}</p>
+            <p className="text-[11px] text-slate-500">{t("app.titleZh")}</p>
+          </div>
           <p className="mt-1 text-xs text-slate-400">{t("app.subtitle")}</p>
           <nav className="mt-8 flex flex-col gap-2">
             {navItems.map((item) => {

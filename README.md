@@ -1,6 +1,6 @@
-# AI Pay MVP
+# AgentTrust Pay（可信付）MVP
 
-AI Pay 的 MVP 仓库，包含 Go 后端与 Next.js 前端控制台。
+**AgentTrust Pay** 的 MVP 仓库（对外品牌：英文 *AgentTrust Pay*，中文 **可信付**），包含 Go 后端与 Next.js 前端控制台。
 
 ## 仓库结构
 

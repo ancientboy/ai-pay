@@ -155,6 +155,13 @@ export function IntegrationGuide({ variant }: { variant: Variant }) {
         </p>
       </div>
 
+      <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-5">
+        <h3 className="text-sm font-medium text-slate-200">{t("integration.merchantIdTitle")}</h3>
+        <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-slate-400">
+          {t("integration.merchantIdBody")}
+        </p>
+      </div>
+
       <div>
         <p className="mb-3 text-xs font-medium text-slate-500">
           {variant === "public" ? t("integration.publicShortcutsTitle") : t("integration.consoleShortcutsTitle")}

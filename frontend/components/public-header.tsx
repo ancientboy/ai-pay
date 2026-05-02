@@ -9,8 +9,9 @@ export function PublicHeader() {
   return (
     <header className="sticky top-0 z-50 border-b border-slate-800/80 bg-slate-950/90 backdrop-blur-md">
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-3">
-        <Link href="/" className="text-sm font-semibold tracking-tight text-blue-300">
-          {t("landing.brand")}
+        <Link href="/" className="flex flex-col leading-tight">
+          <span className="text-sm font-semibold tracking-tight text-blue-300">{t("landing.brand")}</span>
+          <span className="text-[11px] font-medium text-slate-500">{t("landing.brandZh")}</span>
         </Link>
         <nav className="flex flex-wrap items-center justify-end gap-2 sm:gap-4">
           <Link

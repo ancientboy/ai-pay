@@ -33,14 +33,15 @@ const messages: Record<Locale, DictObject> = {
       ok: "正常",
     },
     landing: {
-      brand: "AI Pay",
+      brand: "AgentTrust Pay",
+      brandZh: "可信付",
       navIntegration: "接入说明",
       navLogin: "登录",
       navRegister: "注册",
-      heroEyebrow: "AI-native Payments",
-      heroTitle: "让 Agent 安全付钱、让团队管好收款",
+      heroEyebrow: "AgentTrust Pay · 可信付",
+      heroTitle: "为 Agent 而生的可信支付与资金治理",
       heroSubtitle:
-        "统一 DID、VA 钱包、订阅与法币/稳定币通道、对账与 RBAC。开发者用 HTTP API 接入；运营在控制台完成充值、授权与订阅。",
+        "原生服务自动化主体：DID 与签名、VA 运营余额、授权与白名单、对账与角色权限。对外付款对象由你在平台内登记的 merchantId 决定；并非任意互联网上「接受稳定币的店铺」都会自动连通——后续可做商户入驻与目录，当前以租户配置的收款方标识为准。",
       ctaLogin: "登录控制台",
       ctaRegister: "注册账号",
       ctaIntegration: "接入说明（免登录）",
@@ -92,7 +93,7 @@ const messages: Record<Locale, DictObject> = {
         "普通运营同学不负责「给我们开发票式的平台结账」：一般由管理员在「订阅收款」页点按钮生成 Stripe 会话；你们买的是更高档位的能力与配额，不是在自己网站挂一套 Stripe 收银台。",
       platformCheckoutTitle: "谁在点「订阅 / 支付链接」？",
       platformCheckoutBody:
-        "控制台里的 Stripe 结账 = 组织付给 AI Pay 的平台费（或管理员代客户完成付款链接入账 VA）。这和 Agent 对外付钱是两条独立资金流；后者走 VA 充值 + x402，不经过你们的 Stripe 订阅 Price。",
+        "控制台里的 Stripe 结账 = 组织付给 AgentTrust Pay（可信付）的平台费（或管理员代客户完成付款链接入账 VA）。这和 Agent 对外付钱是两条独立资金流；后者走 VA 充值 + 本平台的 x402 风格支付 API，不经过 Stripe 订阅 Price。",
       sectionMoneyLines: "示意图：三条资金流",
       sectionMoneyLinesLead: "横向箭头表示先后顺序或依赖关系，不是同一笔钱分叉。",
       moneyLinePillPlatform: "给我们",
@@ -153,7 +154,7 @@ const messages: Record<Locale, DictObject> = {
         "需要私有化部署、合规扩展或定制费率？登录后与管理员协同开通，或通过贵司商务渠道洽谈。",
       enterpriseCtaLogin: "登录并联系管理员",
       enterpriseCtaDoc: "先阅读接入说明",
-      footer: "© AI Pay · 本文档与首页支持中英文切换（右上角）",
+      footer: "© AgentTrust Pay 可信付 · 首页支持中英文切换（右上角）",
     },
     nav: {
       home: "首页",
@@ -193,15 +194,16 @@ const messages: Record<Locale, DictObject> = {
       actionRunReversalChecklist: "打开回退排查向导",
     },
     app: {
-      title: "AI 支付控制台",
-      subtitle: "MVP 运营后台",
+      title: "AgentTrust Pay",
+      titleZh: "可信付",
+      subtitle: "Agent 原生支付 · 运营与治理控制台",
       controlCenter: "控制中心",
       aiNative: "AI 原生支付",
       language: "语言",
       role: "角色",
     },
     login: {
-      title: "AI Pay 登录",
+      title: "登录 AgentTrust Pay（可信付）",
       subtitle: "支持管理员与普通用户登录",
       username: "用户名",
       password: "密码",
@@ -257,7 +259,7 @@ const messages: Record<Locale, DictObject> = {
         "本页为「小白也能懂」的完整说明：从开通账户、充值到 Agent 调 API 扣款；下方同时提供技术契约与仓库内文档路径。",
       flowTitle: "一、先理解：钱与支付能力",
       flowIntro:
-        "请把每个 Agent 想成带「VA 钱包」的独立身份。能成功支付 = 账户里有钱 + 已设授权 + 对方商户在白名单 + 用私钥签名。给组织买订阅/套餐是付给平台的产品费；给 VA 充值才是给 Agent 可花余额。",
+        "请把每个 Agent 想成带「VA 钱包」的独立身份。能成功支付 = 账户里有钱 + 已设授权 + 对方 merchantId 在白名单 + 用私钥签名。给组织买订阅是付给 AgentTrust Pay 的平台费；给 VA 充值才是 Agent 可对外支付的余额。",
       step1Title: "1. 在控制台注册 Agent 并开户",
       step1Body:
         "打开「Agent 管理」：填写 did:gusd:agent:…，创建后会为该 DID 生成密钥对，并建立 VA 账户。API 侧则是 POST /agent/did/register 与 POST /account/create。",
@@ -266,10 +268,10 @@ const messages: Record<Locale, DictObject> = {
         "在「充值」页对刚得到的 VA 账户 ID 发起充值；或调用 POST /fund/recharge。没有足够可用余额时，支付会报余额不足（PAY-003），与是否已买订阅无关。",
       step3Title: "3. 配授权：限额 + 商户白名单",
       step3Body:
-        "在「授权规则」为同一 Agent 设置单笔/日限额，并填写允许扣款的 merchantId 列表。未配置、已冻结、或商户不在白名单里，支付会被拒绝。",
+        "在「授权规则」为同一 Agent 设置单笔/日限额，并填写允许扣款的 merchantId 列表（由你与收款方约定字符串即可，不必对方先在本平台注册；后续可做商户入驻目录）。未配置、已冻结、或 merchantId 不在白名单里，支付会被拒绝。",
       step4Title: "4. 让程序用私钥调支付 API",
       step4Body:
-        "外部 Agent、脚本、OpenClaw 等都直连后端 HTTP：POST /payment/x402/pay，携带 Idempotency-Key、X-Sign-Timestamp，并用注册时的私钥对约定字符串做 Ed25519 签名。控制台里的请求则走 /api/backend/* 并由会话带上租户头。",
+        "外部 Agent、脚本等调用本平台 HTTP API（示例路径 POST /payment/x402/pay），携带 Idempotency-Key、X-Sign-Timestamp，并用注册时的私钥对约定字符串做 Ed25519 签名——这是在「你已接入的本平台」内完成的对外记账/清算流程，与互联网上任意「接受稳定币的商家」无自动对接。控制台请求走 /api/backend/* 并由会话带上租户头。",
       step5Title: "5. 查结果",
       step5Body:
         "记下返回的 transactionId，在「交易」页或通过 GET /payment/status/query 查看状态（部分通道会先 SETTLING 再 SETTLED）。",
@@ -306,10 +308,13 @@ const messages: Record<Locale, DictObject> = {
       ctaLoginTransactions: "登录后：交易",
       ctaLoginDeveloper: "登录后：开发者中心",
       ctaLoginSettings: "登录后：设置",
+      merchantIdTitle: "收款方 merchantId 从哪里来？要不要商户入驻？",
+      merchantIdBody:
+        "merchantId 是本平台授权规则里使用的「收款方标识」字符串，由租户管理员与业务方约定（例如 api_vendor_a、partner_store_01）。当前不要求收款方必须在本平台单独注册账号；你只要把约定的 ID 写进白名单，且 VA 有余额，Agent 即可向该 merchantId 发起签名支付。\n\n这与「全世界只要支持稳定币或 x402 的商家都能被扣款」不同：本仓库里的支付是平台内的记账与路由逻辑；链上稳定币、外部 x402 生态需要额外的网关或商户接入才可以打通——可作为后续「商户网络」产品迭代。\n\n若未来启用「商户入驻」，可由平台统一发放 merchantId 并与 KYC 绑定；现阶段以手动配置为主。",
     },
     dashboard: {
       title: "仪表盘",
-      subtitle: "AI 支付运营总览",
+      subtitle: "AgentTrust Pay 运营总览",
       totalBalance: "总余额 (GUSD)",
       todaySpend: "今日支出 (GUSD)",
       successRate: "支付成功率",
@@ -759,14 +764,15 @@ const messages: Record<Locale, DictObject> = {
       ok: "OK",
     },
     landing: {
-      brand: "AI Pay",
+      brand: "AgentTrust Pay",
+      brandZh: "可信付",
       navIntegration: "Integration guide",
       navLogin: "Sign in",
       navRegister: "Register",
-      heroEyebrow: "AI-native payments",
-      heroTitle: "Let agents pay safely. Let teams control money.",
+      heroEyebrow: "AgentTrust Pay · 可信付",
+      heroTitle: "Trusted payment rails built for agents",
       heroSubtitle:
-        "DIDs, VA wallets, subscriptions, fiat & stablecoin rails, reconciliation, and RBAC. Developers integrate via HTTP APIs; operators use the console for top-up, authorization, and plans.",
+        "DIDs, signatures, VA float, allowlists, reconciliation, and RBAC. Outbound pay targets are merchantId strings you configure in this platform—not every random “crypto‑accepting shop” on the internet. A future merchant directory/onboarding can formalize IDs; today it’s tenant-defined allowlists plus this platform’s pay API.",
       ctaLogin: "Open console",
       ctaRegister: "Create account",
       ctaIntegration: "Read integration guide (no login)",
@@ -778,7 +784,7 @@ const messages: Record<Locale, DictObject> = {
         "Register DIDs, bind Ed25519 keys, and call the same contract as the console (OpenAPI).",
       featureBillingTitle: "Billing & collection",
       featureBillingDesc:
-        "Admins launch Stripe from our console to pay AI Pay’s subscription fee; payment links credit a VA. Bridge KYC/fiat VA lives in the admin billing panel when keys/env allow.",
+        "Admins launch Stripe from our console to pay AgentTrust Pay’s platform fee; payment links credit a VA. Bridge KYC/fiat VA lives in the admin billing panel when keys/env allow.",
       featureRiskTitle: "Limits & allowlists",
       featureRiskDesc:
         "Per-agent single/day limits and merchant allowlists, combined with roles to prevent misuse.",
@@ -818,7 +824,7 @@ const messages: Record<Locale, DictObject> = {
         "Most operators don’t “build” checkout: an admin clicks Billing to open a Stripe session for our platform fee. Higher tiers unlock capabilities and quotas—you’re not embedding Stripe Checkout on your own site as the product model here.",
       platformCheckoutTitle: "Who clicks subscription / payment link?",
       platformCheckoutBody:
-        "Stripe sessions in this console pay AI Pay (platform) or use payment links to credit a VA. Agent outbound spend is separate: VA top-up + x402 pay APIs—it does not flow through your Stripe subscription price.",
+        "Stripe sessions in this console pay AgentTrust Pay (platform) or use payment links to credit a VA. Agent outbound spend is separate: VA top-up + this platform’s signed pay API—it does not flow through your Stripe subscription price.",
       sectionMoneyLines: "Diagram: three fund flows",
       sectionMoneyLinesLead: "Arrows show sequence or dependency, not one payment splitting three ways.",
       moneyLinePillPlatform: "To platform",
@@ -882,7 +888,7 @@ const messages: Record<Locale, DictObject> = {
         "Need private deployment, compliance extensions, or custom pricing? Sign in and work with your admin, or reach out via commercial channels.",
       enterpriseCtaLogin: "Sign in & contact admin",
       enterpriseCtaDoc: "Read integration guide first",
-      footer: "© AI Pay · Switch Chinese/English via the header language control",
+      footer: "© AgentTrust Pay · Switch Chinese/English via the header language control",
     },
     nav: {
       home: "Home",
@@ -922,15 +928,16 @@ const messages: Record<Locale, DictObject> = {
       actionRunReversalChecklist: "Open reversal troubleshooting guide",
     },
     app: {
-      title: "AI Pay Console",
-      subtitle: "MVP Operations Panel",
+      title: "AgentTrust Pay",
+      titleZh: "可信付",
+      subtitle: "Agent-native payments · ops console",
       controlCenter: "Control Center",
       aiNative: "AI-native Payments",
       language: "Language",
       role: "Role",
     },
     login: {
-      title: "AI Pay Login",
+      title: "Sign in to AgentTrust Pay",
       subtitle: "Sign in with admin or registered user account",
       username: "Username",
       password: "Password",
@@ -986,7 +993,7 @@ const messages: Record<Locale, DictObject> = {
         "Beginner-friendly flow on this page: account → top-up → authorize → pay via API; technical contracts and repo paths are below.",
       flowTitle: "1) Money and “payment capability”",
       flowIntro:
-        "Treat each Agent as having a VA wallet. A payment succeeds only when there is balance, an ACTIVE authorization rule, the merchantId is whitelisted, limits allow the amount, and you sign with the Agent private key. Org subscription payments are product fees to the platform; VA top-up credits spendable balance for the Agent.",
+        "Treat each Agent as having a VA wallet. A payment succeeds only when there is balance, an ACTIVE authorization rule, the merchantId is whitelisted, limits allow the amount, and you sign with the Agent private key. Subscription checkout pays AgentTrust Pay; VA top-up is float for outbound pay.",
       step1Title: "1. Register the Agent and create the account",
       step1Body:
         "Use Agents in the console (did:gusd:agent:…) to generate keys and create the VA. Via API: POST /agent/did/register then POST /account/create.",
@@ -995,10 +1002,10 @@ const messages: Record<Locale, DictObject> = {
         "Use Recharge in the console or POST /fund/recharge. Without enough available balance, pay fails with insufficient balance (PAY-003)—independent of subscription purchase.",
       step3Title: "3. Authorization: limits + merchant whitelist",
       step3Body:
-        "On Authorize, set single/day limits and whitelist merchantIds. Missing/frozen rules or non-whitelisted merchants will reject payment.",
+        "On Authorize, set single/day limits and whitelist merchantId strings (agree the ID with your counterparty—no platform signup required today; a merchant directory may come later). Missing/frozen rules or unknown merchantIds reject the pay call.",
       step4Title: "4. Call pay API with the private key",
       step4Body:
-        "Automations hit the backend directly: POST /payment/x402/pay with Idempotency-Key, X-Sign-Timestamp, and an Ed25519 signature from the registered key. Browser traffic uses /api/backend/* with tenant headers from the session.",
+        "Call this platform’s HTTP pay API (e.g. POST /payment/x402/pay) with Idempotency-Key, X-Sign-Timestamp, and an Ed25519 signature. That is in-platform settlement semantics—it does not auto-connect to every “stablecoin merchant” on the public internet; on-chain or external x402 interop needs extra adapters. Browser traffic uses /api/backend/* with tenant headers from the session.",
       step5Title: "5. Track results",
       step5Body:
         "Keep the transactionId; review Transactions or GET /payment/status/query (some paths may show SETTLING before SETTLED).",
@@ -1036,10 +1043,13 @@ const messages: Record<Locale, DictObject> = {
       ctaLoginTransactions: "Sign in → Transactions",
       ctaLoginDeveloper: "Sign in → Developer",
       ctaLoginSettings: "Sign in → Settings",
+      merchantIdTitle: "Where do merchantIds come from? Do payees need to sign up?",
+      merchantIdBody:
+        "merchantId is a string your tenant puts in the allowlist (e.g. api_vendor_a). Today payees do not have to create an account on this platform—agree the ID with your business partner and paste it into Authorize. With balance in VA, the Agent can pay that merchantId via the signed API.\n\nThis is not “any shop that accepts stablecoins worldwide”: this repo implements clearing inside our stack; bridging to arbitrary chains or third‑party x402 networks is a future integration layer.\n\nOptional later: merchant onboarding to issue official merchantIds tied to KYC.",
     },
     dashboard: {
       title: "Dashboard",
-      subtitle: "Overview for AI payment operations",
+      subtitle: "AgentTrust Pay operations overview",
       totalBalance: "Total Balance (GUSD)",
       todaySpend: "Today Spend (GUSD)",
       successRate: "Payment Success Rate",

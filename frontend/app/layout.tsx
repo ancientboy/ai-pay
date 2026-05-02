@@ -18,8 +18,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AI Pay Console",
-  description: "AI payment operations console",
+  title: "AgentTrust Pay 可信付",
+  description: "AgentTrust Pay — trusted payments and treasury rails for agents.",
 };
 
 export default async function RootLayout({
