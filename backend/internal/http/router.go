@@ -218,6 +218,14 @@ type billingCheckoutCreateReq struct {
 func (s *Server) handleBillingPlans(w http.ResponseWriter, r *http.Request) {
 	plans := []billingPlan{
 		{
+			Code:           "free",
+			Name:           "Free",
+			Description:    "Try Agent pay APIs and VA top-up without platform subscription checkout",
+			PriceMonthly:   "0",
+			Currency:       "USD",
+			SupportedRails: []string{"fiat", "stablecoin"},
+		},
+		{
 			Code:           "starter",
 			Name:           "Starter",
 			Description:    "For PoC and small pilot workloads",

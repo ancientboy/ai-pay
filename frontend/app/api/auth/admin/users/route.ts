@@ -8,7 +8,12 @@ import {
   updateUserPlan,
   upsertUser,
 } from "@/lib/auth-users";
-import { getPlanCapabilities, isValidPlan, type PlanCode } from "@/lib/plan-capabilities";
+import {
+  getDefaultPlanForSignup,
+  getPlanCapabilities,
+  isValidPlan,
+  type PlanCode,
+} from "@/lib/plan-capabilities";
 import { appendAdminAuditLog, listAdminAuditLogs } from "@/lib/admin-audit-log";
 
 function isEnglish(request: NextRequest) {
@@ -31,8 +36,8 @@ function authMessage(request: NextRequest, code: "AUTH-006" | "AUTH-004" | "AUTH
 
 function authMessagePlan(request: NextRequest) {
   return isEnglish(request)
-    ? "Plan must be one of: starter, growth, enterprise"
-    : "套餐必须是 starter、growth、enterprise 之一";
+    ? "Plan must be one of: free, starter, growth, enterprise"
+    : "套餐必须是 free、starter、growth、enterprise 之一";
 }
 
 function isValidUsername(username: string) {
@@ -114,7 +119,7 @@ export async function POST(request: NextRequest) {
       password,
       role,
       tenantId,
-      plan: plan ?? "starter",
+      plan: plan ?? getDefaultPlanForSignup(),
     });
     if (!created.ok) {
       return NextResponse.json(
@@ -126,7 +131,7 @@ export async function POST(request: NextRequest) {
       actor: adminActor,
       action: "admin.user.create",
       targetUsername: username,
-      detail: { role, tenantId, plan: plan ?? "starter" },
+      detail: { role, tenantId, plan: plan ?? getDefaultPlanForSignup() },
     });
     return NextResponse.json({ code: "0", message: "ok" });
   }

@@ -65,9 +65,38 @@ const messages: Record<Locale, DictObject> = {
       personaOperatorTitle: "配 Agent、充值、授权与日常支付",
       personaOperatorDesc:
         "创建 Agent、VA 充值、配置授权规则并查看交易；不创建组织级结账。",
-      sectionPricing: "订阅套餐",
-      sectionPricingLead: "以下为平台服务费档位；Agent 可支付余额需单独通过 VA 充值入账。",
+      sectionPricing: "套餐与价格",
+      sectionPricingLead:
+        "平台费（下表）与「给 VA 充钱、让 Agent 实际可支付」是两条线：后者走充值/联调，不随订阅自动送余额。",
+      sectionCompare: "各档能做什么",
+      sectionCompareLead:
+        "下表与代码中 `plan-capabilities` 一致；未列能力（如部分 M6/M7 实验开关）由部署环境决定。",
+      compareFeatureCol: "能力",
+      compareFree: "Free",
+      compareStarter: "Starter",
+      compareGrowth: "Growth",
+      compareEnterprise: "Enterprise",
+      compareYes: "有",
+      compareNo: "无",
+      compareOneAgent: "1 个 Agent",
+      compareUnlimitedAgents: "不限制（受后端/运维约束）",
+      compareAdminOnly: "管理员",
+      compareRowAgentPay: "Agent 签名支付 API（x402）",
+      compareRowVaTopup: "VA 充值入账（联调/接口）",
+      compareRowAgentLimit: "控制台创建 Agent 数量",
+      compareRowStripeSub: "平台内 Stripe 订阅结账（组织付费给我们）",
+      compareRowPaymentLink: "支付链接充值（入账 VA）",
+      compareRowBridgeAdmin: "Bridge KYC / VA 开户面板",
+      compareFootnote:
+        "Free 档 Agent 数量上限由控制台代理强制（当前为后端全局列表计数；生产多租户建议在服务端按租户计数）。",
       linkIntegrationDoc: "查看完整接入与充值→支付流程",
+      planFreePrice: "¥0",
+      planFreeDesc: "试用接入：单 Agent + 完整充值与支付 API",
+      planFreeB1: "1 个 Agent（第二个需升级）",
+      planFreeB2: "VA 充值 + 授权 + 支付 API",
+      planFreeB3: "不含平台订阅 / 支付链接结账（需升级 Starter+）",
+      buyFree: "免费注册开始",
+      planFreeFootnote: "注册即 Free；升级套餐请在登录后由管理员调整或使用 Starter/Growth 结账。",
       planStarterPrice: "$49/月",
       planStarterDesc: "适合 PoC 与小规模试运行",
       planStarterB1: "订阅收款与基础对账",
@@ -270,6 +299,9 @@ const messages: Record<Locale, DictObject> = {
     agents: {
       title: "Agent 管理",
       subtitle: "管理 Agent DID 与支付账户",
+      freeTierHint:
+        "当前为免费版：最多 1 个 Agent（可完整走 VA 充值 + 授权 + 支付 API）。需要更多 Agent 或平台订阅结账请升级套餐。",
+      freeTierBlockedTitle: "免费版仅支持 1 个 Agent，请升级套餐",
       createPlaceholder: "did:gusd:agent:your_agent_name",
       create: "创建 Agent",
       noAgents: "暂无 Agent，请先创建",
@@ -501,6 +533,9 @@ const messages: Record<Locale, DictObject> = {
       subtitle: "按能力路由展示法币与稳定币收款入口；法币订阅可走 Stripe Checkout 真实闭环（需配置密钥与 Price）。",
       titleTenant: "账单与对账",
       subtitleTenant: "查看当前租户订阅状态与对账明细；组织级收款通道与 Bridge 开户仅管理员可操作。",
+      freeTierBillingHint:
+        "当前套餐标记为「免费」：可使用 VA 充值与 Agent 支付 API；不能在平台内发起 Stripe 订阅/支付链接结账，请在开发者中心将套餐升为 Starter 及以上。",
+      freeTierCheckoutDisabledTitle: "免费版不包含平台结账能力，请升级套餐",
       tenantPlanHint: "租户：{tenant} · 套餐：{plan} · 角色：{role}",
       planCapabilitiesHint: "当前套餐能力：{caps}",
       tenantAdminHint:
@@ -721,10 +756,39 @@ const messages: Record<Locale, DictObject> = {
       personaOperatorTitle: "Agents, top-up, authorize, day-to-day pays",
       personaOperatorDesc:
         "Create agents, credit VA, configure authorization rules, review transactions—without org-wide checkout.",
-      sectionPricing: "Plans",
+      sectionPricing: "Plans & pricing",
       sectionPricingLead:
-        "Platform subscription tiers below; agent spendable balance is credited separately via VA top-up.",
+        "Platform fees (below) are separate from crediting your VA: top-ups fund spendable balance and do not come from these subscriptions automatically.",
+      sectionCompare: "What each tier includes",
+      sectionCompareLead:
+        "Aligned with `plan-capabilities` in code; feature flags (e.g. M6/M7) still depend on deployment.",
+      compareFeatureCol: "Capability",
+      compareFree: "Free",
+      compareStarter: "Starter",
+      compareGrowth: "Growth",
+      compareEnterprise: "Enterprise",
+      compareYes: "Yes",
+      compareNo: "No",
+      compareOneAgent: "1 agent",
+      compareUnlimitedAgents: "Unlimited (ops/back-end limits apply)",
+      compareAdminOnly: "Admin",
+      compareRowAgentPay: "Agent signed pay API (x402)",
+      compareRowVaTopup: "VA top-up (API / console)",
+      compareRowAgentLimit: "Agents creatable in console",
+      compareRowStripeSub: "In-console Stripe subscription checkout (pay platform)",
+      compareRowPaymentLink: "Payment-link top-up (credit VA)",
+      compareRowBridgeAdmin: "Bridge KYC / VA onboarding panel",
+      compareFootnote:
+        "Free tier enforces a single agent via the console proxy (global list today; production should count per tenant server-side).",
       linkIntegrationDoc: "See full top-up → pay flow",
+      planFreePrice: "$0",
+      planFreeDesc: "Try the stack: one agent + full top-up and pay APIs",
+      planFreeB1: "1 agent (upgrade for more)",
+      planFreeB2: "VA top-up, authorize, pay API",
+      planFreeB3: "No org Stripe subscription / payment-link checkout (upgrade to Starter+)",
+      buyFree: "Register free",
+      planFreeFootnote:
+        "New users default to Free; admins can change plan in Developer, or use Starter/Growth checkout after login.",
       planStarterPrice: "$49/mo",
       planStarterDesc: "PoCs and small pilots",
       planStarterB1: "Subscription billing & basic reconciliation",
@@ -929,6 +993,9 @@ const messages: Record<Locale, DictObject> = {
     agents: {
       title: "Agents",
       subtitle: "Manage Agent DID and linked payment accounts",
+      freeTierHint:
+        "Free tier: up to 1 Agent (full VA top-up, authorize, and pay API). Upgrade for more agents or org Stripe checkout.",
+      freeTierBlockedTitle: "Free tier allows only one agent — upgrade to add more",
       createPlaceholder: "did:gusd:agent:your_agent_name",
       create: "Create Agent",
       noAgents: "No agents yet. Create your first one.",
@@ -1162,6 +1229,9 @@ const messages: Record<Locale, DictObject> = {
       titleTenant: "Billing & reconciliation",
       subtitleTenant:
         "Review subscription status and reconciliation for your tenant. Org-wide checkout and Bridge onboarding are admin-only.",
+      freeTierBillingHint:
+        "Free plan: VA top-up and Agent pay APIs are available; Stripe subscription/payment-link checkout here stays disabled until an admin upgrades the tenant to Starter or higher.",
+      freeTierCheckoutDisabledTitle: "Checkout is not included on Free — upgrade plan",
       tenantPlanHint: "Tenant: {tenant} · Plan: {plan} · Role: {role}",
       planCapabilitiesHint: "Plan capabilities: {caps}",
       tenantAdminHint:

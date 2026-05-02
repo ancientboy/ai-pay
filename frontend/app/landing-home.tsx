@@ -6,12 +6,22 @@ import { PublicHeader } from "@/components/public-header";
 
 const plans = [
   {
+    code: "free" as const,
+    name: "Free",
+    priceKey: "landing.planFreePrice",
+    descKey: "landing.planFreeDesc",
+    bulletKeys: ["landing.planFreeB1", "landing.planFreeB2", "landing.planFreeB3"] as const,
+    buyLabelKey: "landing.buyFree",
+    variant: "free" as const,
+  },
+  {
     code: "starter" as const,
     name: "Starter",
     priceKey: "landing.planStarterPrice",
     descKey: "landing.planStarterDesc",
     bulletKeys: ["landing.planStarterB1", "landing.planStarterB2", "landing.planStarterB3"] as const,
     buyLabelKey: "landing.buyStarter",
+    variant: "paid" as const,
   },
   {
     code: "growth" as const,
@@ -20,6 +30,7 @@ const plans = [
     descKey: "landing.planGrowthDesc",
     bulletKeys: ["landing.planGrowthB1", "landing.planGrowthB2", "landing.planGrowthB3"] as const,
     buyLabelKey: "landing.buyGrowth",
+    variant: "paid" as const,
   },
   {
     code: "enterprise" as const,
@@ -28,6 +39,7 @@ const plans = [
     descKey: "landing.planEnterpriseDesc",
     bulletKeys: ["landing.planEnterpriseB1", "landing.planEnterpriseB2", "landing.planEnterpriseB3"] as const,
     buyLabelKey: "landing.buyEnterprise",
+    variant: "paid" as const,
   },
 ] as const;
 
@@ -103,6 +115,69 @@ export function LandingHome() {
         </div>
       </section>
 
+      <section className="mx-auto max-w-6xl px-6 py-12 md:py-16">
+        <h2 className="text-xl font-semibold text-white">{t("landing.sectionCompare")}</h2>
+        <p className="mt-2 max-w-3xl text-sm text-slate-400">{t("landing.sectionCompareLead")}</p>
+        <div className="mt-8 overflow-x-auto rounded-xl border border-slate-800">
+          <table className="min-w-[720px] w-full border-collapse text-left text-sm">
+            <thead>
+              <tr className="border-b border-slate-800 bg-slate-900/80 text-xs uppercase tracking-wide text-slate-500">
+                <th className="px-4 py-3">{t("landing.compareFeatureCol")}</th>
+                <th className="px-4 py-3">{t("landing.compareFree")}</th>
+                <th className="px-4 py-3">{t("landing.compareStarter")}</th>
+                <th className="px-4 py-3">{t("landing.compareGrowth")}</th>
+                <th className="px-4 py-3">{t("landing.compareEnterprise")}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800 text-slate-300">
+              <tr className="bg-slate-950/40">
+                <td className="px-4 py-3 text-slate-400">{t("landing.compareRowAgentPay")}</td>
+                <td className="px-4 py-3 text-emerald-400">{t("landing.compareYes")}</td>
+                <td className="px-4 py-3 text-emerald-400">{t("landing.compareYes")}</td>
+                <td className="px-4 py-3 text-emerald-400">{t("landing.compareYes")}</td>
+                <td className="px-4 py-3 text-emerald-400">{t("landing.compareYes")}</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 text-slate-400">{t("landing.compareRowVaTopup")}</td>
+                <td className="px-4 py-3 text-emerald-400">{t("landing.compareYes")}</td>
+                <td className="px-4 py-3 text-emerald-400">{t("landing.compareYes")}</td>
+                <td className="px-4 py-3 text-emerald-400">{t("landing.compareYes")}</td>
+                <td className="px-4 py-3 text-emerald-400">{t("landing.compareYes")}</td>
+              </tr>
+              <tr className="bg-slate-950/40">
+                <td className="px-4 py-3 text-slate-400">{t("landing.compareRowAgentLimit")}</td>
+                <td className="px-4 py-3">{t("landing.compareOneAgent")}</td>
+                <td className="px-4 py-3">{t("landing.compareUnlimitedAgents")}</td>
+                <td className="px-4 py-3">{t("landing.compareUnlimitedAgents")}</td>
+                <td className="px-4 py-3">{t("landing.compareUnlimitedAgents")}</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 text-slate-400">{t("landing.compareRowStripeSub")}</td>
+                <td className="px-4 py-3 text-rose-400/90">{t("landing.compareNo")}</td>
+                <td className="px-4 py-3 text-emerald-400">{t("landing.compareYes")}</td>
+                <td className="px-4 py-3 text-emerald-400">{t("landing.compareYes")}</td>
+                <td className="px-4 py-3 text-emerald-400">{t("landing.compareYes")}</td>
+              </tr>
+              <tr className="bg-slate-950/40">
+                <td className="px-4 py-3 text-slate-400">{t("landing.compareRowPaymentLink")}</td>
+                <td className="px-4 py-3 text-rose-400/90">{t("landing.compareNo")}</td>
+                <td className="px-4 py-3 text-rose-400/90">{t("landing.compareNo")}</td>
+                <td className="px-4 py-3 text-emerald-400">{t("landing.compareYes")}</td>
+                <td className="px-4 py-3 text-emerald-400">{t("landing.compareYes")}</td>
+              </tr>
+              <tr>
+                <td className="px-4 py-3 text-slate-400">{t("landing.compareRowBridgeAdmin")}</td>
+                <td className="px-4 py-3 text-slate-500">{t("landing.compareAdminOnly")}</td>
+                <td className="px-4 py-3 text-slate-500">{t("landing.compareAdminOnly")}</td>
+                <td className="px-4 py-3 text-slate-500">{t("landing.compareAdminOnly")}</td>
+                <td className="px-4 py-3 text-slate-500">{t("landing.compareAdminOnly")}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-4 text-xs text-slate-500">{t("landing.compareFootnote")}</p>
+      </section>
+
       <section className="border-y border-slate-800/80 bg-slate-900/40 py-16 md:py-20">
         <div className="mx-auto max-w-6xl px-6">
           <h2 className="text-xl font-semibold text-white">{t("landing.sectionPersonas")}</h2>
@@ -134,12 +209,14 @@ export function LandingHome() {
             {t("landing.linkIntegrationDoc")} →
           </Link>
         </div>
-        <div className="mt-10 grid gap-6 md:grid-cols-3">
+        <div className="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
           {plans.map((plan) => (
             <article
               key={plan.code}
               className={`flex flex-col rounded-2xl border p-6 ${
-                plan.code === "growth"
+                plan.variant === "free"
+                  ? "border-emerald-600/35 bg-emerald-950/15 ring-1 ring-emerald-600/20"
+                  : plan.code === "growth"
                   ? "border-blue-500/40 bg-slate-900/90 shadow-lg shadow-blue-900/10 ring-1 ring-blue-500/20"
                   : "border-slate-800 bg-slate-900/60"
               }`}
@@ -158,7 +235,14 @@ export function LandingHome() {
                 ))}
               </ul>
               <div className="mt-8">
-                {plan.code === "enterprise" ? (
+                {plan.code === "free" ? (
+                  <Link
+                    href="/register"
+                    className="inline-flex w-full items-center justify-center rounded-lg border border-emerald-600/50 bg-emerald-950/40 px-4 py-2.5 text-sm font-medium text-emerald-100 hover:bg-emerald-950/60"
+                  >
+                    {t(plan.buyLabelKey)}
+                  </Link>
+                ) : plan.code === "enterprise" ? (
                   <Link
                     href="#enterprise-contact"
                     className="inline-flex w-full items-center justify-center rounded-lg border border-slate-600 bg-slate-800/50 px-4 py-2.5 text-sm font-medium text-slate-100 hover:bg-slate-800"
@@ -174,7 +258,11 @@ export function LandingHome() {
                   </Link>
                 )}
                 <p className="mt-3 text-center text-[11px] leading-relaxed text-slate-500">
-                  {plan.code === "enterprise" ? t("landing.planEnterpriseFootnote") : t("landing.planCheckoutHint")}
+                  {plan.code === "enterprise"
+                    ? t("landing.planEnterpriseFootnote")
+                    : plan.code === "free"
+                      ? t("landing.planFreeFootnote")
+                      : t("landing.planCheckoutHint")}
                 </p>
               </div>
             </article>

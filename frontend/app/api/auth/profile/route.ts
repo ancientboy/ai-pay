@@ -1,14 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseSessionToken, SESSION_COOKIE_NAME } from "@/lib/session";
 import { findUserByUsername, updateUserPlan } from "@/lib/auth-users";
-import { getPlanCapabilities, type PlanCode } from "@/lib/plan-capabilities";
-
-function normalizeSubscriptionPlan(planCode?: string | null): PlanCode {
-  if (planCode === "growth" || planCode === "enterprise") {
-    return planCode;
-  }
-  return "starter";
-}
+import {
+  getPlanCapabilities,
+  normalizePlanCode,
+  type PlanCode,
+} from "@/lib/plan-capabilities";
 
 export async function GET(request: NextRequest) {
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
@@ -17,11 +14,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ code: "AUTH-001", message: "unauthorized" }, { status: 401 });
   }
   const username = claims.sub;
-  let plan = normalizeSubscriptionPlan(claims.planCode);
   const user = await findUserByUsername(username);
-  if (user?.planCode) {
-    plan = normalizeSubscriptionPlan(user.planCode);
-  }
+  let plan: PlanCode = normalizePlanCode(user?.planCode ?? claims.planCode);
 
   const backendBaseURL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8080";
   try {
@@ -39,12 +33,14 @@ export async function GET(request: NextRequest) {
       };
       const sub = payload?.data?.subscription;
       const active = sub?.status === "active";
-      const subscribedPlan = normalizeSubscriptionPlan(sub?.planCode);
-      const syncedPlan = active ? subscribedPlan : "starter";
-      if (syncedPlan !== plan) {
-        await updateUserPlan(username, syncedPlan);
-        plan = syncedPlan;
+      if (active && sub?.planCode) {
+        const subscribedPlan = normalizePlanCode(sub.planCode);
+        if (subscribedPlan !== plan) {
+          await updateUserPlan(username, subscribedPlan);
+          plan = subscribedPlan;
+        }
       }
+      // 无有效订阅时不强行写回 starter，保留用户档案中的 free/starter 等（避免误降级）
     }
   } catch {
     // keep last known plan on transient backend issues

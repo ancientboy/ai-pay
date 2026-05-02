@@ -8,7 +8,7 @@ export type SessionClaims = {
   sub: string;
   role?: string;
   tenantId?: string;
-  planCode?: "starter" | "growth" | "enterprise";
+  planCode?: "free" | "starter" | "growth" | "enterprise";
   iat: number;
   exp: number;
 };
@@ -80,7 +80,7 @@ export async function createSessionToken(
   options?: {
     role?: string;
     tenantId?: string;
-    planCode?: "starter" | "growth" | "enterprise";
+    planCode?: "free" | "starter" | "growth" | "enterprise";
   },
 ) {
   const now = Math.floor(Date.now() / 1000);

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseSessionToken, SESSION_COOKIE_NAME } from "@/lib/session";
-import { canUseFeature } from "@/lib/rbac";
+import { canRegisterAnotherAgent, canUseFeature } from "@/lib/rbac";
+import { normalizePlanCode } from "@/lib/plan-capabilities";
 
 function requireAdmin(claims: Awaited<ReturnType<typeof parseSessionToken>>) {
   if (claims?.role !== "admin") {
@@ -21,6 +22,26 @@ function resolveBaseURL(request: NextRequest) {
     return override;
   }
   return API_BASE_URL;
+}
+
+async function fetchAgentCount(baseURL: string, headers: Headers): Promise<number | null> {
+  try {
+    const res = await fetch(`${baseURL}/agent/list`, {
+      method: "GET",
+      headers,
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      return null;
+    }
+    const payload = (await res.json()) as { code?: string; data?: unknown };
+    if (payload.code !== "0" || !Array.isArray(payload.data)) {
+      return null;
+    }
+    return payload.data.length;
+  } catch {
+    return null;
+  }
 }
 
 async function proxy(request: NextRequest, path: string[]) {
@@ -55,6 +76,32 @@ async function proxy(request: NextRequest, path: string[]) {
     request.method === "GET" || request.method === "HEAD"
       ? undefined
       : await request.text();
+
+  const planForGate = normalizePlanCode(claims?.planCode);
+
+  // Free 档：限制 Agent 注册数量（基于后端全局 agent list；多租户生产环境需后端按租户计数）。
+  if (
+    request.method === "POST" &&
+    path.length === 3 &&
+    path[0] === "agent" &&
+    path[1] === "did" &&
+    path[2] === "register"
+  ) {
+    const count = await fetchAgentCount(baseURL, headers);
+    if (
+      count !== null &&
+      !canRegisterAnotherAgent(planForGate, count)
+    ) {
+      return NextResponse.json(
+        {
+          code: "AUTH-013",
+          message:
+            "免费版仅支持 1 个 Agent；请升级套餐以注册更多，或联系管理员调整套餐。",
+        },
+        { status: 403 },
+      );
+    }
+  }
 
   // Action-level RBAC guard on write APIs.
   if (request.method !== "GET" && request.method !== "HEAD") {
@@ -99,12 +146,15 @@ async function proxy(request: NextRequest, path: string[]) {
         ? "billing.payment_link.checkout"
         : "billing.subscription.checkout";
     if (!canUseFeature(claims?.role, claims?.planCode, feature)) {
+      const isPaymentLink = feature === "billing.payment_link.checkout";
+      const isFree = planForGate === "free";
       return NextResponse.json(
         {
           code: "AUTH-008",
-          message:
-            feature === "billing.payment_link.checkout"
-              ? "当前套餐暂不支持支付链接充值，请升级套餐"
+          message: isPaymentLink
+            ? "当前套餐暂不支持支付链接充值，请升级套餐"
+            : isFree
+              ? "免费版不包含平台订阅结账；请升级 Starter 及以上以通过 Stripe 购买订阅。"
               : "当前套餐暂不支持创建订阅结账，请升级套餐",
         },
         { status: 403 },

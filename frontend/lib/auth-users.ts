@@ -1,6 +1,8 @@
 import { createHash } from "crypto";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import path from "path";
+import type { PlanCode } from "@/lib/plan-capabilities";
+import { getDefaultPlanForSignup } from "@/lib/plan-capabilities";
 
 export type UserRole = "admin" | "operator" | "readonly";
 
@@ -9,7 +11,7 @@ export type StoredUser = {
   passwordHash: string;
   role: UserRole;
   tenantId?: string;
-  planCode?: "starter" | "growth" | "enterprise";
+  planCode?: PlanCode;
   createdAt: string;
   disabled?: boolean;
 };
@@ -94,7 +96,7 @@ export async function upsertUser(input: {
   password: string;
   role?: UserRole;
   tenantId?: string;
-  plan?: "starter" | "growth" | "enterprise";
+  plan?: PlanCode;
 }) {
   const normalized = normalizeUsername(input.username);
   if (!normalized) {
@@ -109,7 +111,7 @@ export async function upsertUser(input: {
     passwordHash: hashPassword(input.password),
     role: input.role ?? "operator",
     tenantId: input.tenantId?.trim() || process.env.AI_PAY_DEFAULT_TENANT_ID?.trim() || "tenant_default",
-    planCode: input.plan ?? "starter",
+    planCode: input.plan ?? getDefaultPlanForSignup(),
     createdAt: new Date().toISOString(),
     disabled: false,
   });
@@ -134,10 +136,7 @@ export async function updateUserRole(username: string, role: UserRole) {
   return { ok: true as const };
 }
 
-export async function updateUserPlan(
-  username: string,
-  planCode: "starter" | "growth" | "enterprise",
-) {
+export async function updateUserPlan(username: string, planCode: PlanCode) {
   const normalized = normalizeUsername(username);
   const store = await readUsersStore();
   const idx = store.users.findIndex((u) => normalizeUsername(u.username) === normalized);

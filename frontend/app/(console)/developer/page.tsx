@@ -52,7 +52,7 @@ type AdminUserItem = {
   username: string;
   role: "admin" | "operator" | "readonly";
   tenantId?: string;
-  planCode?: "starter" | "growth" | "enterprise";
+  planCode?: "free" | "starter" | "growth" | "enterprise";
   disabled: boolean;
   createdAt: string;
 };
@@ -79,7 +79,9 @@ export default function DeveloperPage() {
   const [newUserPassword, setNewUserPassword] = useState("");
   const [newUserRole, setNewUserRole] = useState<"operator" | "readonly">("operator");
   const [newUserTenant, setNewUserTenant] = useState("tenant_default");
-  const [newUserPlan, setNewUserPlan] = useState<"starter" | "growth" | "enterprise">("starter");
+  const [newUserPlan, setNewUserPlan] = useState<
+    "free" | "starter" | "growth" | "enterprise"
+  >("free");
   const pageSize = 10;
 
   const apiKeysQuery = useQuery({
@@ -225,7 +227,7 @@ export default function DeveloperPage() {
       password: string;
       role: "operator" | "readonly";
       tenantId?: string;
-      plan?: "starter" | "growth" | "enterprise";
+      plan?: "free" | "starter" | "growth" | "enterprise";
     }) =>
       adminCreateUser(input),
     onSuccess: () => {
@@ -233,7 +235,7 @@ export default function DeveloperPage() {
       setNewUserPassword("");
       setNewUserRole("operator");
       setNewUserTenant("tenant_default");
-      setNewUserPlan("starter");
+      setNewUserPlan("free");
       showToast("success", t("developer.userCreated"));
       queryClient.invalidateQueries({ queryKey: ["developer", "adminUsers"] });
       queryClient.invalidateQueries({ queryKey: ["developer", "adminUserAuditLogs"] });
@@ -261,8 +263,10 @@ export default function DeveloperPage() {
     onError: (err) => showToast("error", toReadableError(err, locale)),
   });
   const adminSetUserPlanMutation = useMutation({
-    mutationFn: (input: { username: string; plan: "starter" | "growth" | "enterprise" }) =>
-      adminSetUserPlan(input.username, input.plan),
+    mutationFn: (input: {
+      username: string;
+      plan: "free" | "starter" | "growth" | "enterprise";
+    }) => adminSetUserPlan(input.username, input.plan),
     onSuccess: () => {
       showToast("success", t("developer.userPlanUpdated"));
       queryClient.invalidateQueries({ queryKey: ["developer", "adminUsers"] });
@@ -342,10 +346,13 @@ export default function DeveloperPage() {
             <select
               value={newUserPlan}
               onChange={(e) =>
-                setNewUserPlan(e.target.value as "starter" | "growth" | "enterprise")
+                setNewUserPlan(
+                  e.target.value as "free" | "starter" | "growth" | "enterprise",
+                )
               }
               className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
             >
+              <option value="free">free</option>
               <option value="starter">starter</option>
               <option value="growth">growth</option>
               <option value="enterprise">enterprise</option>
@@ -390,15 +397,20 @@ export default function DeveloperPage() {
                     <td className="px-2 py-1">{user.tenantId ?? "tenant_default"}</td>
                     <td className="px-2 py-1">
                       <select
-                        value={user.planCode ?? "starter"}
+                        value={user.planCode ?? "free"}
                         onChange={(e) =>
                           adminSetUserPlanMutation.mutate({
                             username: user.username,
-                            plan: e.target.value as "starter" | "growth" | "enterprise",
+                            plan: e.target.value as
+                              | "free"
+                              | "starter"
+                              | "growth"
+                              | "enterprise",
                           })
                         }
                         className="rounded border border-slate-700 bg-slate-950 px-2 py-1"
                       >
+                        <option value="free">free</option>
                         <option value="starter">starter</option>
                         <option value="growth">growth</option>
                         <option value="enterprise">enterprise</option>

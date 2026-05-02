@@ -6,7 +6,8 @@ import { DetailModal } from "@/components/detail-modal";
 import { useLocale } from "@/components/locale-provider";
 import { useToast } from "@/components/toast-provider";
 import { ensureAgentSigningPublicKey } from "@/lib/agent-signature";
-import { createAccount, listAgents, registerAgent } from "@/lib/console-api";
+import { createAccount, getAuthProfile, listAgents, registerAgent } from "@/lib/console-api";
+import { FREE_TIER_MAX_AGENTS } from "@/lib/plan-capabilities";
 import { toReadableError } from "@/lib/error-map";
 import { formatStatus } from "@/lib/i18n";
 import { getValidationSchemas } from "@/lib/validation";
@@ -28,6 +29,12 @@ export default function AgentsPage() {
   const [agentDid, setAgentDid] = useState("");
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<AgentRow | null>(null);
+
+  const profileQuery = useQuery({
+    queryKey: ["auth-profile"],
+    queryFn: getAuthProfile,
+    staleTime: 60_000,
+  });
 
   const agentsQuery = useQuery({
     queryKey: ["agents"],
@@ -72,6 +79,11 @@ export default function AgentsPage() {
     },
   });
 
+  const subscriptionPlan = profileQuery.data?.subscriptionPlan ?? "starter";
+  const agentCount = agentsQuery.data?.length ?? 0;
+  const freeAtCapacity =
+    subscriptionPlan === "free" && agentCount >= FREE_TIER_MAX_AGENTS;
+
   return (
     <section className="space-y-6">
       <div>
@@ -79,6 +91,11 @@ export default function AgentsPage() {
         <p className="mt-1 text-sm text-slate-400">
           {t("agents.subtitle")}
         </p>
+        {subscriptionPlan === "free" ? (
+          <p className="mt-3 rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 text-xs text-slate-400">
+            {t("agents.freeTierHint")}
+          </p>
+        ) : null}
       </div>
 
       <div className="rounded-xl border border-slate-800 bg-slate-900 p-4">
@@ -101,7 +118,8 @@ export default function AgentsPage() {
             placeholder={t("agents.createPlaceholder")}
           />
           <button
-            disabled={createMutation.isPending}
+            disabled={createMutation.isPending || freeAtCapacity}
+            title={freeAtCapacity ? t("agents.freeTierBlockedTitle") : undefined}
             className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-60"
           >
             {t("agents.create")}

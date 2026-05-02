@@ -67,7 +67,9 @@ export default function BillingPage() {
   const [errorMessage, setErrorMessage] = useState("");
   const [sessionRole, setSessionRole] = useState<"admin" | "operator" | "readonly">("operator");
   const [tenantId, setTenantId] = useState("default");
-  const [subscriptionPlan, setSubscriptionPlan] = useState<"starter" | "growth" | "enterprise">("starter");
+  const [subscriptionPlan, setSubscriptionPlan] = useState<
+    "free" | "starter" | "growth" | "enterprise"
+  >("starter");
   const [planCapabilities, setPlanCapabilities] = useState<string[]>([]);
   const [bridgeKycName, setBridgeKycName] = useState("Demo User");
   const [bridgeKycEmail, setBridgeKycEmail] = useState("demo@example.com");
@@ -209,6 +211,7 @@ export default function BillingPage() {
   const reconMeta = reconciliationQuery.data?.meta;
   const canPrev = (reconMeta?.offset ?? 0) > 0;
   const canNext = (reconMeta?.offset ?? 0) + (reconMeta?.count ?? 0) < (reconMeta?.total ?? 0);
+  const checkoutBlockedForFreePlan = isAdmin && subscriptionPlan === "free";
   const copyContextMutation = useMutation({
     mutationFn: async () => {
       const contextPayload = {
@@ -313,6 +316,11 @@ export default function BillingPage() {
         <p className="mt-1 text-sm text-slate-400">
           {isAdmin ? t("billing.subtitle") : t("billing.subtitleTenant")}
         </p>
+        {isAdmin && subscriptionPlan === "free" ? (
+          <p className="mt-3 rounded-lg border border-amber-900/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-100/90">
+            {t("billing.freeTierBillingHint")}
+          </p>
+        ) : null}
         <p className="mt-1 text-xs text-slate-500">
           {t("billing.tenantPlanHint")
             .replace("{tenant}", tenantId)
@@ -435,7 +443,9 @@ export default function BillingPage() {
         ) : null}
 
         {isAdmin ? (
-        <article className="rounded-xl border border-slate-800 bg-slate-900 p-4">
+        <article
+          className={`rounded-xl border border-slate-800 bg-slate-900 p-4 ${checkoutBlockedForFreePlan ? "opacity-75" : ""}`}
+        >
           <h3 className="text-sm font-medium text-slate-200">{t("billing.checkoutTitle")}</h3>
           <div className="mt-3 space-y-2">
             <label className="block text-sm text-slate-300">
@@ -517,7 +527,10 @@ export default function BillingPage() {
                 }
                 checkoutMutation.mutate();
               }}
-              disabled={checkoutMutation.isPending}
+              disabled={checkoutMutation.isPending || checkoutBlockedForFreePlan}
+              title={
+                checkoutBlockedForFreePlan ? t("billing.freeTierCheckoutDisabledTitle") : undefined
+              }
               className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
             >
               {checkoutMutation.isPending ? t("common.loading") : t("billing.createCheckout")}

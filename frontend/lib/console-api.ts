@@ -86,13 +86,25 @@ export type AuthProfile = {
   username: string;
   role: "admin" | "operator" | "readonly";
   tenantId: string;
-  subscriptionPlan: "starter" | "growth" | "enterprise";
+  subscriptionPlan: "free" | "starter" | "growth" | "enterprise";
   planCapabilities: string[];
-  syncedFromBilling?: boolean;
 };
 
+async function fetchAuthProfile(): Promise<AuthProfile> {
+  const response = await fetch("/api/auth/profile", { credentials: "include" });
+  const payload = (await response.json()) as {
+    code?: string;
+    message?: string;
+    data?: AuthProfile;
+  };
+  if (!response.ok || payload.code !== "0" || !payload.data) {
+    throw new ApiClientError(payload.code || "AUTH-001", payload.message || "unauthorized");
+  }
+  return payload.data;
+}
+
 export function getAuthProfile() {
-  return request<AuthProfile>("/auth/profile");
+  return fetchAuthProfile();
 }
 
 export function registerAgent(agentDid: string, didPubKey?: string) {
@@ -572,7 +584,7 @@ export function adminSetUserRole(username: string, role: "admin" | "operator" | 
 }
 export function adminSetUserPlan(
   username: string,
-  plan: "starter" | "growth" | "enterprise",
+  plan: "free" | "starter" | "growth" | "enterprise",
 ) {
   return setAdminUserPlan({ username, plan });
 }
@@ -588,6 +600,8 @@ export function createAdminUser(input: {
   username: string;
   password: string;
   role: "operator" | "readonly";
+  tenantId?: string;
+  plan?: "free" | "starter" | "growth" | "enterprise";
 }) {
   return request("/auth/admin/users", {
     method: "POST",
@@ -621,7 +635,7 @@ export function setAdminUserRole(input: {
 
 export function setAdminUserPlan(input: {
   username: string;
-  plan: "starter" | "growth" | "enterprise";
+  plan: "free" | "starter" | "growth" | "enterprise";
 }) {
   return request("/auth/admin/users", {
     method: "POST",
@@ -775,7 +789,7 @@ export function createBridgeVirtualAccount(input: {
 
 export type TenantSummary = {
   tenantId: string;
-  planCode: "starter" | "growth" | "enterprise";
+  planCode: "free" | "starter" | "growth" | "enterprise";
   role: "admin" | "operator" | "readonly";
 };
 
@@ -815,7 +829,7 @@ export function getCurrentEntitlements() {
   return request<{
     tenantId: string;
     role: string;
-    plan: "starter" | "growth" | "enterprise";
+    plan: "free" | "starter" | "growth" | "enterprise";
     features: Record<string, boolean>;
   }>("/auth/entitlements");
 }

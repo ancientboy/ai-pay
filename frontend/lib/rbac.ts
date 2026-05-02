@@ -1,4 +1,10 @@
 import type { SessionClaims } from "@/lib/session";
+import {
+  FREE_TIER_MAX_AGENTS,
+  hasPlanCapability,
+  normalizePlanCode,
+  type PlanCode,
+} from "@/lib/plan-capabilities";
 
 const ALL_CONSOLE_ROUTES = [
   "/dashboard",
@@ -21,11 +27,8 @@ type Feature =
   | "billing.bridge.admin"
   | "billing.admin_full";
 
-function normalizePlan(plan?: string): "starter" | "growth" | "enterprise" {
-  if (plan === "growth" || plan === "enterprise") {
-    return plan;
-  }
-  return "starter";
+function normalizePlan(plan?: string): PlanCode {
+  return normalizePlanCode(plan);
 }
 
 function normalizeRole(role?: string): Role {
@@ -64,23 +67,54 @@ export function canUseFeature(
   feature: Feature,
 ) {
   const normalized = normalizeRole(role);
-  if (normalized === "admin") {
-    return true;
-  }
+  const planNorm = normalizePlan(plan);
+
   // Tenant-facing operators never manage org-wide billing checkout / Bridge admin flows.
-  if (
-    feature === "billing.subscription.checkout" ||
-    feature === "billing.payment_link.checkout" ||
-    feature === "billing.checkout.create" ||
-    feature === "billing.bridge.admin" ||
-    feature === "billing.admin_full"
-  ) {
+  if (normalized !== "admin") {
+    if (
+      feature === "billing.subscription.checkout" ||
+      feature === "billing.payment_link.checkout" ||
+      feature === "billing.checkout.create" ||
+      feature === "billing.bridge.admin" ||
+      feature === "billing.admin_full"
+    ) {
+      return false;
+    }
+    if (feature === "billing.reconciliation.export") {
+      return normalized !== "readonly";
+    }
     return false;
   }
-  if (feature === "billing.reconciliation.export") {
-    return normalized !== "readonly";
+
+  // Admin: billing capabilities depend on subscription tier (not bypassed).
+  if (feature === "billing.subscription.checkout") {
+    return hasPlanCapability(planNorm, "billing.subscription_checkout");
+  }
+  if (feature === "billing.payment_link.checkout") {
+    return hasPlanCapability(planNorm, "billing.payment_link_topup");
+  }
+  if (feature === "billing.checkout.create") {
+    return (
+      hasPlanCapability(planNorm, "billing.subscription_checkout") ||
+      hasPlanCapability(planNorm, "billing.payment_link_topup")
+    );
+  }
+  if (
+    feature === "billing.bridge.admin" ||
+    feature === "billing.admin_full" ||
+    feature === "billing.reconciliation.export"
+  ) {
+    return true;
   }
   return false;
+}
+
+export function canRegisterAnotherAgent(plan: string | undefined, currentAgentCount: number) {
+  const planNorm = normalizePlan(plan);
+  if (planNorm !== "free") {
+    return true;
+  }
+  return currentAgentCount < FREE_TIER_MAX_AGENTS;
 }
 
 export function canMutateBackendPath(

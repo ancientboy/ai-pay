@@ -21,6 +21,7 @@ const ERROR_MAP: Record<string, string> = {
   "AUTH-010": "管理员账号不能禁用",
   "AUTH-011": "管理员账号角色不可变更",
   "AUTH-012": "当前角色不允许执行此写操作",
+  "AUTH-013": "免费版仅支持 1 个 Agent，请升级套餐后重试",
 };
 
 const ERROR_MAP_EN: Record<string, string> = {
@@ -46,6 +47,7 @@ const ERROR_MAP_EN: Record<string, string> = {
   "AUTH-010": "Administrator account cannot be disabled",
   "AUTH-011": "Administrator role cannot be changed",
   "AUTH-012": "Current role is not allowed to perform this write action",
+  "AUTH-013": "Free tier allows only one agent; upgrade your plan to add more",
 };
 
 export class ApiClientError extends Error {
