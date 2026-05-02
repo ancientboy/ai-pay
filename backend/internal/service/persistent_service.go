@@ -667,6 +667,14 @@ WHERE agent_did = ?
 		if err := s.store.Redis.Set(ctx, idemKey, txnID, 24*time.Hour).Err(); err != nil {
 			return PayResponse{}, &APIError{Code: "PAY-010", Message: "idempotency write failed"}
 		}
+		notifyExternalSettling(SettlingWebhookPayload{
+			TransactionID:    txnID,
+			AgentDid:         req.PayerDID,
+			MerchantID:       req.MerchantID,
+			Amount:           req.Amount,
+			IdempotencyKey:   req.IdempotencyKey,
+			SignTimestampRFC: strings.TrimSpace(req.SignTimestamp),
+		})
 		return PayResponse{TransactionID: txnID, Status: "SETTLING"}, nil
 	}
 	if err := s.debitHoldTx(tx, holdID); err != nil {

@@ -8,7 +8,8 @@
 - `frontend/`: 控制台（Next.js + TypeScript）
 - `scripts/`: 一键启动/状态/停止脚本
 - `GUSD-开放AI支付系统-全整合版.md`: 产品与商业化总文档
-- `docs/API_INTEGRATION.md`: 外部 Agent / 服务端接入说明（Base URL、签名、示例）
+- `docs/API_INTEGRATION.md`: 外部 Agent / 服务端接入说明（Base URL、签名、示例）  
+  - 含 **外部稳定币 / x402 中继**：`merchantId` 配 `ASYNC` 通道 + 环境变量 `EXTERNAL_SETTLEMENT_WEBHOOK_URL`，Webhook 通知中继，中继完成后调 `POST /payment/status/callback`
 - 前端公开接入页（无需登录）：部署后访问 `/docs/integration`（与控制台「API 集成」内容一致）
 - 套餐与能力键：`frontend/lib/plan-capabilities.ts`（`free`：VA 充值 + Agent 支付，限 1 Agent；Starter+ 含 Bridge 开户资格 `billing.bridge_onboarding`，仍须 Bridge KYC 与 `BRIDGE_API_KEY`；付费档 Agent 数量不限制）
 - `examples/node-agent-pay/`: Node 脚本示例（注册 Agent → 支付最小闭环）
