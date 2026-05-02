@@ -310,7 +310,7 @@ const messages: Record<Locale, DictObject> = {
       ctaLoginSettings: "登录后：设置",
       merchantIdTitle: "收款方 merchantId 从哪里来？要不要商户入驻？",
       merchantIdBody:
-        "merchantId 是本平台授权规则里使用的「收款方标识」字符串，由租户管理员与业务方约定（例如 api_vendor_a、partner_store_01）。当前不要求收款方必须在本平台单独注册账号；你只要把约定的 ID 写进白名单，且 VA 有余额，Agent 即可向该 merchantId 发起签名支付。\n\n这与「全世界只要支持稳定币或 x402 的商家都能被扣款」不同：本仓库里的支付是平台内的记账与路由逻辑；链上稳定币、外部 x402 生态需要额外的网关或商户接入才可以打通——可作为后续「商户网络」产品迭代。\n\n若未来启用「商户入驻」，可由平台统一发放 merchantId 并与 KYC 绑定；现阶段以手动配置为主。",
+        "merchantId 是授权白名单里的收款方标识。要让资金对应真实链上或外部 x402 商户：① 在开发者中心为该 merchantId 将通道路由设为 ASYNC（异步结算）；② 配置后端 EXTERNAL_SETTLEMENT_WEBHOOK_URL 指向你们的中继服务；③ 中继收到 payment.settling 通知后完成链上转账或调用对方 x402，再调用本服务 POST /payment/status/callback 将订单置为 SETTLED 或 FAILED（需 CALLBACK_TOKEN 等）。同一 merchantId 也可用同步模式做平台内记账联调。\n\n链与协议各不相同，没有「自动接通全世界商户」的单一接口；上述中继模式把授权与 VA 风控留在平台，把具体链/x402 对接放在可演进的中继里。详见 docs/API_INTEGRATION.md。\n\n未来可做商户入驻目录，由平台统一发放 merchantId。",
     },
     dashboard: {
       title: "仪表盘",
@@ -1045,7 +1045,7 @@ const messages: Record<Locale, DictObject> = {
       ctaLoginSettings: "Sign in → Settings",
       merchantIdTitle: "Where do merchantIds come from? Do payees need to sign up?",
       merchantIdBody:
-        "merchantId is a string your tenant puts in the allowlist (e.g. api_vendor_a). Today payees do not have to create an account on this platform—agree the ID with your business partner and paste it into Authorize. With balance in VA, the Agent can pay that merchantId via the signed API.\n\nThis is not “any shop that accepts stablecoins worldwide”: this repo implements clearing inside our stack; bridging to arbitrary chains or third‑party x402 networks is a future integration layer.\n\nOptional later: merchant onboarding to issue official merchantIds tied to KYC.",
+        "merchantId is your allowlisted payee id. To settle against real on-chain or external x402 endpoints: (1) set channel route for that merchantId to ASYNC in Developer; (2) set EXTERNAL_SETTLEMENT_WEBHOOK_URL to your relay; (3) the relay receives payment.settling, performs chain transfer or calls the counterparty x402 API, then POSTs /payment/status/callback with SETTLED or FAILED (CALLBACK_TOKEN, etc.). Use sync routing for in-platform ledger tests.\n\nThere is no single API that auto-connects every global merchant—each chain/protocol needs an adapter; the relay pattern keeps auth + VA risk here and puts chain/x402 specifics in your service. See docs/API_INTEGRATION.md.\n\nOptional later: merchant directory with issued merchantIds.",
     },
     dashboard: {
       title: "Dashboard",

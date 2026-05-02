@@ -12,6 +12,32 @@
 
 对外集成应直连 Go 服务端口；控制台「设置」里的 API 地址仅影响浏览器内代理。
 
+## 1.1 外部稳定币商户与 x402 生态如何接通（中继模式）
+
+本服务的 **`POST /payment/x402/pay`** 先把 VA 余额 **冻结**，再根据「通道路由」决定是即时扣款入账（同步）还是进入 **SETTLING**（异步，留给链上或外部协议完成结算）。
+
+要让一笔支付驱动 **真实链上转账** 或 **调用外部 x402 收款方**，推荐架构：
+
+1. **为对应 `merchantId` 配置异步通道**  
+   使用开发者接口 `PUT /developer/channel-routes`（见 `openapi.yaml`），将该 `merchantId` 的 `mode` 设为 **`ASYNC`**。  
+   （测试也可用 `m_async_*` 前缀的 merchantId，内存后端会走异步路径。）
+
+2. **部署外部中继（你自己的服务）**  
+   在后端环境变量中设置：
+   - `EXTERNAL_SETTLEMENT_WEBHOOK_URL`：中继的 HTTPS 地址。  
+   - `EXTERNAL_SETTLEMENT_WEBHOOK_SECRET`（可选）：若配置，Webhook 请求体会带 `X-AgentTrust-Signature: sha256=<HMAC-SHA256(secret, body)>`，便于校验来源。  
+   - `EXTERNAL_SETTLEMENT_WEBHOOK_TIMEOUT_MS`（可选，默认 8000）：出站通知超时。
+
+3. **Webhook 负载**  
+   当订单进入 `SETTLING` 时，后端会向 `EXTERNAL_SETTLEMENT_WEBHOOK_URL` **异步 POST** JSON，包含 `event: "payment.settling"`、`transactionId`、`agentDid`、`merchantId`、`amount`、`idempotencyKey` 等（见 `internal/service/settlement_webhook.go`）。  
+   中继根据 `merchantId` 映射到链上地址或对方 x402 endpoint，完成实际付款。
+
+4. **回到本平台销账**  
+   中继完成后调用 **`POST /payment/status/callback`**，请求体 `{"transactionId":"...","status":"SETTLED"}` 或 `"FAILED"`，并携带已有的 **`CALLBACK_TOKEN`**、签名头（见 OpenAPI 与后端 `withCallbackToken`）。  
+   成功则 VA 冻结资金正式扣减；失败则释放冻结。
+
+**说明**：没有万能接口能自动连接「互联网上所有稳定币店铺」——每种链、每个协议都需要明确对接。上述模式把 **Agent 授权 + VA 风控 + 幂等** 留在 AgentTrust Pay，把 **具体链 / x402 握手** 放在你可演进的中继里。
+
 ## 2. OpenAPI
 
 仓库根目录 [`openapi.yaml`](../openapi.yaml) 为契约定义，可用 Swagger UI / Redoc 加载，或与代码生成工具配合使用。

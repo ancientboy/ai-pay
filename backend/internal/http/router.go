@@ -1353,6 +1353,7 @@ func (s *Server) handlePay(w http.ResponseWriter, r *http.Request) {
 		Amount:         req.Amount,
 		IdempotencyKey: idem,
 		Signature:      req.Signature,
+		SignTimestamp:  r.Header.Get("X-Sign-Timestamp"),
 	})
 	if apiErr != nil {
 		writeAPIError(w, apiErr)
@@ -2270,6 +2271,7 @@ func (s *Server) handlePaymentSignSubmit(w http.ResponseWriter, r *http.Request)
 		Amount:         strings.TrimSpace(req.Amount),
 		IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
 		Signature:      strings.TrimSpace(req.Signature),
+		SignTimestamp:  r.Header.Get("X-Sign-Timestamp"),
 	})
 	if apiErr != nil {
 		writeAPIError(w, apiErr)

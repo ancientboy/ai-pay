@@ -59,6 +59,7 @@ type PayRequest struct {
 	Amount         string
 	IdempotencyKey string
 	Signature      string
+	SignTimestamp  string
 }
 
 type PayResponse struct {
@@ -707,6 +708,14 @@ func (s *Service) Pay(req PayRequest) (PayResponse, *APIError) {
 		}
 		s.orders[txID] = tx
 		s.idemMap[req.IdempotencyKey] = txID
+		notifyExternalSettling(SettlingWebhookPayload{
+			TransactionID:    txID,
+			AgentDid:         req.PayerDID,
+			MerchantID:       req.MerchantID,
+			Amount:           req.Amount,
+			IdempotencyKey:   req.IdempotencyKey,
+			SignTimestampRFC: strings.TrimSpace(req.SignTimestamp),
+		})
 		return PayResponse{TransactionID: txID, Status: tx.Status}, nil
 	}
 	if err := s.debitHold(holdID); err != nil {
