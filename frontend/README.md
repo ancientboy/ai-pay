@@ -1,4 +1,4 @@
-# AI Pay Frontend Console
+# AgentTrust Pay（可信付）Frontend Console
 
 Next.js + TypeScript + Tailwind front-end console for the AI payment MVP.
 
